@@ -1,0 +1,12 @@
+diff -urN a/xbmc/platform/linux/storage/UDisks2Provider.h b/xbmc/platform/linux/storage/UDisks2Provider.h
+--- a/xbmc/platform/linux/storage/UDisks2Provider.h	2026-06-12 20:29:18.713270991 +0100
++++ b/xbmc/platform/linux/storage/UDisks2Provider.h	2026-06-12 20:29:27.769290765 +0100
+@@ -46,7 +46,7 @@
+     std::string m_label;
+     std::string m_device;
+     bool m_isSystem = false;
+-    u_int64_t m_size = 0;
++    uint64_t m_size = 0;
+ 
+     explicit Block(const char *object);
+     ~Block() = default;
