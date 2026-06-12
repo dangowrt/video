@@ -1,0 +1,33 @@
+diff -urN a/xbmc/interfaces/swig/CMakeLists.txt b/xbmc/interfaces/swig/CMakeLists.txt
+--- a/xbmc/interfaces/swig/CMakeLists.txt	2026-06-12 19:01:13.243397079 +0100
++++ b/xbmc/interfaces/swig/CMakeLists.txt	2026-06-12 19:01:53.502061372 +0100
+@@ -1,4 +1,13 @@
+ function(generate_file file)
++  if(PYTHON_BINDINGS_DIR)
++    set(CPP_FILE ${file}.cpp)
++    add_custom_command(OUTPUT ${CPP_FILE}
++                       COMMAND ${CMAKE_COMMAND} -E copy ${PYTHON_BINDINGS_DIR}/${CPP_FILE} ${CPP_FILE}
++                       DEPENDS ${PYTHON_BINDINGS_DIR}/${CPP_FILE})
++    set(SOURCES ${SOURCES} "${CPP_FILE}" PARENT_SCOPE)
++    return()
++  endif()
++
+   set(classpath ${groovy_SOURCE_DIR}/lib/*
+                 ${apache-commons-lang_SOURCE_DIR}/*
+                 ${apache-commons-text_SOURCE_DIR}/*
+@@ -30,6 +39,7 @@
+   set(SOURCES ${SOURCES} "${CPP_FILE}" PARENT_SCOPE)
+ endfunction()
+ 
++if(NOT PYTHON_BINDINGS_DIR)
+ find_package(Java COMPONENTS Runtime REQUIRED)
+ find_package(SWIG REQUIRED)
+ 
+@@ -96,6 +106,7 @@
+     set(apache-commons-text_SOURCE_DIR ${DEPENDS_PATH}/share/java/text)
+   endif()
+ endif()
++endif()
+ 
+ # The generated bindings
+ set(INPUTS AddonModuleXbmcaddon.i
