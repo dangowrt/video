@@ -1,5 +1,8 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
-Subject: [PATCH] JavaScriptCore: RISCV64: wire up A-extension atomics in BBQJIT
+Date: Sat, 9 May 2026 01:37:44 +0100
+Subject: [PATCH] JavaScriptCore: RISCV64: wire up A-extension atomics in
+ BBQJIT
 
 OpenWrt's RISC-V baseline is rv64gc/lp64d, which always includes the
 standard A-extension. Replace the UNIMPLEMENTED_METHOD stubs in
@@ -33,46 +36,12 @@ modes on a StarFive VisionFive 2.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
---- a/Source/JavaScriptCore/assembler/RISCV64Assembler.h
-+++ b/Source/JavaScriptCore/assembler/RISCV64Assembler.h
-@@ -1832,6 +1832,37 @@ public:
-     void remwInsn(RegisterID rd, RegisterID rs1, RegisterID rs2) { insn(RISCV64Instructions::REMW::construct(rd, rs1, rs2)); }
-     void remuwInsn(RegisterID rd, RegisterID rs1, RegisterID rs2) { insn(RISCV64Instructions::REMUW::construct(rd, rs1, rs2)); }
- 
-+    // RV{32,64}A standard A-extension (always present in rv64gc).
-+    // For sequential consistency pass { Acquire, Release } (.aqrl).
-+    void lr_wInsn(RegisterID rd, RegisterID rs1, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::LR_W::construct(rd, rs1, RegisterID::zero, aqrl)); }
-+    void lr_dInsn(RegisterID rd, RegisterID rs1, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::LR_D::construct(rd, rs1, RegisterID::zero, aqrl)); }
-+    void sc_wInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::SC_W::construct(rd, rs1, rs2, aqrl)); }
-+    void sc_dInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::SC_D::construct(rd, rs1, rs2, aqrl)); }
-+    void amoswap_wInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::AMOSWAP_W::construct(rd, rs1, rs2, aqrl)); }
-+    void amoswap_dInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::AMOSWAP_D::construct(rd, rs1, rs2, aqrl)); }
-+    void amoadd_wInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::AMOADD_W::construct(rd, rs1, rs2, aqrl)); }
-+    void amoadd_dInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::AMOADD_D::construct(rd, rs1, rs2, aqrl)); }
-+    void amoxor_wInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::AMOXOR_W::construct(rd, rs1, rs2, aqrl)); }
-+    void amoxor_dInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::AMOXOR_D::construct(rd, rs1, rs2, aqrl)); }
-+    void amoand_wInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::AMOAND_W::construct(rd, rs1, rs2, aqrl)); }
-+    void amoand_dInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::AMOAND_D::construct(rd, rs1, rs2, aqrl)); }
-+    void amoor_wInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::AMOOR_W::construct(rd, rs1, rs2, aqrl)); }
-+    void amoor_dInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
-+        { insn(RISCV64Instructions::AMOOR_D::construct(rd, rs1, rs2, aqrl)); }
-+
-     using FCVTType = RISCV64Instructions::FCVTType;
-     using FMVType = RISCV64Instructions::FMVType;
- 
+ .../assembler/MacroAssemblerRISCV64.h         | 172 +++++++++++++++---
+ .../assembler/RISCV64Assembler.h              |  31 ++++
+ Source/JavaScriptCore/wasm/WasmBBQJIT.h       |   5 +
+ Source/JavaScriptCore/wasm/WasmBBQJIT64.cpp   | 159 +++++++++++-----
+ 4 files changed, 292 insertions(+), 75 deletions(-)
+
 --- a/Source/JavaScriptCore/assembler/MacroAssemblerRISCV64.h
 +++ b/Source/JavaScriptCore/assembler/MacroAssemblerRISCV64.h
 @@ -2448,55 +2448,169 @@ public:
@@ -274,9 +243,49 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
      // Additional SIMD vector noop stubs uncovered by enabling BBQJIT.
      MACRO_ASSEMBLER_RISCV64_TEMPLATED_NOOP_METHOD(vectorSplat);
      MACRO_ASSEMBLER_RISCV64_TEMPLATED_NOOP_METHOD(vectorUshl8);
+--- a/Source/JavaScriptCore/assembler/RISCV64Assembler.h
++++ b/Source/JavaScriptCore/assembler/RISCV64Assembler.h
+@@ -1832,6 +1832,37 @@ public:
+     void remwInsn(RegisterID rd, RegisterID rs1, RegisterID rs2) { insn(RISCV64Instructions::REMW::construct(rd, rs1, rs2)); }
+     void remuwInsn(RegisterID rd, RegisterID rs1, RegisterID rs2) { insn(RISCV64Instructions::REMUW::construct(rd, rs1, rs2)); }
+ 
++    // RV{32,64}A standard A-extension (always present in rv64gc).
++    // For sequential consistency pass { Acquire, Release } (.aqrl).
++    void lr_wInsn(RegisterID rd, RegisterID rs1, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::LR_W::construct(rd, rs1, RegisterID::zero, aqrl)); }
++    void lr_dInsn(RegisterID rd, RegisterID rs1, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::LR_D::construct(rd, rs1, RegisterID::zero, aqrl)); }
++    void sc_wInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::SC_W::construct(rd, rs1, rs2, aqrl)); }
++    void sc_dInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::SC_D::construct(rd, rs1, rs2, aqrl)); }
++    void amoswap_wInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::AMOSWAP_W::construct(rd, rs1, rs2, aqrl)); }
++    void amoswap_dInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::AMOSWAP_D::construct(rd, rs1, rs2, aqrl)); }
++    void amoadd_wInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::AMOADD_W::construct(rd, rs1, rs2, aqrl)); }
++    void amoadd_dInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::AMOADD_D::construct(rd, rs1, rs2, aqrl)); }
++    void amoxor_wInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::AMOXOR_W::construct(rd, rs1, rs2, aqrl)); }
++    void amoxor_dInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::AMOXOR_D::construct(rd, rs1, rs2, aqrl)); }
++    void amoand_wInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::AMOAND_W::construct(rd, rs1, rs2, aqrl)); }
++    void amoand_dInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::AMOAND_D::construct(rd, rs1, rs2, aqrl)); }
++    void amoor_wInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::AMOOR_W::construct(rd, rs1, rs2, aqrl)); }
++    void amoor_dInsn(RegisterID rd, RegisterID rs1, RegisterID rs2, std::initializer_list<RISCV64Instructions::MemoryAccess> aqrl)
++        { insn(RISCV64Instructions::AMOOR_D::construct(rd, rs1, rs2, aqrl)); }
++
+     using FCVTType = RISCV64Instructions::FCVTType;
+     using FMVType = RISCV64Instructions::FMVType;
+ 
 --- a/Source/JavaScriptCore/wasm/WasmBBQJIT.h
 +++ b/Source/JavaScriptCore/wasm/WasmBBQJIT.h
-@@ -1335,6 +1335,11 @@ public:
+@@ -1337,6 +1337,11 @@ public:
      template<typename Functor>
      void emitAtomicOpGeneric(ExtAtomicOpType op, Address address, Location old, Location cur, const Functor& functor);
  
