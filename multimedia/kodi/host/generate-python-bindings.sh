@@ -7,9 +7,9 @@ set -eu
 SRC="$1"
 VERNAME="$2"
 
-GROOVY_VER=4.0.26
-COMMONS_LANG_VER=3.17.0
-COMMONS_TEXT_VER=1.13.0
+GROOVY_VER=4.0.30
+COMMONS_LANG_VER=3.20.0
+COMMONS_TEXT_VER=1.15.0
 MIRROR=https://mirrors.kodi.tv/build-deps/sources
 
 MODULES="AddonModuleXbmcaddon AddonModuleXbmcdrm AddonModuleXbmcgui \

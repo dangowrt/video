@@ -1,0 +1,42 @@
+FindPulseAudio: make the glib mainloop library optional
+
+Kodi's AESinkPULSE only uses pa_threaded_mainloop from libpulse itself;
+no symbol from libpulse-mainloop-glib is referenced anywhere. Requiring
+it forces a glib2 dependency into the pulseaudio build for nothing. Link
+it when present, skip it when absent.
+
+--- a/cmake/modules/FindPulseAudio.cmake
++++ b/cmake/modules/FindPulseAudio.cmake
+@@ -47,7 +47,7 @@
+ 
+   include(FindPackageHandleStandardArgs)
+   find_package_handle_standard_args(PulseAudio
+-                                    REQUIRED_VARS PULSEAUDIO_LIBRARY PULSEAUDIO_MAINLOOP_LIBRARY PULSEAUDIO_SIMPLE_LIBRARY PULSEAUDIO_INCLUDE_DIR
++                                    REQUIRED_VARS PULSEAUDIO_LIBRARY PULSEAUDIO_SIMPLE_LIBRARY PULSEAUDIO_INCLUDE_DIR
+                                     VERSION_VAR PULSEAUDIO_VERSION_STRING)
+ 
+   if(PULSEAUDIO_FOUND)
+@@ -58,15 +58,19 @@
+     set_target_properties(${APP_NAME_LC}::PulseAudioSimple PROPERTIES
+                                                            IMPORTED_LOCATION "${PULSEAUDIO_SIMPLE_LIBRARY}")
+ 
+-    add_library(${APP_NAME_LC}::PulseAudioMainloop UNKNOWN IMPORTED)
+-    set_target_properties(${APP_NAME_LC}::PulseAudioMainloop PROPERTIES
+-                                                             IMPORTED_LOCATION "${PULSEAUDIO_MAINLOOP_LIBRARY}")
++    set(_pulseaudio_link_libs "${APP_NAME_LC}::PulseAudioSimple")
++    if(PULSEAUDIO_MAINLOOP_LIBRARY)
++      add_library(${APP_NAME_LC}::PulseAudioMainloop UNKNOWN IMPORTED)
++      set_target_properties(${APP_NAME_LC}::PulseAudioMainloop PROPERTIES
++                                                               IMPORTED_LOCATION "${PULSEAUDIO_MAINLOOP_LIBRARY}")
++      list(APPEND _pulseaudio_link_libs "${APP_NAME_LC}::PulseAudioMainloop")
++    endif()
+ 
+     add_library(${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} UNKNOWN IMPORTED)
+     set_target_properties(${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} PROPERTIES
+                                                                      IMPORTED_LOCATION "${PULSEAUDIO_LIBRARY}"
+                                                                      INTERFACE_INCLUDE_DIRECTORIES "${PULSEAUDIO_INCLUDE_DIR}"
+                                                                      INTERFACE_COMPILE_DEFINITIONS HAS_PULSEAUDIO
+-                                                                     INTERFACE_LINK_LIBRARIES "${APP_NAME_LC}::PulseAudioMainloop;${APP_NAME_LC}::PulseAudioSimple")
++                                                                     INTERFACE_LINK_LIBRARIES "${_pulseaudio_link_libs}")
+   endif()
+ endif()

@@ -4,10 +4,20 @@ START=99
 USE_PROCD=1
 
 start_service() {
-	mkdir -p /var/lib/kodi
+	# Kodi's GBM windowing needs a KMS device with connectors; the DRM
+	# driver stack is modular and can bind well after procd starts us.
+	# Wait (bounded) for a connector to appear instead of starting
+	# headless - kodi does not retry DRM init once it is up.
+	local i
+	for i in $(seq 1 30); do
+		[ -n "$(ls /sys/class/drm/card*-*/status 2>/dev/null)" ] && break
+		sleep 1
+	done
+
+	mkdir -p /etc/kodi /tmp/kodi
 	procd_open_instance
 	procd_set_param command /usr/bin/kodi-standalone --windowing=gbm
-	procd_set_param env HOME=/var/lib/kodi
+	procd_set_param env HOME="/root" KODI_DATA="/etc/kodi" KODI_TEMP="/tmp/kodi"
 	procd_set_param respawn 3600 5 0
 	procd_set_param stdout 0
 	procd_set_param stderr 1
