@@ -1,0 +1,3 @@
+# Preserve Kodi's data directory (HOME=/srv/kodi: userdata, addons,
+# library database, thumbnails) across sysupgrade.
+/etc/kodi
