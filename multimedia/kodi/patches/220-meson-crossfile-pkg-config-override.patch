@@ -1,0 +1,48 @@
+From: Mirko Vogt <foss@mirko.in>
+Date: Sat, 5 Sep 2026 21:30:00 +0000
+Subject: [PATCH] cmake: allow overriding pkg-config for meson cross files
+
+The meson cross files generated for internal depends builds (libdvdread,
+libdvdnav, ...) restrict pkg_config_libdir to DEPENDS_PATH/lib/pkgconfig,
+whose .pc files carry absolute prefixes. Distribution build systems such
+as OpenWrt, Buildroot or Yocto wrap pkg-config to redefine ${prefix} to
+their sysroot - correct for their own .pc files, but it rewrites the
+DEPENDS_PATH ones to a place where nothing is installed:
+
+  ../src/vm/play.c:32:10: fatal error: dvdread/nav_types.h: No such file
+
+Add MESON_PKG_CONFIG_EXECUTABLE so such a build system can point the
+cross files at an unwrapped pkg-config while the main configure keeps
+using the wrapped one. Default behaviour is unchanged.
+
+Signed-off-by: Mirko Vogt <foss@mirko.in>
+---
+--- a/cmake/scripts/common/ModuleHelpers.cmake
++++ b/cmake/scripts/common/ModuleHelpers.cmake
+@@ -807,11 +807,23 @@
+     list(APPEND binariespairs "strip" "CMAKE_STRIP")
+   endif()
+ 
+-  if(PKG_CONFIG_EXECUTABLE)
++  # MESON_PKG_CONFIG_EXECUTABLE lets a build system hand meson a different
++  # pkg-config than the one used for the main configure. Distribution build
++  # systems (OpenWrt, Buildroot, Yocto) commonly wrap pkg-config to redefine
++  # ${prefix} to their sysroot; that is right for their own .pc files but
++  # wrong for the ones below DEPENDS_PATH, the only pkg_config_libdir these
++  # cross files allow, which carry absolute prefixes already.
++  if(MESON_PKG_CONFIG_EXECUTABLE)
++    set(meson_pkg_config_executable "${MESON_PKG_CONFIG_EXECUTABLE}")
++  else()
++    set(meson_pkg_config_executable "${PKG_CONFIG_EXECUTABLE}")
++  endif()
++
++  if(meson_pkg_config_executable)
+     # Both names, because meson renamed this entry from "pkgconfig" to "pkg-config"
+     # in 1.2.0. Duplicates are accepted as long as the values match.
+-    list(APPEND binariespairs "pkg-config" "PKG_CONFIG_EXECUTABLE"
+-                              "pkgconfig" "PKG_CONFIG_EXECUTABLE")
++    list(APPEND binariespairs "pkg-config" "meson_pkg_config_executable"
++                              "pkgconfig" "meson_pkg_config_executable")
+   endif()
+ 
+   # Get/set loop limit (Size - 1) from size of binariespairs list
