@@ -92,3 +92,15 @@ the build itself needs no network. Kodi's own SHA512 check from
 `tools/depends/target/*/*-VERSION` still applies. meson is OpenWrt's
 host zipapp (`staging_dir/host/bin/meson.py`), passed explicitly as
 `MESON_EXECUTABLE`. libdvdcss stays off.
+
+## crossguid
+
+There is no OpenWrt package for crossguid, so Kodi builds its own copy
+(`ENABLE_INTERNAL_CROSSGUID`) as a cmake ExternalProject. The archive
+is fetched like the libdvd ones (`Download/crossguid`, `CROSSGUID_URL`).
+A cmake ExternalProject inherits nothing of the parent's compiler
+settings apart from a toolchain file, so the Makefile generates
+`openwrt-toolchain.cmake` from `files/openwrt-toolchain.cmake.in` with
+the compiler, binutils, flags and find-root settings that
+`include/cmake.mk` passes on the command line, and hands it to the
+sub-build as `CROSSGUID_TOOLCHAIN_FILE`.
