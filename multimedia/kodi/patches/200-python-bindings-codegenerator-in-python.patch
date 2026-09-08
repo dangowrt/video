@@ -26,9 +26,6 @@ from the PR's commit.
 The Groovy sources are left in place; the build no longer uses them
 (see the following patch).
 ---
-diff --git a/tools/codegenerator/emit.py b/tools/codegenerator/emit.py
-new file mode 100644
-index 0000000..67c9f5d
 --- /dev/null
 +++ b/tools/codegenerator/emit.py
 @@ -0,0 +1,611 @@
@@ -643,9 +640,6 @@ index 0000000..67c9f5d
 +
 +def generate(module):
 +    return Gen(module).run()
-diff --git a/tools/codegenerator/generate.py b/tools/codegenerator/generate.py
-new file mode 100644
-index 0000000..9a19a69
 --- /dev/null
 +++ b/tools/codegenerator/generate.py
 @@ -0,0 +1,39 @@
@@ -688,9 +682,6 @@ index 0000000..9a19a69
 +
 +if __name__ == "__main__":
 +    raise SystemExit(main(sys.argv))
-diff --git a/tools/codegenerator/helper.py b/tools/codegenerator/helper.py
-new file mode 100644
-index 0000000..8814716
 --- /dev/null
 +++ b/tools/codegenerator/helper.py
 @@ -0,0 +1,323 @@
@@ -1017,9 +1008,6 @@ index 0000000..8814716
 +    if attr and test(attr):
 +        return str(attr)
 +    return hasFeatureSetting(typ, searchFrom.parent(), feature, test)
-diff --git a/tools/codegenerator/method_type.py b/tools/codegenerator/method_type.py
-new file mode 100644
-index 0000000..377e6d8
 --- /dev/null
 +++ b/tools/codegenerator/method_type.py
 @@ -0,0 +1,9 @@
@@ -1032,9 +1020,6 @@ index 0000000..377e6d8
 +constructor = "constructor"
 +destructor = "destructor"
 +method = "method"
-diff --git a/tools/codegenerator/node.py b/tools/codegenerator/node.py
-new file mode 100644
-index 0000000..2a75c81
 --- /dev/null
 +++ b/tools/codegenerator/node.py
 @@ -0,0 +1,130 @@
@@ -1168,9 +1153,6 @@ index 0000000..2a75c81
 +        if filt is None or filt(p):
 +            out.append(p)
 +    return out
-diff --git a/tools/codegenerator/python_tools.py b/tools/codegenerator/python_tools.py
-new file mode 100644
-index 0000000..6827fbe
 --- /dev/null
 +++ b/tools/codegenerator/python_tools.py
 @@ -0,0 +1,119 @@
@@ -1293,9 +1275,6 @@ index 0000000..6827fbe
 +        ("The class %s has too many known base classes. Multiple inheritance isn't supported "
 +         "in the code generator. Please \"#ifdef SWIG\" out all but one." % H.findFullClassName(clazz))
 +    return knownbases[0] if knownbases else None
-diff --git a/tools/codegenerator/swig_type_parser.py b/tools/codegenerator/swig_type_parser.py
-new file mode 100644
-index 0000000..bea4efd
 --- /dev/null
 +++ b/tools/codegenerator/swig_type_parser.py
 @@ -0,0 +1,556 @@
@@ -1855,9 +1834,6 @@ index 0000000..bea4efd
 +    print("-" * 60)
 +    print(f"{len(checks) - failures}/{len(checks)} checks passed")
 +    raise SystemExit(1 if failures else 0)
-diff --git a/tools/codegenerator/transform.py b/tools/codegenerator/transform.py
-new file mode 100644
-index 0000000..cba618d
 --- /dev/null
 +++ b/tools/codegenerator/transform.py
 @@ -0,0 +1,219 @@
@@ -2080,9 +2056,6 @@ index 0000000..cba618d
 +        print("usage: python -m codegen.transform <swig.xml>", file=sys.stderr)
 +        raise SystemExit(2)
 +    print(transform_swig_xml_file(sys.argv[1]).dump())
-diff --git a/tools/codegenerator/typemaps.py b/tools/codegenerator/typemaps.py
-new file mode 100644
-index 0000000..d805d20
 --- /dev/null
 +++ b/tools/codegenerator/typemaps.py
 @@ -0,0 +1,354 @@

@@ -1,7 +1,7 @@
 --- a/xbmc/cores/DllLoader/exports/emu_msvcrt.cpp
 +++ b/xbmc/cores/DllLoader/exports/emu_msvcrt.cpp
-@@ -71,6 +71,13 @@
- #include "platform/win32/CharsetConverter.h"
+@@ -81,6 +81,13 @@
+ #endif
  #endif
  
 +#ifndef _PATH_MOUNTED
@@ -14,7 +14,7 @@
  using namespace XFILE;
  
  struct SDirData
-@@ -123,7 +130,7 @@ extern "C" void __stdcall init_emu_envir
+@@ -133,7 +140,7 @@ extern "C" void __stdcall init_emu_envir
    dll_putenv("OS=win10");
  #elif defined(TARGET_DARWIN)
    dll_putenv("OS=darwin");
@@ -23,7 +23,7 @@
    dll_putenv("OS=linux");
  #else
    dll_putenv("OS=unknown");
-@@ -1484,7 +1491,7 @@ extern "C"
+@@ -1494,7 +1501,7 @@ extern "C"
      int ret;
  
      ret = dll_fgetpos64(stream, &tmpPos);
@@ -32,7 +32,7 @@
      *pos = (fpos_t)tmpPos;
  #else
      pos->__pos = (off_t)tmpPos.__pos;
-@@ -1497,8 +1504,9 @@ extern "C"
+@@ -1507,8 +1514,9 @@ extern "C"
      CFile* pFile = g_emuFileWrapper.GetFileXbmcByStream(stream);
      if (pFile != NULL)
      {
@@ -44,7 +44,7 @@
  #else
        pos->__pos = pFile->GetPosition();
  #endif
-@@ -1513,8 +1521,9 @@ extern "C"
+@@ -1523,8 +1531,9 @@ extern "C"
      int fd = g_emuFileWrapper.GetDescriptorByStream(stream);
      if (fd >= 0)
      {
@@ -56,7 +56,7 @@
  #else
        if (dll_lseeki64(fd, (__off64_t)pos->__pos, SEEK_SET) >= 0)
  #endif
-@@ -1536,7 +1545,7 @@ extern "C"
+@@ -1546,7 +1555,7 @@ extern "C"
      if (fd >= 0)
      {
        fpos64_t tmpPos;
@@ -65,8 +65,6 @@
        tmpPos= *pos;
  #else
        tmpPos.__pos = (off64_t)(pos->__pos);
-diff --git a/xbmc/cores/DllLoader/exports/emu_msvcrt.h b/xbmc/cores/DllLoader/exports/emu_msvcrt.h
-index 7869dc221c..3b86d6b45b 100644
 --- a/xbmc/cores/DllLoader/exports/emu_msvcrt.h
 +++ b/xbmc/cores/DllLoader/exports/emu_msvcrt.h
 @@ -17,7 +17,7 @@
@@ -78,8 +76,6 @@ index 7869dc221c..3b86d6b45b 100644
  typedef off_t __off_t;
  typedef int64_t off64_t;
  typedef off64_t __off64_t;
-diff --git a/xbmc/cores/DllLoader/exports/wrapper.c b/xbmc/cores/DllLoader/exports/wrapper.c
-index 33ab3437c1..5a68de2c64 100644
 --- a/xbmc/cores/DllLoader/exports/wrapper.c
 +++ b/xbmc/cores/DllLoader/exports/wrapper.c
 @@ -23,7 +23,7 @@

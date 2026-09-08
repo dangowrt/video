@@ -7,7 +7,7 @@ it when present, skip it when absent.
 
 --- a/cmake/modules/FindPulseAudio.cmake
 +++ b/cmake/modules/FindPulseAudio.cmake
-@@ -47,7 +47,7 @@
+@@ -47,7 +47,7 @@ if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FI
  
    include(FindPackageHandleStandardArgs)
    find_package_handle_standard_args(PulseAudio
@@ -16,7 +16,7 @@ it when present, skip it when absent.
                                      VERSION_VAR PULSEAUDIO_VERSION_STRING)
  
    if(PULSEAUDIO_FOUND)
-@@ -58,15 +58,19 @@
+@@ -58,15 +58,19 @@ if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FI
      set_target_properties(${APP_NAME_LC}::PulseAudioSimple PROPERTIES
                                                             IMPORTED_LOCATION "${PULSEAUDIO_SIMPLE_LIBRARY}")
  
