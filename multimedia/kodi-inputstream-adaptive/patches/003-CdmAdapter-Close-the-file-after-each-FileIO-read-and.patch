@@ -1,0 +1,100 @@
+From 4bae5c8fa53442a7006ea3107612003ec818c37d Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 23 Oct 2026 23:29:44 +0100
+Subject: [PATCH] [CdmAdapter] Close the file after each FileIO read and write
+
+CdmFileIoImpl::Read() and Write() open the file into the
+file_descriptor_ member and leave it open; only Close() closes it.
+Every further Read() or Write() on the same object leaks the previous
+FILE, and the data a Write() hands to stdio is not flushed before
+Close(), so a Read() that follows it may find the file empty or short.
+
+Open the file in each call and close it before reporting completion. A
+Write() succeeds only when fclose() does, since that is where buffered
+data reaches the file.
+
+Fixes: b56147831bd0 ("Add common cenc decryptors")
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ lib/cdm/cdm/media/cdm/cdm_adapter.cc | 28 +++++++++++-----------------
+ lib/cdm/cdm/media/cdm/cdm_adapter.h  |  1 -
+ 2 files changed, 11 insertions(+), 18 deletions(-)
+
+--- a/lib/cdm/cdm/media/cdm/cdm_adapter.cc
++++ b/lib/cdm/cdm/media/cdm/cdm_adapter.cc
+@@ -917,7 +917,6 @@ void CdmAdapter::OnInitialized(bool succ
+ CdmFileIoImpl::CdmFileIoImpl(std::string base_path, cdm::FileIOClient* client)
+   : base_path_(base_path)
+   , client_(client)
+-  , file_descriptor_(0)
+   , data_buffer_(0)
+   , opened_(false)
+ {
+@@ -944,19 +943,20 @@ void CdmFileIoImpl::Read()
+   free(reinterpret_cast<void*>(data_buffer_));
+   data_buffer_ = nullptr;
+ 
+-  file_descriptor_ = fopen(m_filepath.c_str(), "rb");
++  FILE* file = fopen(m_filepath.c_str(), "rb");
+ 
+-  if (file_descriptor_)
++  if (file)
+   {
+     status = cdm::FileIOClient::Status::kSuccess;
+-    fseek(file_descriptor_, 0, SEEK_END);
+-    sz = ftell(file_descriptor_);
++    fseek(file, 0, SEEK_END);
++    sz = ftell(file);
+     if (sz)
+     {
+-      fseek(file_descriptor_, 0, SEEK_SET);
+-      if ((data_buffer_ = reinterpret_cast<uint8_t*>(malloc(sz))) == nullptr || fread(data_buffer_, 1, sz, file_descriptor_) != sz)
++      fseek(file, 0, SEEK_SET);
++      if ((data_buffer_ = reinterpret_cast<uint8_t*>(malloc(sz))) == nullptr || fread(data_buffer_, 1, sz, file) != sz)
+       status = cdm::FileIOClient::Status::kError;
+     }
++    fclose(file);
+   } else
+     status = cdm::FileIOClient::Status::kSuccess;
+   client_->OnReadComplete(status, data_buffer_, static_cast<uint32_t>(sz));
+@@ -973,14 +973,13 @@ void CdmFileIoImpl::Write(const uint8_t*
+ 
+   cdm::FileIOClient::Status status = cdm::FileIOClient::Status::kError;
+ 
+-  file_descriptor_ = fopen(m_filepath.c_str(), "wb");
++  FILE* file = fopen(m_filepath.c_str(), "wb");
+ 
+-  if (file_descriptor_)
++  if (file)
+   {
+-    if (fwrite(data, 1, data_size, file_descriptor_) == data_size)
+-    {
++    const bool written = fwrite(data, 1, data_size, file) == data_size;
++    if (fclose(file) == 0 && written)
+       status = cdm::FileIOClient::Status::kSuccess;
+-    }
+   }
+ 
+   client_->OnWriteComplete(status);
+@@ -988,11 +987,6 @@ void CdmFileIoImpl::Write(const uint8_t*
+ 
+ void CdmFileIoImpl::Close()
+ {
+-  if (file_descriptor_)
+-  {
+-    fclose(file_descriptor_);
+-    file_descriptor_ = 0;
+-  }
+   client_ = 0;
+   free(reinterpret_cast<void*>(data_buffer_));
+   data_buffer_ = 0;
+--- a/lib/cdm/cdm/media/cdm/cdm_adapter.h
++++ b/lib/cdm/cdm/media/cdm/cdm_adapter.h
+@@ -317,7 +317,6 @@ private:
+   std::string base_path_;
+   std::string m_filepath;
+   cdm::FileIOClient* client_;
+-  FILE *file_descriptor_;
+   uint8_t *data_buffer_;
+   bool opened_;
+ };
