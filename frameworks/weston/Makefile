@@ -35,6 +35,7 @@ define Package/weston/description
 endef
 
 MESON_ARGS += \
+	--wrap-mode=nofallback \
 	-Dbackend-drm=true \
 	-Dbackend-headless=false \
 	-Dbackend-pipewire=false \
