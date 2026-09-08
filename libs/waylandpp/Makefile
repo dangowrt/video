@@ -53,6 +53,8 @@ define Build/InstallDev
 	$(call Build/InstallDev/cmake,$(1))
 	$(SED) 's,^pkgdatadir=.*,pkgdatadir=$$$${prefix}/share/waylandpp,' \
 		$(1)/usr/lib/pkgconfig/wayland-*++.pc
+	$(SED) 's,/usr/include,$$$${prefix}/include,g' $(1)/usr/lib/pkgconfig/wayland-*++.pc
+	$(SED) 's,/usr/lib,$$$${exec_prefix}/lib,g' $(1)/usr/lib/pkgconfig/wayland-*++.pc
 	$(INSTALL_DIR) $(1)/usr/lib/pkgconfig
 	printf '%s\n' \
 		'wayland_scannerpp=$(STAGING_DIR_HOSTPKG)/bin/wayland-scanner++' \
