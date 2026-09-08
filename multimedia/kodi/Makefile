@@ -154,7 +154,11 @@ endef
 # OpenWrt-wide settings (TARGET_CFLAGS, CONFIG_USE_LTO, CONFIG_USE_MOLD
 # via package.mk; opt out with PKG_BUILD_FLAGS if ever needed). Kodi's
 # own USE_LTO stays OFF so it cannot stack a second -flto on top.
+# cmake.mk confines programs, libraries and headers to the find roots
+# but not cmake package configs, which Kodi's find modules try first;
+# without MODE_PACKAGE=ONLY a host /usr/lib*/cmake/<dep> wins.
 CMAKE_OPTIONS += \
+	-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY \
 	-DCORE_PLATFORM_NAME="gbm wayland" \
 	-DAPP_RENDER_SYSTEM=gles \
 	-DENABLE_NEON=$(if $(findstring aarch64,$(ARCH)),ON,OFF) \
