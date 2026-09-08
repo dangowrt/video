@@ -1,5 +1,6 @@
 #!/bin/sh
-# Generate the pre-built Kodi Python API bindings tarball.
+# Generate the pre-built Kodi Python API bindings tarball,
+# by downloading and running pre-built binaries of e.g. groovy.
 # Usage: generate-python-bindings.sh <kodi-source-dir> <version-name>
 # Requires: swig, java (JRE >= 11), curl, unzip, tar, xz
 set -eu

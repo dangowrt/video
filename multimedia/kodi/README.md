@@ -38,31 +38,31 @@ The 21.3 package additionally carried a backport that created a
 hwdevice context for non-DRM device types (V4L2REQUEST); that change is
 upstream in master and no longer needed here.
 
-## Pre-generated Python bindings
+## Python bindings
 
-Upstream generates the Python API bindings at build time using SWIG and
-a Groovy code generator, which requires a Java runtime plus three
-archive downloads during cmake configure. To keep Java and the network
-out of the build, this package ships bindings generated once per
-snapshot in `files/kodi-python-bindings-22.0-e513e0ff.tar.xz`, consumed
-via the `PYTHON_BINDINGS_DIR` cmake variable added by
-`patches/200-support-pregenerated-python-bindings.patch`.
+Upstream generates the Python API bindings at build time with SWIG and a
+Groovy code generator, which needs a Java runtime plus three archive
+downloads during cmake configure. This package instead carries the
+Python rewrite of that generator from upstream PR 28454
+(`patches/200-python-bindings-codegenerator-in-python.patch`, standard
+library only) and the matching build-system change
+(`patches/201-python-bindings-generate-with-swig-and-python.patch`).
+The bindings are generated during the normal build by `swig/host` and
+the host Python from staging; nothing is pre-generated or downloaded.
 
-The generated sources are plain C++ against the CPython API, are
-architecture independent and depend only on the Kodi source tree, so
-they are reproducible for a given commit.
+The generator output was verified byte-identical to the Groovy output
+for all seven modules of this snapshot, using `swig -xml` output of
+swig 4.3.0 for both; the feed's `swig/host` is 4.2.1 and was not part
+of that comparison. The only deliberate difference from the PR's
+generator is the Python API `__version__` constant (3.1.0, as in
+upstream's template since Beta 2). The PR is a draft targeting Kodi 23;
+when bumping Kodi, re-check the constant against
+`addons/xbmc.python/addon.xml` and rebase the two patches.
 
-To regenerate after a version bump, on a host with swig, a JRE (11 or
-newer), curl and unzip - e.g.:
-
-```
-./files/generate-python-bindings.sh <kodi-source-tree> 22.0_beta2-<commithash>
-```
-
-Keep the groovy/commons-lang/commons-text versions in that script in
-sync with `xbmc/interfaces/swig/CMakeLists.txt`. Put the resulting
-tarball into `files/` and update `PYTHON_BINDINGS_TARBALL` in the
-Makefile.
+`host/generate-python-bindings.sh` is the previous Groovy-based
+generation (swig, a JRE, curl and unzip on the host), kept for the
+moment as the reference to cross-check the Python generator's output
+against.
 
 ## Patch triage vs the 21.3 package
 
@@ -71,7 +71,9 @@ Dropped (fixed upstream in master): `003-dyn-pagesize`, `004-gcc13`,
 `142-DRMPRIME-create-non-drm-hwdevice-context`; `110-ffmpeg7` is
 obsolete with FFmpeg 8. Rebased: `006-sse-build`,
 `130-findpulseaudio-mainloop-optional`,
-`200-support-pregenerated-python-bindings`. Added:
+`200-python-bindings-codegenerator-in-python` and
+`201-python-bindings-generate-with-swig-and-python` (replace the
+former pre-generated bindings, see above). Added:
 `210-disable-internal-texturepacker` (LibreELEC's - master otherwise
 cross-builds and ships a target TexturePacker, whose sub-build does not
 find lzo2); `220-meson-crossfile-pkg-config-override` (own, upstreamable:
