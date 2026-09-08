@@ -15,7 +15,7 @@ PKG_RELEASE:=1
 # tarball name stays stable should the tag ever move.
 PKG_SOURCE_VERSION:=e513e0ff4331fc25fd2454659a9dd3e6b7670146
 PKG_SOURCE:=xbmc-$(PKG_SOURCE_VERSION).tar.gz
-PKG_SOURCE_URL:=https://codeload.github.com/xbmc/xbmc/tar.gz/$(PKG_SOURCE_VERSION)
+PKG_SOURCE_URL:=https://codeload.github.com/xbmc/xbmc/tar.gz/$(PKG_SOURCE_VERSION)?
 PKG_HASH:=0a1f5c0910f39f21e7d7521835ae0eba6286cff1a6c665badf502443f8e4acd0
 PKG_BUILD_DIR:=$(BUILD_DIR)/xbmc-$(PKG_SOURCE_VERSION)
 HOST_BUILD_DIR:=$(BUILD_DIR_HOST)/xbmc-$(PKG_SOURCE_VERSION)
