@@ -19,7 +19,7 @@ Signed-off-by: Mirko Vogt <foss@mirko.in>
 ---
 --- a/cmake/scripts/common/ModuleHelpers.cmake
 +++ b/cmake/scripts/common/ModuleHelpers.cmake
-@@ -807,11 +807,23 @@
+@@ -807,11 +807,23 @@ function(create_mesonbinaries)
      list(APPEND binariespairs "strip" "CMAKE_STRIP")
    endif()
  

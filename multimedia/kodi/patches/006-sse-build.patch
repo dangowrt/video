@@ -7,7 +7,7 @@ miss optimizations it does support). Use the x86_64 ABI baseline instead.
 
 --- a/cmake/modules/FindSSE.cmake
 +++ b/cmake/modules/FindSSE.cmake
-@@ -4,7 +4,9 @@
+@@ -4,7 +4,9 @@ include(TestCXXAcceptsFlag)
  
  if(CMAKE_SYSTEM_NAME MATCHES "Linux")
     if(CPU MATCHES "x86_64" OR CPU MATCHES "i.86")
