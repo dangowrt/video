@@ -27,7 +27,7 @@ PKG_CPE_ID:=cpe:/a:kodi:kodi
 
 PKG_BUILD_PARALLEL:=1
 HOST_BUILD_PARALLEL:=1
-PKG_BUILD_DEPENDS:=kodi/host nlohmannjson crossguid flatbuffers flatbuffers/host waylandpp/host wayland-protocols python3/host
+PKG_BUILD_DEPENDS:=kodi/host nlohmannjson crossguid flatbuffers flatbuffers/host waylandpp/host wayland-protocols python3/host swig/host
 HOST_BUILD_DEPENDS:=libpng/host giflib/host libjpeg-turbo/host lzo/host flatbuffers/host
 CMAKE_INSTALL:=1
 CMAKE_BINARY_SUBDIR:=openwrt-build
@@ -68,9 +68,6 @@ define Download/libdvdnav
   HASH:=1363cdfaf6e92c0b574579299b5480f5867fb32989451468a28f3f402ec48787
 endef
 $(eval $(call Download,libdvdnav))
-
-# Pre-generated Python API bindings, see README.md for regeneration
-PYTHON_BINDINGS_TARBALL:=kodi-python-bindings-$(PKG_VERSION)-$(PKG_SOURCE_VERSION).tar.xz
 
 define Package/kodi
   SECTION:=multimedia
@@ -235,7 +232,12 @@ CMAKE_OPTIONS += \
 	-DENABLE_XSLT=OFF \
 	-DADDONS_CONFIGURE_AT_STARTUP=OFF
 
-# Host tools, pre-generated Python bindings, pre-fetched libdvd sources.
+# Host tools, Python bindings generation, pre-fetched libdvd sources.
+# The Python API bindings are generated at build time by swig/host and
+# the Python code generator from patches/200 (see README.md); both the
+# swig binary and the host interpreter come from staging so the result
+# does not depend on the build host. PYTHON_INTERPRETER_PATH is a
+# search hint (directory) for Kodi's FindPythonInterpreter.
 # The libdvd* sub-builds use meson+ninja; OpenWrt ships meson as a zipapp
 # named meson.py, which Kodi's find_program(meson) would not find. Their
 # cross files must use the unwrapped pkg-config: OpenWrt's wrapper rewrites
@@ -247,7 +249,8 @@ CMAKE_OPTIONS += \
 	-DNINJA_EXECUTABLE=$(STAGING_DIR_HOST)/bin/ninja \
 	-DLIBDVDREAD_URL=$(DL_DIR)/libdvdread-$(LIBDVDREAD_VERSION).tar.bz2 \
 	-DLIBDVDNAV_URL=$(DL_DIR)/libdvdnav-$(LIBDVDNAV_VERSION).tar.bz2 \
-	-DPYTHON_BINDINGS_DIR=$(PKG_BUILD_DIR)/pregen-bindings \
+	-DSWIG_EXECUTABLE=$(STAGING_DIR_HOSTPKG)/bin/swig \
+	-DPYTHON_INTERPRETER_PATH=$(STAGING_DIR_HOSTPKG)/bin \
 	-DPYTHON_EXECUTABLE=$(STAGING_DIR_HOSTPKG)/bin/python$(PYTHON3_VERSION) \
 	-DPYTHON_VER=$(PYTHON3_VERSION) \
 	-DWITH_TEXTUREPACKER=$(STAGING_DIR_HOSTPKG)/bin/TexturePacker \
@@ -259,13 +262,6 @@ TARGET_LDFLAGS += -Wl,-z,stack-size=2097152
 TARGET_LDFLAGS += \
 	-Wl,-rpath-link,$(STAGING_DIR)/usr/lib/pulseaudio \
 	-Wl,-rpath-link,$(STAGING_DIR)/usr/lib/samba
-
-define Build/Prepare
-	$(call Build/Prepare/Default)
-	mkdir -p $(PKG_BUILD_DIR)/pregen-bindings
-	$(TAR) -xJf ./files/$(PYTHON_BINDINGS_TARBALL) \
-		--strip-components=1 -C $(PKG_BUILD_DIR)/pregen-bindings
-endef
 
 define Host/Configure
 	$(STAGING_DIR_HOST)/bin/cmake \
