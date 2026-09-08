@@ -27,7 +27,7 @@ PKG_CPE_ID:=cpe:/a:kodi:kodi
 
 PKG_BUILD_PARALLEL:=1
 HOST_BUILD_PARALLEL:=1
-PKG_BUILD_DEPENDS:=kodi/host nlohmannjson crossguid flatbuffers flatbuffers/host waylandpp/host wayland-protocols python3/host swig/host
+PKG_BUILD_DEPENDS:=kodi/host nlohmannjson flatbuffers flatbuffers/host waylandpp/host wayland-protocols python3/host swig/host
 HOST_BUILD_DEPENDS:=libpng/host giflib/host libjpeg-turbo/host lzo/host flatbuffers/host
 CMAKE_INSTALL:=1
 CMAKE_BINARY_SUBDIR:=openwrt-build
@@ -49,11 +49,13 @@ include $(TOPDIR)/feeds/packages/lang/python/python3-version.mk
 
 # Kodi insists on building libdvdread/libdvdnav itself on Linux (it needs
 # its own patched libdvdnav) and would download the archives during the
-# cmake build. Fetch the exact files it expects through OpenWrt's download
+# cmake build; crossguid has no OpenWrt package and is built in-tree as
+# well. Fetch the exact files Kodi expects through OpenWrt's download
 # machinery instead and hand them over as local URLs below; Kodi's own
 # SHA512 check (tools/depends/target/*/*-VERSION) still applies to them.
 LIBDVDREAD_VERSION:=7.0.1
 LIBDVDNAV_VERSION:=7.0.0
+CROSSGUID_VERSION:=ca1bf4b810e2d188d04cb6286f957008ee1b7681
 
 define Download/libdvdread
   FILE:=libdvdread-$(LIBDVDREAD_VERSION).tar.bz2
@@ -68,6 +70,13 @@ define Download/libdvdnav
   HASH:=1363cdfaf6e92c0b574579299b5480f5867fb32989451468a28f3f402ec48787
 endef
 $(eval $(call Download,libdvdnav))
+
+define Download/crossguid
+  FILE:=crossguid-$(CROSSGUID_VERSION).tar.gz
+  URL:=https://mirrors.kodi.tv/build-deps/sources/
+  HASH:=6be27e0b3a4907f0cd3cfadec255ee1b925569e1bd06e67a4d2f4267299b69c4
+endef
+$(eval $(call Download,crossguid))
 
 define Package/kodi
   SECTION:=multimedia
@@ -159,9 +168,11 @@ CMAKE_OPTIONS += \
 	-DENABLE_CPPCHECK=OFF \
 	-DENABLE_INCLUDEWHATYOUUSE=OFF
 
-# Internal (vendored/ExternalProject) dependencies: always use system
-# packages. ExternalProject sub-builds cannot cross-compile under
-# OpenWrt (no toolchain file) - see crossguid/ffmpeg history.
+# Internal (vendored/ExternalProject) dependencies: use the system
+# package wherever one exists. crossguid has none, so Kodi builds it as
+# a cmake ExternalProject from the pre-fetched archive; such a sub-build
+# only inherits a toolchain file, hence the one generated in
+# Build/Configure from files/openwrt-toolchain.cmake.in.
 # Exception KissFFT=ON: builds Kodi's bundled in-tree copy
 # (xbmc/contrib, plain sources compiled with the target toolchain, no
 # download, no ExternalProject) - there is no system kissfft package.
@@ -175,7 +186,9 @@ CMAKE_OPTIONS += \
 	-DENABLE_INTERNAL_LZO2=OFF \
 	-DENABLE_INTERNAL_MARIADBCLIENT=OFF \
 	-DENABLE_INTERNAL_XSLT=OFF \
-	-DENABLE_INTERNAL_CROSSGUID=OFF \
+	-DENABLE_INTERNAL_CROSSGUID=ON \
+	-DCROSSGUID_URL=$(DL_DIR)/crossguid-$(CROSSGUID_VERSION).tar.gz \
+	-DCROSSGUID_TOOLCHAIN_FILE=$(PKG_BUILD_DIR)/openwrt-toolchain.cmake \
 	-DENABLE_INTERNAL_FLATBUFFERS=OFF \
 	-DFLATBUFFERS_FLATC_EXECUTABLE=$(STAGING_DIR_HOSTPKG)/bin/flatc \
 	-DENABLE_INTERNAL_NLOHMANNJSON=OFF \
@@ -262,6 +275,23 @@ TARGET_LDFLAGS += -Wl,-z,stack-size=2097152
 TARGET_LDFLAGS += \
 	-Wl,-rpath-link,$(STAGING_DIR)/usr/lib/pulseaudio \
 	-Wl,-rpath-link,$(STAGING_DIR)/usr/lib/samba
+
+define Build/Configure
+	$(STAGING_DIR_HOST)/bin/sed \
+		-e 's|@ARCH@|$(ARCH)|g' \
+		-e 's|@CC@|$(CMAKE_C_COMPILER)|g' \
+		-e 's|@CXX@|$(CMAKE_CXX_COMPILER)|g' \
+		-e 's|@LAUNCHER@|$(CMAKE_C_COMPILER_LAUNCHER)|g' \
+		-e 's|@AR@|$(CMAKE_AR)|g' \
+		-e 's|@NM@|$(CMAKE_NM)|g' \
+		-e 's|@RANLIB@|$(CMAKE_RANLIB)|g' \
+		-e 's|@FIND_ROOT_PATH@|$(CMAKE_FIND_ROOT_PATH)|g' \
+		-e 's|@CFLAGS@|$(TARGET_CFLAGS) $(EXTRA_CFLAGS) $(TARGET_CPPFLAGS) $(EXTRA_CPPFLAGS)|g' \
+		-e 's|@CXXFLAGS@|$(TARGET_CXXFLAGS) $(EXTRA_CXXFLAGS) $(TARGET_CPPFLAGS) $(EXTRA_CPPFLAGS)|g' \
+		-e 's|@LDFLAGS@|$(TARGET_LDFLAGS) $(EXTRA_LDFLAGS)|g' \
+		./files/openwrt-toolchain.cmake.in > $(PKG_BUILD_DIR)/openwrt-toolchain.cmake
+	$(call Build/Configure/Default)
+endef
 
 define Host/Configure
 	$(STAGING_DIR_HOST)/bin/cmake \
