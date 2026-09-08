@@ -16,7 +16,7 @@ start_service() {
 
 	mkdir -p /etc/kodi /tmp/kodi
 	procd_open_instance
-	procd_set_param command /usr/bin/kodi-standalone --windowing=gbm
+	procd_set_param command /usr/lib/kodi/kodi.bin --standalone --windowing=gbm
 	procd_set_param env HOME="/root" KODI_DATA="/etc/kodi" KODI_TEMP="/tmp/kodi"
 	procd_set_param respawn 3600 5 0
 	procd_set_param stdout 0
