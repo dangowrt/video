@@ -1,0 +1,34 @@
+From 4b2e7b4828285d773210e2006f9db4c1511b17c5 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 8 Sep 2026 18:15:22 +0100
+Subject: [PATCH] cmake: do not hint /bin for pkg-config without NATIVEPREFIX
+
+FindPkgConfig passes HINTS ${NATIVEPREFIX}/bin to find_program. Outside
+a depends build NATIVEPREFIX is empty, so the hint becomes /bin, which
+find_program searches before PATH. A distribution build system that
+puts a pkg-config wrapper first in PATH (OpenWrt, Buildroot) then ends
+up with the system's pkg-config and host include and library paths in
+every pkg-config result. Only pass the hint when NATIVEPREFIX is set.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ cmake/modules/buildtools/FindPkgConfig.cmake | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+--- a/cmake/modules/buildtools/FindPkgConfig.cmake
++++ b/cmake/modules/buildtools/FindPkgConfig.cmake
+@@ -22,9 +22,13 @@ if(NOT TARGET PkgConfig::PkgConfig)
+     set(search_pkgconf pkgconf)
+   endif()
+ 
++  if(NATIVEPREFIX)
++    set(search_pkgconf_hints HINTS ${NATIVEPREFIX}/bin)
++  endif()
++
+   # Check for existing bin.
+   find_program(search_pkgconf_executable NAMES ${search_pkgconf} pkg-config
+-                                         HINTS ${NATIVEPREFIX}/bin)
++                                         ${search_pkgconf_hints})
+ 
+   if(search_pkgconf_executable)
+     execute_process(COMMAND "${search_pkgconf_executable}" --version
