@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=kodi-inputstream-adaptive
 PKG_VERSION:=22.3.21
 PKG_VERSION_NAME:=Piers
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=inputstream.adaptive-$(PKG_VERSION)-$(PKG_VERSION_NAME).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/xbmc/inputstream.adaptive/tar.gz/$(PKG_VERSION)-$(PKG_VERSION_NAME)?
