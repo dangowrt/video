@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=sdl3
 PKG_VERSION:=3.4.14
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=SDL3-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/libsdl-org/SDL/releases/download/release-$(PKG_VERSION)/
@@ -100,7 +100,7 @@ define Package/libsdl3-tests
   SUBMENU:=Video
   TITLE:=SDL3 installed tests
   URL:=https://www.libsdl.org
-  DEPENDS:=+libsdl3
+  DEPENDS:=+libsdl3 +libffmpeg
 endef
 
 define Package/libsdl3-tests/description
