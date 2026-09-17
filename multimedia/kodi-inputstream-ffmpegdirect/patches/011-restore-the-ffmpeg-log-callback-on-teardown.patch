@@ -1,0 +1,81 @@
+From b2025250b0214a90142added9b2afc5e5d5bd0fd Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 18 Sep 2026 00:11:36 +0100
+Subject: [PATCH] Stop logging into Kodi after the stream is gone
+
+FFmpegStream's constructor points FFmpeg's log callback, which is global
+to the process, at this addon, and nothing ever points it back. Kodi and
+the addon share one libavutil, so from the first stream onwards every
+FFmpeg message in the player, including those from decoder threads that
+have nothing to do with this addon, is routed here. Once the stream is
+destroyed, kodi::Log then reads a freed addon interface and the player
+dies with SIGSEGV, which a channel change reproduces every time.
+
+Install the callback for as long as a stream needs it and restore the
+default when the last one goes away.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ src/stream/FFmpegLog.cpp    | 18 ++++++++++++++++++
+ src/stream/FFmpegLog.h      |  2 ++
+ src/stream/FFmpegStream.cpp |  3 ++-
+ 3 files changed, 22 insertions(+), 1 deletion(-)
+
+--- a/src/stream/FFmpegLog.cpp
++++ b/src/stream/FFmpegLog.cpp
+@@ -43,8 +43,26 @@ int FFmpegLog::GetLogLevel()
+ }
+ 
+ static std::mutex m_ffmpegdirectLogMutex;
++static int g_ffmpegdirectLogUsers;
+ std::map<const std::thread::id, std::string> g_ffmpegdirectLogbuffer;
+ 
++void ff_install_avutil_log(void)
++{
++  std::lock_guard<std::mutex> lock(m_ffmpegdirectLogMutex);
++
++  if (g_ffmpegdirectLogUsers++ == 0)
++    av_log_set_callback(ff_avutil_log);
++}
++
++void ff_restore_avutil_log(void)
++{
++  std::lock_guard<std::mutex> lock(m_ffmpegdirectLogMutex);
++
++  /* the callback is global to the process, so it must not outlive us */
++  if (--g_ffmpegdirectLogUsers == 0)
++    av_log_set_callback(av_log_default_callback);
++}
++
+ void ff_flush_avutil_log_buffers(void)
+ {
+   std::lock_guard<std::mutex> lock(m_ffmpegdirectLogMutex);
+--- a/src/stream/FFmpegLog.h
++++ b/src/stream/FFmpegLog.h
+@@ -18,6 +18,8 @@ extern "C" {
+ // callback used for logging
+ void ff_avutil_log(void* ptr, int level, const char* format, va_list va);
+ void ff_flush_avutil_log_buffers(void);
++void ff_install_avutil_log(void);
++void ff_restore_avutil_log(void);
+ 
+ namespace ffmpegdirect
+ {
+--- a/src/stream/FFmpegStream.cpp
++++ b/src/stream/FFmpegStream.cpp
+@@ -155,13 +155,14 @@ FFmpegStream::FFmpegStream(IManageDemuxP
+ 
+   FFmpegLog::SetLogLevel(AV_LOG_INFO);
+   FFmpegLog::SetEnabled(kodi::addon::GetSettingBoolean("allowFFmpegLogging"));
+-  av_log_set_callback(ff_avutil_log);
++  ff_install_avutil_log();
+ }
+ 
+ FFmpegStream::~FFmpegStream()
+ {
+   Dispose();
+   ff_flush_avutil_log_buffers();
++  ff_restore_avutil_log();
+ }
+ 
+ bool FFmpegStream::Open(const std::string& streamUrl, const std::string& mimeType, bool isRealTimeStream, const std::string& programProperty)

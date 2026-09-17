@@ -13,11 +13,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  src/stream/FFmpegStream.cpp | 3 ++-
  1 file changed, 2 insertions(+), 1 deletion(-)
 
-diff --git a/src/stream/FFmpegStream.cpp b/src/stream/FFmpegStream.cpp
-index 38cbfd5..aec5b76 100644
 --- a/src/stream/FFmpegStream.cpp
 +++ b/src/stream/FFmpegStream.cpp
-@@ -2310,7 +2310,8 @@ AVDictionary* FFmpegStream::GetFFMpegOptionsFromInput()
+@@ -2310,7 +2310,8 @@ AVDictionary* FFmpegStream::GetFFMpegOpt
        // set any of these ffmpeg options
        if (name == "seekable" || name == "reconnect" || name == "reconnect_at_eof" ||
            name == "reconnect_streamed" || name == "reconnect_delay_max" ||
