@@ -1,0 +1,10 @@
+--- a/src/utils/Properties.h
++++ b/src/utils/Properties.h
+@@ -8,6 +8,7 @@
+ #pragma once
+ 
+ #include <string>
++#include <ctime>
+ 
+ namespace ffmpegdirect
+ {
