@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=kodi-pvr-iptvsimple
 PKG_VERSION:=22.6.4
 PKG_VERSION_NAME:=Piers
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=pvr.iptvsimple-$(PKG_VERSION)-$(PKG_VERSION_NAME).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/kodi-pvr/pvr.iptvsimple/tar.gz/$(PKG_VERSION)-$(PKG_VERSION_NAME)?

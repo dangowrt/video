@@ -1,0 +1,283 @@
+From d374b509890ac30bb11ebfd310a4817f5b8daea9 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 17 Sep 2026 18:34:28 +0100
+Subject: [PATCH] Add a per-provider uplink source address
+
+A box with several uplinks, a local one and a tunnel per country, needs
+each provider to leave through the right one: a Portuguese playlist over
+the local line, an Italian one through the tunnel to Italy. Which uplink
+a socket uses follows from the source address it is bound to, so this is
+a routing decision the addon can make without any privilege.
+
+The setting is per instance, so it is configured once per provider and
+covers everything that provider does: every channel of its playlist, and
+the playlist and EPG downloads themselves. Nothing is expected of the
+M3U, which comes from the provider and knows nothing about local
+interfaces.
+
+A subnet or an interface name is resolved for each request rather than
+stored, so a new DHCP lease does not strand the setting on an address
+that no longer exists.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../resources/instance-settings.xml           |  8 ++
+ .../resource.language.en_gb/strings.po        | 14 ++-
+ src/iptvsimple/InstanceSettings.cpp           |  3 +
+ src/iptvsimple/InstanceSettings.h             |  2 +
+ src/iptvsimple/data/Channel.cpp               |  2 +
+ src/iptvsimple/utilities/FileUtils.cpp        |  4 +-
+ src/iptvsimple/utilities/WebUtils.cpp         | 90 +++++++++++++++++++
+ src/iptvsimple/utilities/WebUtils.h           |  2 +
+ 8 files changed, 122 insertions(+), 3 deletions(-)
+
+diff --git a/pvr.iptvsimple/resources/instance-settings.xml b/pvr.iptvsimple/resources/instance-settings.xml
+index a55fb84..f850788 100644
+--- a/pvr.iptvsimple/resources/instance-settings.xml
++++ b/pvr.iptvsimple/resources/instance-settings.xml
+@@ -913,6 +913,14 @@
+         </setting>
+       </group>
+       <group id="3" label="30071">
++        <setting id="uplinkAddress" type="string" label="30081" help="30689">
++          <level>3</level>
++          <default></default>
++          <constraints>
++            <allowempty>true</allowempty>
++          </constraints>
++          <control type="edit" format="string" />
++        </setting>
+         <setting id="defaultUserAgent" type="string" label="30068" help="30686">
+           <level>3</level>
+           <default></default>
+diff --git a/pvr.iptvsimple/resources/language/resource.language.en_gb/strings.po b/pvr.iptvsimple/resources/language/resource.language.en_gb/strings.po
+index a19e9c8..f4d65d3 100644
+--- a/pvr.iptvsimple/resources/language/resource.language.en_gb/strings.po
++++ b/pvr.iptvsimple/resources/language/resource.language.en_gb/strings.po
+@@ -449,7 +449,12 @@ msgctxt "#30080"
+ msgid "Interval for check"
+ msgstr ""
+ 
+-#empty strings from id 30081 to 30099
++#. label: Advanced - uplinkAddress
++msgctxt "#30081"
++msgid "Uplink source address"
++msgstr ""
++
++#empty strings from id 30082 to 30099
+ 
+ #. label-category: catchup
+ #. label-group: Catchup - Catchup
+@@ -965,7 +970,12 @@ msgctxt "#30688"
+ msgid "Use this MIME type as the default if there is not one supplied as a property (KODIPROP) of the channel. Use with care as this will disable any use of the addon's default stream inspection behaviour."
+ msgstr ""
+ 
+-#empty strings from id 30689 to 30699
++#. help: Advanced - uplinkAddress
++msgctxt "#30689"
++msgid "Leave every request of this provider through a chosen uplink, by binding it to a local source address. Give an address, a subnet such as `192.168.5.0/24`, or an interface name; a subnet or an interface name is resolved each time, so it survives a new DHCP lease. Applies to all channels of this provider as well as to its playlist and EPG downloads. Empty means the system default route."
++msgstr ""
++
++#empty strings from id 30690 to 30699
+ 
+ #. help info - Catchup
+ 
+diff --git a/src/iptvsimple/InstanceSettings.cpp b/src/iptvsimple/InstanceSettings.cpp
+index 612fbeb..959cb2e 100644
+--- a/src/iptvsimple/InstanceSettings.cpp
++++ b/src/iptvsimple/InstanceSettings.cpp
+@@ -153,6 +153,7 @@ void InstanceSettings::ReadSettings()
+   m_instance.CheckInstanceSettingInt("udpxyPort", m_udpxyPort);
+   m_instance.CheckInstanceSettingBoolean("useFFmpegReconnect", m_useFFmpegReconnect);
+   m_instance.CheckInstanceSettingBoolean("useInputstreamAdaptiveforHls", m_useInputstreamAdaptiveforHls);
++  m_instance.CheckInstanceSettingString("uplinkAddress", m_uplinkAddress);
+   m_instance.CheckInstanceSettingString("defaultUserAgent", m_defaultUserAgent);
+   m_instance.CheckInstanceSettingString("defaultInputstream", m_defaultInputstream);
+   m_instance.CheckInstanceSettingString("defaultMimeType", m_defaultMimeType);
+@@ -336,6 +337,8 @@ ADDON_STATUS InstanceSettings::SetSetting(const std::string& settingName, const
+     return SetSetting<bool, ADDON_STATUS>(settingName, settingValue, m_useFFmpegReconnect, ADDON_STATUS_OK, ADDON_STATUS_OK);
+   else if (settingName == "useInputstreamAdaptiveforHls")
+     return SetSetting<bool, ADDON_STATUS>(settingName, settingValue, m_useInputstreamAdaptiveforHls, ADDON_STATUS_OK, ADDON_STATUS_OK);
++  if (settingName == "uplinkAddress")
++    return SetStringSetting<ADDON_STATUS>(settingName, settingValue, m_uplinkAddress, ADDON_STATUS_OK, ADDON_STATUS_OK);
+   if (settingName == "defaultUserAgent")
+     return SetStringSetting<ADDON_STATUS>(settingName, settingValue, m_defaultUserAgent, ADDON_STATUS_OK, ADDON_STATUS_OK);
+   if (settingName == "defaultInputstream")
+diff --git a/src/iptvsimple/InstanceSettings.h b/src/iptvsimple/InstanceSettings.h
+index 7ed875b..ff29923 100644
+--- a/src/iptvsimple/InstanceSettings.h
++++ b/src/iptvsimple/InstanceSettings.h
+@@ -175,6 +175,7 @@ namespace iptvsimple
+     int GetUdpxyPort() const { return m_udpxyPort; }
+     bool UseFFmpegReconnect() const { return m_useFFmpegReconnect; }
+     bool UseInputstreamAdaptiveforHls() const { return m_useInputstreamAdaptiveforHls; }
++    const std::string& GetUplinkAddress() const { return m_uplinkAddress; }
+     const std::string& GetDefaultUserAgent() const { return m_defaultUserAgent; }
+     const std::string& GetDefaultInputstream() const { return m_defaultInputstream; }
+     const std::string& GetDefaultMimeType() const { return m_defaultMimeType; }
+@@ -339,6 +340,7 @@ namespace iptvsimple
+     int m_udpxyPort = DEFAULT_UDPXY_MULTICAST_RELAY_PORT;
+     bool m_useFFmpegReconnect = true;
+     bool m_useInputstreamAdaptiveforHls = false;
++    std::string m_uplinkAddress;
+     std::string m_defaultUserAgent;
+     std::string m_defaultInputstream;
+     std::string m_defaultMimeType;
+diff --git a/src/iptvsimple/data/Channel.cpp b/src/iptvsimple/data/Channel.cpp
+index 974f774..bd5cabe 100644
+--- a/src/iptvsimple/data/Channel.cpp
++++ b/src/iptvsimple/data/Channel.cpp
+@@ -198,6 +198,8 @@ void Channel::SetStreamURL(const std::string& url)
+ 
+     TryToAddPropertyAsHeader("http-user-agent", "user-agent");
+     TryToAddPropertyAsHeader("http-referrer", "referer"); // spelling differences are correct
++
++    m_streamURL = WebUtils::AddLocalAddressToUrl(m_streamURL, m_settings->GetUplinkAddress());
+   }
+ 
+   if (m_settings->TransformMulticastStreamUrls() &&
+diff --git a/src/iptvsimple/utilities/FileUtils.cpp b/src/iptvsimple/utilities/FileUtils.cpp
+index 05e2a34..d07657c 100644
+--- a/src/iptvsimple/utilities/FileUtils.cpp
++++ b/src/iptvsimple/utilities/FileUtils.cpp
+@@ -8,6 +8,7 @@
+ #include "FileUtils.h"
+ 
+ #include "../InstanceSettings.h"
++#include "WebUtils.h"
+ 
+ #include <lzma.h>
+ #include <zlib.h>
+@@ -194,7 +195,8 @@ int FileUtils::GetCachedFileContents(std::shared_ptr<iptvsimple::InstanceSetting
+ 
+   if (needReload)
+   {
+-    FileUtils::GetFileContents(filePath, contents);
++    FileUtils::GetFileContents(
++        WebUtils::AddLocalAddressToUrl(filePath, settings->GetUplinkAddress()), contents);
+ 
+     // write to cache
+     if (useCache && contents.length() > 0)
+diff --git a/src/iptvsimple/utilities/WebUtils.cpp b/src/iptvsimple/utilities/WebUtils.cpp
+index 914f0fb..9200bf5 100644
+--- a/src/iptvsimple/utilities/WebUtils.cpp
++++ b/src/iptvsimple/utilities/WebUtils.cpp
+@@ -9,11 +9,21 @@
+ 
+ #include "FileUtils.h"
+ #include "Logger.h"
++#include "StreamUtils.h"
+ 
+ #include <cctype>
++#include <cstdlib>
+ #include <iomanip>
+ #include <sstream>
+ 
++#if !(defined(WIN32) || defined(_WIN32) || defined(__WIN32__))
++#include <arpa/inet.h>
++#include <ifaddrs.h>
++#include <net/if.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
++#endif
++
+ #include <kodi/Filesystem.h>
+ #include <kodi/tools/StringUtils.h>
+ 
+@@ -189,3 +199,83 @@ std::map<std::string, std::string> WebUtils::ConvertStringToHeaders(const std::s
+ 
+   return result;
+ }
++
++std::string WebUtils::ResolveLocalAddress(const std::string& spec)
++{
++  if (spec.empty())
++    return {};
++
++#if (defined(WIN32) || defined(_WIN32) || defined(__WIN32__))
++  return spec;
++#else
++  const size_t slash = spec.find('/');
++  in_addr network = {};
++  in_addr_t mask = 0;
++
++  if (slash == std::string::npos)
++  {
++    in_addr literal = {};
++    if (inet_pton(AF_INET, spec.c_str(), &literal) == 1)
++      return spec;
++  }
++  else
++  {
++    const int bits = std::atoi(spec.substr(slash + 1).c_str());
++
++    if (bits < 0 || bits > 32 ||
++        inet_pton(AF_INET, spec.substr(0, slash).c_str(), &network) != 1)
++      return {};
++
++    mask = bits == 0 ? 0 : htonl(~((1u << (32 - bits)) - 1));
++  }
++
++  ifaddrs* interfaces = nullptr;
++  if (getifaddrs(&interfaces) != 0)
++    return {};
++
++  std::string address;
++  for (ifaddrs* interface = interfaces; interface && address.empty();
++       interface = interface->ifa_next)
++  {
++    if (!interface->ifa_addr || interface->ifa_addr->sa_family != AF_INET ||
++        !(interface->ifa_flags & IFF_UP))
++      continue;
++
++    const in_addr& candidate =
++        reinterpret_cast<sockaddr_in*>(interface->ifa_addr)->sin_addr;
++
++    if (slash == std::string::npos)
++    {
++      if (spec != interface->ifa_name)
++        continue;
++    }
++    else if ((candidate.s_addr & mask) != (network.s_addr & mask))
++    {
++      continue;
++    }
++
++    char text[INET_ADDRSTRLEN] = {};
++    if (inet_ntop(AF_INET, &candidate, text, sizeof(text)))
++      address = text;
++  }
++
++  freeifaddrs(interfaces);
++
++  if (address.empty())
++    Logger::Log(LEVEL_ERROR, "%s - no local address matches '%s'", __FUNCTION__, spec.c_str());
++
++  return address;
++#endif
++}
++
++std::string WebUtils::AddLocalAddressToUrl(const std::string& url, const std::string& spec)
++{
++  if (spec.empty() || !IsHttpUrl(url))
++    return url;
++
++  const std::string address = ResolveLocalAddress(spec);
++  if (address.empty())
++    return url;
++
++  return StreamUtils::AddHeaderToStreamUrl(url, "local_addr", address);
++}
+diff --git a/src/iptvsimple/utilities/WebUtils.h b/src/iptvsimple/utilities/WebUtils.h
+index 6c89668..30699c2 100644
+--- a/src/iptvsimple/utilities/WebUtils.h
++++ b/src/iptvsimple/utilities/WebUtils.h
+@@ -34,6 +34,8 @@ namespace iptvsimple
+       static std::string RedactUrl(const std::string& url);
+       static bool Check(const std::string& url, int connectionTimeoutSecs, bool isLocalPath = false);
+       static std::map<std::string, std::string> ConvertStringToHeaders(const std::string& input);
++      static std::string ResolveLocalAddress(const std::string& spec);
++      static std::string AddLocalAddressToUrl(const std::string& url, const std::string& spec);
+     };
+   } // namespace utilities
+ } // namespace iptvsimple
