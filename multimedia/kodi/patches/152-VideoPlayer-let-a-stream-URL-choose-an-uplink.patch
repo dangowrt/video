@@ -1,0 +1,56 @@
+From fa79b4f4db9f1f59e4758b8e1c318663dcc8a64d Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 17 Sep 2026 18:41:54 +0100
+Subject: [PATCH 152/155] VideoPlayer: let a stream URL choose an uplink
+
+FFmpeg's TCP protocol binds the socket to local_addr, which is how a
+stream is made to leave through one uplink rather than another, but
+GetFFMpegOptionsFromInput() forwards a closed list of URL options and
+drops the rest. Accept local_addr and local_port, resolving a subnet or
+an interface name to the address in use at that moment.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp   | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index 4ce795d..af73d3f 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -24,6 +24,7 @@
+ #include "filesystem/CurlFile.h"
+ #include "filesystem/Directory.h"
+ #include "filesystem/File.h"
++#include "network/UplinkAddress.h"
+ #include "settings/AdvancedSettings.h"
+ #include "settings/Settings.h"
+ #include "settings/SettingsComponent.h"
+@@ -828,13 +829,26 @@ AVDictionary* CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput()
+       // set any of these ffmpeg options
+       if (name == "seekable" || name == "reconnect" || name == "reconnect_at_eof" ||
+           name == "reconnect_streamed" || name == "reconnect_delay_max" ||
+-          name == "icy" || name == "icy_metadata_headers" || name == "icy_metadata_packet")
++          name == "icy" || name == "icy_metadata_headers" || name == "icy_metadata_packet" ||
++          name == "local_port")
+       {
+         CLog::Log(LOGDEBUG,
+                   "CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput() adding ffmpeg option '{}: {}'",
+                   it->first, value);
+         av_dict_set(&options, name.c_str(), value.c_str(), 0);
+       }
++      else if (name == "local_addr" || name == "local-address")
++      {
++        const std::string address = KODI::NETWORK::ResolveUplinkAddress(value);
++        if (!address.empty())
++        {
++          CLog::Log(LOGDEBUG,
++                    "CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput() adding ffmpeg option "
++                    "'local_addr: {}'",
++                    address);
++          av_dict_set(&options, "local_addr", address.c_str(), 0);
++        }
++      }
+       // map some standard http headers to the ffmpeg related options
+       else if (name == "user-agent")
+       {

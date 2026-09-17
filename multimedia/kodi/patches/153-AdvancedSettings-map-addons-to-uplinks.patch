@@ -1,0 +1,113 @@
+From 2034b02a2f69b988422313beb898b330a6528822 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 17 Sep 2026 18:42:03 +0100
+Subject: [PATCH 153/155] AdvancedSettings: map addons to uplinks
+
+On a multi-homed box the uplink a request should take depends on which
+addon is asking: a national broadcaster's addon has to appear to come
+from that country. Read the mapping from advancedsettings.xml, where an
+appliance can set it once per addon, and leave anything unlisted on the
+default route.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/settings/AdvancedSettings.cpp | 36 ++++++++++++++++++++++++++++++
+ xbmc/settings/AdvancedSettings.h   | 10 +++++++++
+ 2 files changed, 46 insertions(+)
+
+diff --git a/xbmc/settings/AdvancedSettings.cpp b/xbmc/settings/AdvancedSettings.cpp
+index 78a4a55..c6f35c8 100644
+--- a/xbmc/settings/AdvancedSettings.cpp
++++ b/xbmc/settings/AdvancedSettings.cpp
+@@ -454,6 +454,7 @@ void CAdvancedSettings::Initialize()
+   m_curlDisableIPV6 = false;      //Certain hardware/OS combinations have trouble
+                                   //with ipv6.
+   m_curlDisableHTTP2 = false;
++  m_addonUplinks.clear();
+ 
+ #if defined(TARGET_WINDOWS_DESKTOP)
+   m_minimizeToTray = false;
+@@ -961,6 +962,30 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
+     XMLUtils::GetString(pElement, "catrustfile", m_caTrustFile);
+     XMLUtils::GetUInt(pElement, "nfstimeout", m_nfsTimeout, 0, 3600);
+     XMLUtils::GetInt(pElement, "nfsretries", m_nfsRetries, -1, 30);
++
++    const TiXmlElement* pUplinks = pElement->FirstChildElement("addonuplinks");
++    if (pUplinks)
++    {
++      const std::string action = XMLUtils::GetAttribute(pUplinks, "action");
++      if (action != "append")
++        m_addonUplinks.clear();
++
++      const TiXmlElement* pUplink = pUplinks->FirstChildElement("addon");
++      while (pUplink)
++      {
++        AddonUplink uplink;
++        uplink.addonId = XMLUtils::GetAttribute(pUplink, "id");
++        uplink.localAddress = XMLUtils::GetAttribute(pUplink, "localaddress");
++
++        if (!uplink.addonId.empty() && !uplink.localAddress.empty())
++          m_addonUplinks.emplace_back(uplink);
++        else
++          CLog::Log(LOGWARNING, "Ignoring malformed addon uplink, both id and localaddress are "
++                                "required");
++
++        pUplink = pUplink->NextSiblingElement("addon");
++      }
++    }
+   }
+ 
+   pElement = pRootElement->FirstChildElement("jsonrpc");
+@@ -1347,6 +1372,17 @@ void CAdvancedSettings::Clear()
+   m_userAgent.clear();
+ }
+ 
++std::string CAdvancedSettings::GetAddonUplink(const std::string& addonId) const
++{
++  for (const auto& uplink : m_addonUplinks)
++  {
++    if (uplink.addonId == addonId)
++      return uplink.localAddress;
++  }
++
++  return {};
++}
++
+ void CAdvancedSettings::GetCustomTVRegexps(const TiXmlElement* pRootElement,
+                                            SETTINGS_TVSHOWLIST& settings)
+ {
+diff --git a/xbmc/settings/AdvancedSettings.h b/xbmc/settings/AdvancedSettings.h
+index 4ee8f5c..bde1c7b 100644
+--- a/xbmc/settings/AdvancedSettings.h
++++ b/xbmc/settings/AdvancedSettings.h
+@@ -106,6 +106,12 @@ struct RefreshVideoLatency
+   float hdrextradelay;
+ };
+ 
++struct AddonUplink
++{
++  std::string addonId;
++  std::string localAddress;
++};
++
+ using SETTINGS_TVSHOWLIST = std::vector<TVShowRegexp>;
+ 
+ using AdvancedSettingsCallback = std::function<void()>;
+@@ -140,6 +146,8 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
+      */
+     void UnregisterSettingsLoadedCallback(int handle);
+ 
++    std::string GetAddonUplink(const std::string& addonId) const;
++
+     static void GetCustomTVRegexps(const TiXmlElement* pRootElement, SETTINGS_TVSHOWLIST& settings);
+     static void GetCustomRegexps(const TiXmlElement* pRootElement,
+                                  std::vector<std::string>& settings);
+@@ -331,6 +339,8 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
+     bool m_curlDisableIPV6;
+     bool m_curlDisableHTTP2;
+ 
++    std::vector<AddonUplink> m_addonUplinks;
++
+     std::string m_caTrustFile;
+ 
+     bool m_minimizeToTray; /* win32 only */

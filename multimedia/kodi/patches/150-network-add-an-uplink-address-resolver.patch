@@ -1,0 +1,183 @@
+From d7e7e0c2e2b3b90e81df2cd03cad943ad2ae95a6 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 17 Sep 2026 18:41:44 +0100
+Subject: [PATCH 150/155] network: add an uplink address resolver
+
+A host with more than one uplink chooses between them by binding an
+outgoing socket to a local address, which the kernel then matches
+against its source routing rules. Nothing in Kodi can express that
+choice today.
+
+Resolve it from a specification that is stable across a lease renewal:
+an address, a subnet, or an interface name, looked up when the socket is
+about to be opened rather than when the setting is written. The lookup
+goes through getifaddrs() because CNetwork's interface list is built
+once at startup and drops interfaces without a hardware address, which
+is exactly what a tunnel looks like.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/network/CMakeLists.txt    |   2 +
+ xbmc/network/UplinkAddress.cpp | 106 +++++++++++++++++++++++++++++++++
+ xbmc/network/UplinkAddress.h   |  19 ++++++
+ 3 files changed, 127 insertions(+)
+ create mode 100644 xbmc/network/UplinkAddress.cpp
+ create mode 100644 xbmc/network/UplinkAddress.h
+
+diff --git a/xbmc/network/CMakeLists.txt b/xbmc/network/CMakeLists.txt
+index ad301ac..15e0dc2 100644
+--- a/xbmc/network/CMakeLists.txt
++++ b/xbmc/network/CMakeLists.txt
+@@ -9,6 +9,7 @@ set(SOURCES DNSNameCache.cpp
+             Socket.cpp
+             TCPServer.cpp
+             UdpClient.cpp
++            UplinkAddress.cpp
+             WakeOnAccess.cpp
+             ZeroconfBrowser.cpp
+             Zeroconf.cpp)
+@@ -24,6 +25,7 @@ set(HEADERS DNSNameCache.h
+             Socket.h
+             TCPServer.h
+             UdpClient.h
++            UplinkAddress.h
+             WakeOnAccess.h
+             Zeroconf.h
+             ZeroconfBrowser.h)
+diff --git a/xbmc/network/UplinkAddress.cpp b/xbmc/network/UplinkAddress.cpp
+new file mode 100644
+index 0000000..0532cc9
+--- /dev/null
++++ b/xbmc/network/UplinkAddress.cpp
+@@ -0,0 +1,106 @@
++/*
++ *  Copyright (C) 2005-2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "UplinkAddress.h"
++
++#include "utils/URIUtils.h"
++#include "utils/log.h"
++
++#include <cstdlib>
++#include <string>
++
++#if defined(TARGET_POSIX)
++#include <arpa/inet.h>
++#include <ifaddrs.h>
++#include <net/if.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
++#endif
++
++namespace KODI::NETWORK
++{
++
++std::string ResolveUplinkAddress(const std::string& spec)
++{
++  if (spec.empty())
++    return {};
++
++#if !defined(TARGET_POSIX)
++  return spec;
++#else
++  const size_t slash = spec.find('/');
++  in_addr network = {};
++  in_addr_t mask = 0;
++
++  if (slash == std::string::npos)
++  {
++    in_addr literal = {};
++    if (inet_pton(AF_INET, spec.c_str(), &literal) == 1)
++      return spec;
++  }
++  else
++  {
++    const int bits = std::atoi(spec.substr(slash + 1).c_str());
++
++    if (bits < 0 || bits > 32 ||
++        inet_pton(AF_INET, spec.substr(0, slash).c_str(), &network) != 1)
++    {
++      CLog::LogF(LOGERROR, "malformed uplink specification '{}'", spec);
++      return {};
++    }
++
++    mask = bits == 0 ? 0 : htonl(~((1u << (32 - bits)) - 1));
++  }
++
++  ifaddrs* interfaces = nullptr;
++  if (getifaddrs(&interfaces) != 0)
++    return {};
++
++  std::string address;
++  for (ifaddrs* interface = interfaces; interface && address.empty();
++       interface = interface->ifa_next)
++  {
++    if (!interface->ifa_addr || interface->ifa_addr->sa_family != AF_INET ||
++        !(interface->ifa_flags & IFF_UP))
++      continue;
++
++    const in_addr& candidate = reinterpret_cast<sockaddr_in*>(interface->ifa_addr)->sin_addr;
++
++    if (slash == std::string::npos)
++    {
++      if (spec != interface->ifa_name)
++        continue;
++    }
++    else if ((candidate.s_addr & mask) != (network.s_addr & mask))
++    {
++      continue;
++    }
++
++    char text[INET_ADDRSTRLEN] = {};
++    if (inet_ntop(AF_INET, &candidate, text, sizeof(text)))
++      address = text;
++  }
++
++  freeifaddrs(interfaces);
++
++  if (address.empty())
++    CLog::LogF(LOGWARNING, "no local address matches uplink '{}'", spec);
++
++  return address;
++#endif
++}
++
++bool IsDirectDestination(const std::string& host)
++{
++  if (host.empty())
++    return true;
++
++  return URIUtils::IsHostOnLAN(host, LanCheckMode::ANY_PRIVATE_SUBNET);
++}
++
++} /* namespace KODI::NETWORK */
+diff --git a/xbmc/network/UplinkAddress.h b/xbmc/network/UplinkAddress.h
+new file mode 100644
+index 0000000..a1fea4d
+--- /dev/null
++++ b/xbmc/network/UplinkAddress.h
+@@ -0,0 +1,19 @@
++/*
++ *  Copyright (C) 2005-2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include <string>
++
++namespace KODI::NETWORK
++{
++
++std::string ResolveUplinkAddress(const std::string& spec);
++bool IsDirectDestination(const std::string& host);
++
++} /* namespace KODI::NETWORK */
