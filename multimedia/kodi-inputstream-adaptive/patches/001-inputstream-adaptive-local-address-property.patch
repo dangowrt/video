@@ -1,0 +1,97 @@
+From ae8af366d4aa51d7d991b3020b77536093133fb1 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 17 Sep 2026 18:30:40 +0100
+Subject: [PATCH] Add an inputstream.adaptive.local_address property
+
+On a box with more than one uplink, which one a stream leaves through is
+chosen by binding the socket to a local address, and every request of a
+playback session has to use the same one or the service sees a client
+that changes country mid-stream.
+
+Bind them all: the property is handed to Kodi's VFS as a protocol option
+in the CUrl constructor, which is the single point every request passes
+through, so manifests, manifest updates, HLS playlists and keys, media
+segments, subtitles and the DRM licence requests are all covered.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ inputstream.adaptive/addon.xml.in | 2 +-
+ src/CompKodiProps.cpp             | 7 +++++++
+ src/CompKodiProps.h               | 3 +++
+ src/utils/CurlUtils.cpp           | 4 ++++
+ 4 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/inputstream.adaptive/addon.xml.in b/inputstream.adaptive/addon.xml.in
+index 518fd25..343385f 100644
+--- a/inputstream.adaptive/addon.xml.in
++++ b/inputstream.adaptive/addon.xml.in
+@@ -10,7 +10,7 @@
+     name="adaptive"
+     extension=""
+     tags="true"
+-    listitemprops="drm|drm_legacy|license_type|license_key|license_url|license_url_append|license_data|license_flags|server_certificate|common_headers|manifest_upd_params|manifest_params|manifest_headers|stream_params|stream_headers|original_audio_language|play_timeshift_buffer|pre_init_data|stream_selection_type|chooser_bandwidth_max|chooser_resolution_max|chooser_resolution_secure_max|live_delay|config|manifest_config"
++    listitemprops="drm|drm_legacy|license_type|license_key|license_url|license_url_append|license_data|license_flags|server_certificate|common_headers|manifest_upd_params|manifest_params|manifest_headers|stream_params|stream_headers|local_address|original_audio_language|play_timeshift_buffer|pre_init_data|stream_selection_type|chooser_bandwidth_max|chooser_resolution_max|chooser_resolution_secure_max|live_delay|config|manifest_config"
+     library_@PLATFORM@="@LIBRARY_FILENAME@"/>
+   <extension point="xbmc.addon.metadata">
+     <platform>@PLATFORM@</platform>
+diff --git a/src/CompKodiProps.cpp b/src/CompKodiProps.cpp
+index 598716d..44365e2 100644
+--- a/src/CompKodiProps.cpp
++++ b/src/CompKodiProps.cpp
+@@ -52,6 +52,8 @@ constexpr std::string_view PROP_MANIFEST_CONFIG = "inputstream.adaptive.manifest
+ constexpr std::string_view PROP_STREAM_PARAMS = "inputstream.adaptive.stream_params";
+ constexpr std::string_view PROP_STREAM_HEADERS = "inputstream.adaptive.stream_headers";
+ 
++constexpr std::string_view PROP_LOCAL_ADDRESS = "inputstream.adaptive.local_address";
++
+ constexpr std::string_view PROP_AUDIO_LANG_ORIG = "inputstream.adaptive.original_audio_language"; //! @todo: deprecated, to be removed on Kodi 23
+ constexpr std::string_view PROP_PLAY_TIMESHIFT_BUFFER = "inputstream.adaptive.play_timeshift_buffer";
+ constexpr std::string_view PROP_LIVE_DELAY = "inputstream.adaptive.live_delay"; //! @todo: deprecated to be removed on Kodi 23
+@@ -183,6 +185,11 @@ void ADP::KODI_PROPS::CCompKodiProps::InitStage1(const std::map<std::string, std
+       LogProp(prop.first, prop.second);
+       ParseHeaderString(m_streamHeaders, prop.second);
+     }
++    else if (prop.first == PROP_LOCAL_ADDRESS)
++    {
++      LogProp(prop.first, prop.second);
++      m_localAddress = prop.second;
++    }
+     else if (prop.first == PROP_AUDIO_LANG_ORIG) //! @todo: deprecated, to be removed on Kodi 23
+     {
+       LOG::Log(LOGWARNING, "Warning \"inputstream.adaptive.original_audio_language\" property is "
+diff --git a/src/CompKodiProps.h b/src/CompKodiProps.h
+index 4a7ec15..6093a21 100644
+--- a/src/CompKodiProps.h
++++ b/src/CompKodiProps.h
+@@ -177,6 +177,8 @@ public:
+   // \brief HTTP headers used to download streams
+   std::map<std::string, std::string> GetStreamHeaders() const { return m_streamHeaders; }
+ 
++  std::string GetLocalAddress() const { return m_localAddress; }
++
+   // \brief Specify to start playing a LIVE stream from the beginning of the buffer instead of its end
+   bool IsPlayTimeshift() const { return m_playTimeshiftBuffer; }
+ 
+@@ -212,6 +214,7 @@ private:
+   std::map<std::string, std::string> m_manifestHeaders;
+   std::string m_streamParams;
+   std::map<std::string, std::string> m_streamHeaders;
++  std::string m_localAddress;
+   bool m_playTimeshiftBuffer{false};
+   ChooserProps m_chooserProps;
+   Config m_config;
+diff --git a/src/utils/CurlUtils.cpp b/src/utils/CurlUtils.cpp
+index abece2f..400773a 100644
+--- a/src/utils/CurlUtils.cpp
++++ b/src/utils/CurlUtils.cpp
+@@ -204,6 +204,10 @@ UTILS::CURL::CUrl::CUrl(const std::string& url, const RequestType reqType /* = R
+     if (!kodiProps.GetConfig().curlSSLVerifyPeer)
+       m_file.CURLAddOption(ADDON_CURL_OPTION_PROTOCOL, "verifypeer", "false");
+ 
++    if (!kodiProps.GetLocalAddress().empty())
++      m_file.CURLAddOption(ADDON_CURL_OPTION_PROTOCOL, "local-address",
++                           kodiProps.GetLocalAddress().c_str());
++
+     AddHeaders(kodiProps.GetCommonHeaders());
+ 
+     // Add session cookies
