@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kodi
 PKG_VERSION:=22.0_beta2
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 
 # Tag 22.0b2-Piers (version.txt: 22.0 BETA2); pinned by commit so the
 # tarball name stays stable should the tag ever move.
@@ -343,6 +343,13 @@ define Package/kodi/install
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/kodi/* $(1)/usr/lib/kodi/
 	$(INSTALL_DIR) $(1)/usr/share/kodi
 	$(CP) $(PKG_INSTALL_DIR)/usr/share/kodi/* $(1)/usr/share/kodi/
+	# Kodi loads appliance.xml last and it overrides the defaults from
+	# settings.xml and linux.xml. The DRM PRIME decoder is off by default
+	# upstream; it is the only hardware decoding path a GBM build has, but
+	# it would take precedence over VAAPI, so leave it alone where VAAPI
+	# is built in.
+	$(if $(findstring x86_64,$(ARCH)),,\
+		$(INSTALL_DATA) ./files/appliance.xml $(1)/usr/share/kodi/system/settings/appliance.xml)
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/kodi.init $(1)/etc/init.d/kodi
 	# Preserve /srv/kodi (HOME) across sysupgrade
