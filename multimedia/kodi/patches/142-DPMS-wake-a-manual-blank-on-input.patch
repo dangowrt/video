@@ -1,0 +1,38 @@
+From 11ea271ab93db88665c5e6a1ca4c617e342e195e Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 17 Sep 2026 17:09:55 +0100
+Subject: [PATCH] Wake a manually activated DPMS on input as well
+
+A display blanked through the ToggleDPMS builtin stays blank until the
+same builtin runs again: WakeUpScreenSaverAndDPMS() refuses to touch a
+manual DPMS state, so no key, button or remote press brings the picture
+back. Meanwhile every one of those presses is handed to the GUI, which
+acts on a screen nobody can see, and a media centre bound to a remote
+has no way to tell the user which button is the one that returns.
+
+Wake on input in that case too, passing the current mode to
+ToggleDPMS() so the toggle is allowed to proceed, which also makes the
+waking press be swallowed rather than acted upon.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/application/ApplicationPowerHandling.cpp | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/xbmc/application/ApplicationPowerHandling.cpp b/xbmc/application/ApplicationPowerHandling.cpp
+index 3b9c2e0..6e97581 100644
+--- a/xbmc/application/ApplicationPowerHandling.cpp
++++ b/xbmc/application/ApplicationPowerHandling.cpp
+@@ -119,11 +119,9 @@ bool CApplicationPowerHandling::WakeUpScreenSaverAndDPMS(bool bPowerOffKeyPresse
+   // First reset DPMS, if active
+   if (m_dpmsIsActive)
+   {
+-    if (m_dpmsIsManual)
+-      return false;
+     //! @todo if screensaver lock is specified but screensaver is not active
+     //! (DPMS came first), activate screensaver now.
+-    ToggleDPMS(false);
++    ToggleDPMS(m_dpmsIsManual);
+     ResetScreenSaverTimer();
+     result = !m_screensaverActive || WakeUpScreenSaver(bPowerOffKeyPressed);
+   }
