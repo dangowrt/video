@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kodi
 PKG_VERSION:=22.0_beta2
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 # Tag 22.0b2-Piers (version.txt: 22.0 BETA2); pinned by commit so the
 # tarball name stays stable should the tag ever move.
@@ -95,6 +95,7 @@ define Package/kodi
 	+libpcre2 +giflib +libjpeg-turbo +libpng +liblzo \
 	+zlib +libbz2 +libopenssl +libpython3 +python3 +libuuid \
 	+libstdcpp +libatomic $(ICONV_DEPENDS)
+  USERID:=kodi=446:kodi=446:video=40,audio=29,input=41
 endef
 
 define Package/kodi/config
@@ -323,6 +324,14 @@ endef
 define Host/Install
 	$(STAGING_DIR_HOST)/bin/cmake --install $(HOST_BUILD_DIR)/jsonschemabuilder-build
 	$(STAGING_DIR_HOST)/bin/cmake --install $(HOST_BUILD_DIR)/texturepacker-build
+endef
+
+define Package/kodi/postinst
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] && exit 0
+mkdir -p /etc/kodi
+chown -R kodi:kodi /etc/kodi
+exit 0
 endef
 
 define Package/kodi/install
