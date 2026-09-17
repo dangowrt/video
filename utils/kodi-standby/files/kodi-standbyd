@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Follow Kodi's DPMS state and power the box down and up along with it.
+
+Kodi announces OnDPMSActivated when it blanks the display and
+OnDPMSDeactivated when any key press brings it back, both of which reach
+its JSON-RPC socket on the loopback interface. That makes the display the
+single source of truth for whether anyone is watching.
+"""
+import json
+import socket
+import subprocess
+import sys
+import time
+
+ADDRESS = ("127.0.0.1", 9090)
+COMMAND = "/usr/sbin/kodi-standby"
+RETRY = 5
+
+
+def act(action):
+    subprocess.call([COMMAND, action])
+
+
+def messages(sock):
+    decoder = json.JSONDecoder()
+    text = ""
+
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            return
+        text += chunk.decode("utf-8", "replace")
+        while text:
+            text = text.lstrip()
+            try:
+                message, end = decoder.raw_decode(text)
+            except ValueError:
+                break
+            text = text[end:]
+            yield message
+
+
+def main():
+    while True:
+        try:
+            with socket.create_connection(ADDRESS, timeout=10) as sock:
+                sock.settimeout(None)
+                # Kodi is up and drawing, so whatever state we were left in
+                # is stale
+                act("leave")
+                for message in messages(sock):
+                    method = message.get("method")
+                    if method == "GUI.OnDPMSActivated":
+                        act("enter")
+                    elif method == "GUI.OnDPMSDeactivated":
+                        act("leave")
+        except OSError as error:
+            print(f"kodi-standbyd: {error}", file=sys.stderr, flush=True)
+        time.sleep(RETRY)
+
+
+main()
