@@ -1,0 +1,111 @@
+#!/bin/sh
+# Take the box down to a low-power state that keeps Bluetooth alive, so the
+# remote can bring it back, and undo that again. Driven by kodi-standbyd,
+# which follows Kodi's DPMS state.
+
+RUN=/var/run/kodi-standby
+CONF=/etc/kodi-standby.conf
+
+KEEP_CPU=0
+GOVERNOR=powersave
+NETWORK_INTERFACES=wan
+NETWORK_DOWN=1
+
+[ -f "$CONF" ] && . "$CONF"
+
+log() {
+	logger -t kodi-standby "$1"
+}
+
+hooks() {
+	for hook in /etc/kodi-standby.d/*; do
+		[ -x "$hook" ] && "$hook" "$1"
+	done
+}
+
+cpu_down() {
+	: > "$RUN/cpus"
+	for path in /sys/devices/system/cpu/cpu[0-9]*/online; do
+		number=${path%/online}
+		number=${number##*/cpu}
+		[ "$number" = "$KEEP_CPU" ] && continue
+		[ "$(cat "$path")" = "1" ] || continue
+		echo 0 > "$path" 2>/dev/null && echo "$number" >> "$RUN/cpus"
+	done
+	log "offlined cpu $(tr '\n' ' ' < "$RUN/cpus")"
+}
+
+cpu_up() {
+	[ -f "$RUN/cpus" ] || return 0
+	while read -r number; do
+		echo 1 > "/sys/devices/system/cpu/cpu$number/online" 2>/dev/null
+	done < "$RUN/cpus"
+}
+
+governor_down() {
+	: > "$RUN/governors"
+	for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+		[ -w "$policy/scaling_governor" ] || continue
+		echo "${policy##*/} $(cat "$policy/scaling_governor")" >> "$RUN/governors"
+		echo "$GOVERNOR" > "$policy/scaling_governor" 2>/dev/null
+	done
+	log "cpufreq governor set to $GOVERNOR"
+}
+
+governor_up() {
+	[ -f "$RUN/governors" ] || return 0
+	while read -r policy governor; do
+		echo "$governor" > "/sys/devices/system/cpu/cpufreq/$policy/scaling_governor" 2>/dev/null
+	done < "$RUN/governors"
+}
+
+network_down() {
+	[ "$NETWORK_DOWN" = "1" ] || return 0
+	: > "$RUN/networks"
+	for interface in $NETWORK_INTERFACES; do
+		ifdown "$interface" 2>/dev/null && echo "$interface" >> "$RUN/networks"
+	done
+	log "took down $(tr '\n' ' ' < "$RUN/networks")"
+}
+
+network_up() {
+	[ -f "$RUN/networks" ] || return 0
+	while read -r interface; do
+		ifup "$interface" 2>/dev/null
+	done < "$RUN/networks"
+}
+
+enter() {
+	mkdir "$RUN" 2>/dev/null || return 0
+	hooks enter
+	governor_down
+	cpu_down
+	network_down
+	log "standby entered"
+}
+
+leave() {
+	[ -d "$RUN" ] || return 0
+	network_up
+	cpu_up
+	governor_up
+	hooks leave
+	rm -rf "$RUN"
+	log "standby left"
+}
+
+case "$1" in
+enter) enter ;;
+leave) leave ;;
+status)
+	if [ -d "$RUN" ]; then
+		echo "standby, cpus offline: $(tr '\n' ' ' < "$RUN/cpus" 2>/dev/null)"
+	else
+		echo "running"
+	fi
+	;;
+*)
+	echo "usage: ${0##*/} {enter|leave|status}" >&2
+	exit 1
+	;;
+esac
