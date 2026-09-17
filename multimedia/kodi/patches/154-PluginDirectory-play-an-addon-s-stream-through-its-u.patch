@@ -1,0 +1,75 @@
+From 1152b2ac00f37868f08227ad724236ffc4793f57 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 17 Sep 2026 18:42:03 +0100
+Subject: [PATCH 154/155] PluginDirectory: play an addon's stream through its
+ uplink
+
+An addon installed from the repository cannot be asked to choose an
+uplink, but Kodi knows which one resolved the item: SetResolvedUrl()
+holds the addon and the stream it just produced. Stamp the address onto
+the URL, and onto the inputstream property when playback is handed to an
+inputstream addon, so the segments and licence requests that follow take
+the same path as the manifest.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/filesystem/PluginDirectory.cpp | 32 +++++++++++++++++++++++++++++
+ 1 file changed, 32 insertions(+)
+
+diff --git a/xbmc/filesystem/PluginDirectory.cpp b/xbmc/filesystem/PluginDirectory.cpp
+index 70863bb..65187a3 100644
+--- a/xbmc/filesystem/PluginDirectory.cpp
++++ b/xbmc/filesystem/PluginDirectory.cpp
+@@ -20,6 +20,8 @@
+ #include "addons/addoninfo/AddonType.h"
+ #include "interfaces/generic/RunningScriptObserver.h"
+ #include "messaging/ApplicationMessenger.h"
++#include "network/UplinkAddress.h"
++#include "settings/AdvancedSettings.h"
+ #include "settings/Settings.h"
+ #include "settings/SettingsComponent.h"
+ #include "utils/URIUtils.h"
+@@ -52,6 +54,33 @@ std::string GetOriginalPluginPath(const CFileItem& item)
+ 
+   return std::string();
+ }
++
++void ApplyAddonUplink(const std::string& addonId, CFileItem& item)
++{
++  const std::string spec =
++      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetAddonUplink(addonId);
++  if (spec.empty())
++    return;
++
++  const std::string path = item.GetPath();
++  if (!URIUtils::IsHTTP(path))
++    return;
++
++  const std::string address = KODI::NETWORK::ResolveUplinkAddress(spec);
++  if (address.empty())
++    return;
++
++  CURL url(path);
++  url.SetProtocolOption("local_addr", address);
++  item.SetPath(url.Get());
++
++  const std::string inputstream = item.GetProperty("inputstream").asString();
++  if (!inputstream.empty())
++    item.SetProperty(inputstream + ".local_address", spec);
++
++  CLog::Log(LOGDEBUG, "CPluginDirectory::{} - {} plays through uplink {}", __FUNCTION__, addonId,
++            spec);
++}
+ } // unnamed namespace
+ 
+ CPluginDirectory::CPluginDirectory()
+@@ -507,6 +536,9 @@ void CPluginDirectory::SetResolvedUrl(int handle, bool success, const CFileItem
+   dir->m_success = success;
+   *dir->m_fileResult = *resultItem;
+ 
++  if (success && dir->GetAddon())
++    ApplyAddonUplink(dir->GetAddon()->ID(), *dir->m_fileResult);
++
+   // set the event to mark that we're done
+   dir->SetDone();
+ }
