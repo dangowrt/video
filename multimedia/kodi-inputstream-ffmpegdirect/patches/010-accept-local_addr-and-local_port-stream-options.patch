@@ -1,0 +1,29 @@
+From 1d23acb4e442b7612d3710bcb85065fb4e951b72 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 17 Sep 2026 18:29:16 +0100
+Subject: [PATCH] Accept local_addr and local_port as stream URL options
+
+A box with more than one uplink picks which one a stream uses by binding
+the socket to a local address, which is what FFmpeg's TCP protocol takes
+local_addr for. The option cannot be reached today: GetFFMpegOptionsFromInput()
+only forwards a fixed list of URL options and drops the rest.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ src/stream/FFmpegStream.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/stream/FFmpegStream.cpp b/src/stream/FFmpegStream.cpp
+index 38cbfd5..aec5b76 100644
+--- a/src/stream/FFmpegStream.cpp
++++ b/src/stream/FFmpegStream.cpp
+@@ -2310,7 +2310,8 @@ AVDictionary* FFmpegStream::GetFFMpegOptionsFromInput()
+       // set any of these ffmpeg options
+       if (name == "seekable" || name == "reconnect" || name == "reconnect_at_eof" ||
+           name == "reconnect_streamed" || name == "reconnect_delay_max" ||
+-          name == "icy" || name == "icy_metadata_headers" || name == "icy_metadata_packet" || name == "cenc_decryption_key")
++          name == "icy" || name == "icy_metadata_headers" || name == "icy_metadata_packet" || name == "cenc_decryption_key" ||
++          name == "local_addr" || name == "local_port")
+       {
+         Log(LOGLEVEL_DEBUG,
+                   "CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput() adding ffmpeg option '%s: %s'",
