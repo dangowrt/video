@@ -1,0 +1,36 @@
+From df9297f42bb08493ddd9c19686cca65a4947db01 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 18 Sep 2026 11:34:48 +0100
+Subject: [PATCH] VideoPlayerAudio: sleep when the sink has nothing to wait on
+
+The wait on the message queue is as long as the audio sink has data
+cached, so a starved stream waits for nothing at all, and the decoder has
+nothing to hand over either. The branch that covers this already sleeps,
+but the early return taken while paused or waiting to sync jumps over it,
+and the thread then runs flat out: one core at 100% for as long as the
+source cannot keep up.
+
+Sleep there too. It is the same condition the branch below already treats
+as the moment to wait, and playback that has audio to output never
+reaches it.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+@@ -289,7 +289,12 @@ void CVideoPlayerAudio::Process()
+ 
+       // if we only wanted priority messages, this isn't a stall
+       if (priority)
++      {
++        if (timeout == 0ms)
++          CThread::Sleep(10ms);
++
+         continue;
++      }
+ 
+       if (m_processInfo.IsTempoAllowed(static_cast<float>(m_speed)/DVD_PLAYSPEED_NORMAL) &&
+           !m_stalled && m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
