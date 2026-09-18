@@ -14,8 +14,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  .../VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp   | 16 +++++++++++++++-
  1 file changed, 15 insertions(+), 1 deletion(-)
 
-diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index 4ce795d..af73d3f 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 @@ -24,6 +24,7 @@
@@ -26,7 +24,7 @@ index 4ce795d..af73d3f 100644
  #include "settings/AdvancedSettings.h"
  #include "settings/Settings.h"
  #include "settings/SettingsComponent.h"
-@@ -828,13 +829,26 @@ AVDictionary* CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput()
+@@ -828,13 +829,26 @@ AVDictionary* CDVDDemuxFFmpeg::GetFFMpeg
        // set any of these ffmpeg options
        if (name == "seekable" || name == "reconnect" || name == "reconnect_at_eof" ||
            name == "reconnect_streamed" || name == "reconnect_delay_max" ||

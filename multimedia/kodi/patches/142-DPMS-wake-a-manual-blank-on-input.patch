@@ -19,11 +19,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/application/ApplicationPowerHandling.cpp | 4 +---
  1 file changed, 1 insertion(+), 3 deletions(-)
 
-diff --git a/xbmc/application/ApplicationPowerHandling.cpp b/xbmc/application/ApplicationPowerHandling.cpp
-index 3b9c2e0..6e97581 100644
 --- a/xbmc/application/ApplicationPowerHandling.cpp
 +++ b/xbmc/application/ApplicationPowerHandling.cpp
-@@ -119,11 +119,9 @@ bool CApplicationPowerHandling::WakeUpScreenSaverAndDPMS(bool bPowerOffKeyPresse
+@@ -119,11 +119,9 @@ bool CApplicationPowerHandling::WakeUpSc
    // First reset DPMS, if active
    if (m_dpmsIsActive)
    {

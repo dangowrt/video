@@ -16,8 +16,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/filesystem/PluginDirectory.cpp | 32 +++++++++++++++++++++++++++++
  1 file changed, 32 insertions(+)
 
-diff --git a/xbmc/filesystem/PluginDirectory.cpp b/xbmc/filesystem/PluginDirectory.cpp
-index 70863bb..65187a3 100644
 --- a/xbmc/filesystem/PluginDirectory.cpp
 +++ b/xbmc/filesystem/PluginDirectory.cpp
 @@ -20,6 +20,8 @@
@@ -29,7 +27,7 @@ index 70863bb..65187a3 100644
  #include "settings/Settings.h"
  #include "settings/SettingsComponent.h"
  #include "utils/URIUtils.h"
-@@ -52,6 +54,33 @@ std::string GetOriginalPluginPath(const CFileItem& item)
+@@ -52,6 +54,33 @@ std::string GetOriginalPluginPath(const
  
    return std::string();
  }
@@ -63,7 +61,7 @@ index 70863bb..65187a3 100644
  } // unnamed namespace
  
  CPluginDirectory::CPluginDirectory()
-@@ -507,6 +536,9 @@ void CPluginDirectory::SetResolvedUrl(int handle, bool success, const CFileItem
+@@ -507,6 +536,9 @@ void CPluginDirectory::SetResolvedUrl(in
    dir->m_success = success;
    *dir->m_fileResult = *resultItem;
  

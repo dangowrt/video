@@ -24,8 +24,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  create mode 100644 xbmc/network/UplinkAddress.cpp
  create mode 100644 xbmc/network/UplinkAddress.h
 
-diff --git a/xbmc/network/CMakeLists.txt b/xbmc/network/CMakeLists.txt
-index ad301ac..15e0dc2 100644
 --- a/xbmc/network/CMakeLists.txt
 +++ b/xbmc/network/CMakeLists.txt
 @@ -9,6 +9,7 @@ set(SOURCES DNSNameCache.cpp
@@ -44,9 +42,6 @@ index ad301ac..15e0dc2 100644
              WakeOnAccess.h
              Zeroconf.h
              ZeroconfBrowser.h)
-diff --git a/xbmc/network/UplinkAddress.cpp b/xbmc/network/UplinkAddress.cpp
-new file mode 100644
-index 0000000..0532cc9
 --- /dev/null
 +++ b/xbmc/network/UplinkAddress.cpp
 @@ -0,0 +1,106 @@
@@ -156,9 +151,6 @@ index 0000000..0532cc9
 +}
 +
 +} /* namespace KODI::NETWORK */
-diff --git a/xbmc/network/UplinkAddress.h b/xbmc/network/UplinkAddress.h
-new file mode 100644
-index 0000000..a1fea4d
 --- /dev/null
 +++ b/xbmc/network/UplinkAddress.h
 @@ -0,0 +1,19 @@
