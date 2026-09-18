@@ -18,4 +18,13 @@
       </group>
     </category>
   </section>
+  <section id="interface">
+    <category id="regional">
+      <group id="2">
+        <setting id="locale.temperatureunit" type="string">
+          <default>C</default>
+        </setting>
+      </group>
+    </category>
+  </section>
 </settings>

@@ -1,0 +1,34 @@
+From 1ddc88f4c520d96e9e2af84c7ab5d7ccb37240c3 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 18 Sep 2026 03:36:27 +0100
+Subject: [PATCH] Find the CPU temperature on Rockchip and similar SoCs
+
+The hwmon sensor is looked up by name against a fixed list, and an SoC
+whose thermal zones are named after what they sit next to is not on it.
+An RK3588 board exposes package_thermal, littlecore_thermal and the
+bigcore zones, so System information shows no temperature at all.
+
+Add those names along with soc_thermal, which the earlier Rockchip SoCs
+use. The zone covering the whole package comes first in sysfs, so that is
+the one picked up.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/platform/linux/CPUInfoLinux.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+--- a/xbmc/platform/linux/CPUInfoLinux.cpp
++++ b/xbmc/platform/linux/CPUInfoLinux.cpp
+@@ -102,6 +102,12 @@ CCPUInfoLinux::CCPUInfoLinux()
+       "scpi_sensors",
+       "imx_thermal_zone",
+       "cpu_thermal",
++      "soc_thermal",
++      "package_thermal",
++      "littlecore_thermal",
++      "bigcore0_thermal",
++      "bigcore1_thermal",
++      "bigcore2_thermal",
+   });
+ 
+   for (int i = 0; i < 20; i++)

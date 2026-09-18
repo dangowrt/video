@@ -1,0 +1,111 @@
+From 26391d56cefca7b82aa595fa9d6cd70006844fb2 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 18 Sep 2026 03:36:27 +0100
+Subject: [PATCH] Read the GPU temperature from hwmon on Linux
+
+GetGPUPlatformTemperature() is a stub that returns false, so the only way
+to see a GPU temperature on Linux is to hand Kodi a shell command through
+advancedsettings, which then runs on every refresh of the info label.
+
+The kernel already exposes the sensor: amdgpu and radeon register one
+under hwmon, and so do the SoC thermal zones. Look the sensor up once by
+name and read it the way the CPU temperature is read.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/platform/linux/GPUInfoLinux.cpp | 53 ++++++++++++++++++++++++++--
+ xbmc/platform/linux/GPUInfoLinux.h   |  6 +++-
+ 2 files changed, 56 insertions(+), 3 deletions(-)
+
+--- a/xbmc/platform/linux/GPUInfoLinux.cpp
++++ b/xbmc/platform/linux/GPUInfoLinux.cpp
+@@ -8,17 +8,66 @@
+ 
+ #include "GPUInfoLinux.h"
+ 
++#include "utils/Set.h"
++#include "utils/Temperature.h"
++
++#include "platform/linux/SysfsPath.h"
++
++#include <string>
++#include <string_view>
++
++namespace
++{
++constexpr auto SENSORS = make_set<std::string_view>({
++    "amdgpu",
++    "radeon",
++    "nouveau",
++    "gpu_thermal",
++});
++
++std::string FindSensor()
++{
++  for (int i = 0; i < 20; i++)
++  {
++    CSysfsPath namePath{"/sys/class/hwmon/hwmon" + std::to_string(i) + "/name"};
++    if (!namePath.Exists())
++      continue;
++
++    auto name = namePath.Get<std::string>();
++    if (!name.has_value() || !SENSORS.contains(*name))
++      continue;
++
++    std::string tempStr{"/sys/class/hwmon/hwmon" + std::to_string(i) + "/temp1_input"};
++    if (CSysfsPath{tempStr}.Exists())
++      return tempStr;
++  }
++
++  return {};
++}
++} // namespace
++
+ std::unique_ptr<CGPUInfo> CGPUInfo::GetGPUInfo()
+ {
+   return std::make_unique<CGPUInfoLinux>();
+ }
+ 
++CGPUInfoLinux::CGPUInfoLinux() : m_tempPath(FindSensor())
++{
++}
++
+ bool CGPUInfoLinux::SupportsPlatformTemperature() const
+ {
+-  return false;
++  return !m_tempPath.empty();
+ }
+ 
+ bool CGPUInfoLinux::GetGPUPlatformTemperature(CTemperature& temperature) const
+ {
+-  return false;
++  auto temp = CSysfsPath(m_tempPath).Get<double>();
++  if (!temp.has_value())
++    return false;
++
++  temperature = CTemperature::CreateFromCelsius(*temp / 1000.0);
++  temperature.SetValid(true);
++
++  return true;
+ }
+--- a/xbmc/platform/linux/GPUInfoLinux.h
++++ b/xbmc/platform/linux/GPUInfoLinux.h
+@@ -10,13 +10,17 @@
+ 
+ #include "platform/posix/GPUInfoPosix.h"
+ 
++#include <string>
++
+ class CGPUInfoLinux : public CGPUInfoPosix
+ {
+ public:
+-  CGPUInfoLinux() = default;
++  CGPUInfoLinux();
+   ~CGPUInfoLinux() = default;
+ 
+ private:
+   bool SupportsPlatformTemperature() const override;
+   bool GetGPUPlatformTemperature(CTemperature& temperature) const override;
++
++  std::string m_tempPath;
+ };
