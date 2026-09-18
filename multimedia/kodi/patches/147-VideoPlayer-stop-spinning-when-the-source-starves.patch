@@ -1,0 +1,48 @@
+From 67390cfebc0de6e859d95a31a6c68eb1fdd96461 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 18 Sep 2026 11:26:16 +0100
+Subject: [PATCH] Stop spinning when the source cannot keep up
+
+A demuxer with nothing to hand over returns an empty packet, and the
+player frees it and goes straight back for another. That is fine while
+the source blocks in between, but a stream arriving slower than it plays
+makes the read return AVERROR(EAGAIN) immediately, and the loop then runs
+as fast as the CPU allows: one core at 100% for as long as the source
+starves, with the picture stuttering anyway.
+
+Sleep once a run of empty packets shows the source has nothing, which
+leaves normal playback, where an empty packet is occasional, untouched.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/cores/VideoPlayer/VideoPlayer.cpp | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -1601,6 +1601,8 @@ void CVideoPlayer::Process()
+ 
+   Prepare();
+ 
++  unsigned int emptyPackets = 0;
++
+   while (!m_bAbortRequest)
+   {
+     // check display lost
+@@ -1712,9 +1714,16 @@ void CVideoPlayer::Process()
+     {
+       /* probably a empty packet, just free it and move on */
+       CDVDDemuxUtils::FreeDemuxPacket(pPacket);
++
++      /* a source that cannot keep up hands these back as fast as we ask */
++      if (++emptyPackets > 10)
++        CThread::Sleep(10ms);
++
+       continue;
+     }
+ 
++    emptyPackets = 0;
++
+     if (!pPacket)
+     {
+       // when paused, demuxer could be be returning empty
