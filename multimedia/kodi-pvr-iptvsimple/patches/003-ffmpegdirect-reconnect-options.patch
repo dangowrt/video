@@ -1,0 +1,37 @@
+From 5f419f081d32a191633fceb2d05b2eb5ea8dc7c2 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 18 Sep 2026 23:40:28 +0100
+Subject: [PATCH] Give inputstream.ffmpegdirect the FFmpeg reconnect options
+
+The options are added only when the inputstream is inputstream.ffmpeg or
+the stream is HLS, so a channel played through inputstream.ffmpegdirect
+gets none of them, although it hands exactly these options to FFmpeg:
+GetFFMpegOptionsFromInput() accepts reconnect, reconnect_at_eof,
+reconnect_streamed and reconnect_delay_max.
+
+Without them a dropped connection ends the stream, and Kodi answers the
+end of a live stream by playing the next item in the playlist, which on a
+channel list is a different channel.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ src/iptvsimple/utilities/StreamUtils.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/iptvsimple/utilities/StreamUtils.cpp b/src/iptvsimple/utilities/StreamUtils.cpp
+index 8f95934..5294b5c 100644
+--- a/src/iptvsimple/utilities/StreamUtils.cpp
++++ b/src/iptvsimple/utilities/StreamUtils.cpp
+@@ -503,7 +503,8 @@ bool StreamUtils::ChannelSpecifiesInputstream(const iptvsimple::data::Channel& c
+ bool StreamUtils::SupportsFFmpegReconnect(const StreamType& streamType, const std::string& inputstreamName)
+ {
+   return streamType == StreamType::HLS ||
+-         inputstreamName == PVR_STREAM_PROPERTY_VALUE_INPUTSTREAMFFMPEG;
++         inputstreamName == PVR_STREAM_PROPERTY_VALUE_INPUTSTREAMFFMPEG ||
++         inputstreamName == INPUTSTREAM_FFMPEGDIRECT;
+ }
+ 
+ std::string StreamUtils::GetUrlEncodedProtocolOptions(const std::string& protocolOptions)
+-- 
+2.55.0
+
