@@ -1,0 +1,45 @@
+From 8e3facddc082d8acec647c7db649b0de33e6d994 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 18 Sep 2026 03:10:04 +0100
+Subject: [PATCH] Keep a manual DPMS blank off when only the pointer moves
+
+A pointer remote that reconnects streams motion as soon as its link comes
+back, and every one of those events reaches ProcessMouse(), which wakes
+the display. On a box whose remote drops and re-establishes its
+connection while nobody is in the room, the picture comes back by itself
+minutes after the user blanked it, again and again.
+
+Ignore plain movement while the blank is one the user asked for. A
+button, a key or a click still wakes it, so the way back is unchanged,
+and a screensaver blank is untouched.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/application/ApplicationPowerHandling.h | 1 +
+ xbmc/input/InputManager.cpp                 | 5 +++++
+ 2 files changed, 6 insertions(+)
+
+--- a/xbmc/application/ApplicationPowerHandling.h
++++ b/xbmc/application/ApplicationPowerHandling.h
+@@ -58,6 +58,7 @@ public:
+   void ResetNavigationTimer();
+ 
+   bool IsDPMSActive() const { return m_dpmsIsActive; }
++  bool IsDPMSManual() const { return m_dpmsIsManual; }
+   bool ToggleDPMS(bool manual);
+ 
+   // Wakes up from the screensaver and / or DPMS. Returns true if woken up.
+--- a/xbmc/input/InputManager.cpp
++++ b/xbmc/input/InputManager.cpp
+@@ -125,6 +125,11 @@ bool CInputManager::ProcessMouse(int win
+   // Reset the screensaver and idle timers
+   auto& components = CServiceBroker::GetAppComponents();
+   const auto appPower = components.GetComponent<CApplicationPowerHandling>();
++
++  // a pointer moving on its own must not end a blank the user asked for
++  if (mousekey == KEY_MOUSE_MOVE && appPower->IsDPMSActive() && appPower->IsDPMSManual())
++    return true;
++
+   appPower->ResetSystemIdleTimer();
+   appPower->ResetScreenSaver();
+ 
