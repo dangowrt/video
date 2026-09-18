@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kodi
 PKG_VERSION:=22.0_beta2
-PKG_RELEASE:=12
+PKG_RELEASE:=13
 
 # Tag 22.0b2-Piers (version.txt: 22.0 BETA2); pinned by commit so the
 # tarball name stays stable should the tag ever move.
@@ -326,11 +326,16 @@ define Host/Install
 	$(STAGING_DIR_HOST)/bin/cmake --install $(HOST_BUILD_DIR)/texturepacker-build
 endef
 
+define Package/kodi/conffiles
+/etc/config/kodi
+endef
+
 define Package/kodi/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
-mkdir -p /etc/kodi
-chown -R kodi:kodi /etc/kodi
+data_dir="$$(uci -q get kodi.main.data_dir)"
+mkdir -p "$${data_dir:-/srv/kodi}"
+chown kodi:kodi "$${data_dir:-/srv/kodi}"
 exit 0
 endef
 
@@ -352,9 +357,8 @@ define Package/kodi/install
 		$(INSTALL_DATA) ./files/appliance.xml $(1)/usr/share/kodi/system/settings/appliance.xml)
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/kodi.init $(1)/etc/init.d/kodi
-	# Preserve /srv/kodi (HOME) across sysupgrade
-	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
-	$(INSTALL_DATA) ./files/kodi.upgrade $(1)/lib/upgrade/keep.d/kodi
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_DATA) ./files/kodi.config $(1)/etc/config/kodi
 endef
 
 $(eval $(call HostBuild))
