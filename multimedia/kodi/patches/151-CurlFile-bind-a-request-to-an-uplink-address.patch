@@ -21,8 +21,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/filesystem/DllLibCurl.h   |  4 +++-
  4 files changed, 31 insertions(+), 8 deletions(-)
 
-diff --git a/xbmc/filesystem/CurlFile.cpp b/xbmc/filesystem/CurlFile.cpp
-index 7abc958..2b9cd15 100644
 --- a/xbmc/filesystem/CurlFile.cpp
 +++ b/xbmc/filesystem/CurlFile.cpp
 @@ -13,6 +13,7 @@
@@ -41,7 +39,7 @@ index 7abc958..2b9cd15 100644
  
    m_opened = false;
    m_forWrite = false;
-@@ -725,6 +727,13 @@ void CCurlFile::SetCommonOptions(CReadState* state, bool failOnError /* = true *
+@@ -725,6 +727,13 @@ void CCurlFile::SetCommonOptions(CReadSt
    if (!m_cipherlist.empty())
      g_curlInterface.easy_setopt(h, CURLOPT_SSL_CIPHER_LIST, m_cipherlist.c_str());
  
@@ -55,7 +53,7 @@ index 7abc958..2b9cd15 100644
    if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_curlDisableHTTP2)
      g_curlInterface.easy_setopt(h, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
    else
-@@ -948,6 +957,8 @@ void CCurlFile::ParseAndCorrectUrl(CURL &url2)
+@@ -948,6 +957,8 @@ void CCurlFile::ParseAndCorrectUrl(CURL
            SetAcceptCharset(value);
          else if (name == "sslcipherlist")
            m_cipherlist = value;
@@ -74,7 +72,7 @@ index 7abc958..2b9cd15 100644
  
    // setup common curl options
    SetCommonOptions(m_state,
-@@ -1258,7 +1270,8 @@ bool CCurlFile::OpenForWrite(const CURL& url, bool bOverWrite)
+@@ -1258,7 +1270,8 @@ bool CCurlFile::OpenForWrite(const CURL&
    g_curlInterface.easy_acquire(url2.GetProtocol().c_str(),
                                url2.GetHostName().c_str(),
                                &m_state->m_easyHandle,
@@ -93,7 +91,7 @@ index 7abc958..2b9cd15 100644
  
    SetCommonOptions(m_state);
    SetRequestHeaders(m_state);
-@@ -1506,7 +1519,8 @@ int64_t CCurlFile::Seek(int64_t iFilePosition, int iWhence)
+@@ -1506,7 +1519,8 @@ int64_t CCurlFile::Seek(int64_t iFilePos
        g_curlInterface.easy_acquire(url.GetProtocol().c_str(),
                                    url.GetHostName().c_str(),
                                    &m_state->m_easyHandle,
@@ -103,7 +101,7 @@ index 7abc958..2b9cd15 100644
      }
      else
      {
-@@ -1596,7 +1610,7 @@ int CCurlFile::Stat(const CURL& url, struct __stat64* buffer)
+@@ -1596,7 +1610,7 @@ int CCurlFile::Stat(const CURL& url, str
    assert(m_state->m_easyHandle == NULL);
    g_curlInterface.easy_acquire(url2.GetProtocol().c_str(),
                                url2.GetHostName().c_str(),
@@ -112,8 +110,6 @@ index 7abc958..2b9cd15 100644
  
    SetCommonOptions(m_state);
    SetRequestHeaders(m_state);
-diff --git a/xbmc/filesystem/CurlFile.h b/xbmc/filesystem/CurlFile.h
-index 2bc40ed..d339320 100644
 --- a/xbmc/filesystem/CurlFile.h
 +++ b/xbmc/filesystem/CurlFile.h
 @@ -178,6 +178,7 @@ namespace XFILE
@@ -124,8 +120,6 @@ index 2bc40ed..d339320 100644
        bool m_ftppasvip;
        int m_connecttimeout;
        int m_redirectlimit;
-diff --git a/xbmc/filesystem/DllLibCurl.cpp b/xbmc/filesystem/DllLibCurl.cpp
-index b9a7a65..53c556c 100644
 --- a/xbmc/filesystem/DllLibCurl.cpp
 +++ b/xbmc/filesystem/DllLibCurl.cpp
 @@ -171,10 +171,13 @@ void DllLibCurlGlobal::CheckIdle()
@@ -143,7 +137,7 @@ index b9a7a65..53c556c 100644
    std::unique_lock lock(m_critSection);
  
    for (auto& it : m_sessions)
-@@ -183,7 +186,9 @@ void DllLibCurlGlobal::easy_acquire(const char* protocol,
+@@ -183,7 +186,9 @@ void DllLibCurlGlobal::easy_acquire(cons
      {
        /* allow reuse of requester is trying to connect to same host */
        /* curl will take care of any differences in username/password */
@@ -154,7 +148,7 @@ index b9a7a65..53c556c 100644
        {
          it.m_busy = true;
          if (easy_handle)
-@@ -211,6 +216,7 @@ void DllLibCurlGlobal::easy_acquire(const char* protocol,
+@@ -211,6 +216,7 @@ void DllLibCurlGlobal::easy_acquire(cons
    session.m_busy = true;
    session.m_protocol = protocol;
    session.m_hostname = hostname;
@@ -162,8 +156,6 @@ index b9a7a65..53c556c 100644
  
    if (easy_handle)
    {
-diff --git a/xbmc/filesystem/DllLibCurl.h b/xbmc/filesystem/DllLibCurl.h
-index 760f28d..529648d 100644
 --- a/xbmc/filesystem/DllLibCurl.h
 +++ b/xbmc/filesystem/DllLibCurl.h
 @@ -73,7 +73,8 @@ public:

@@ -21,8 +21,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/interfaces/python/PythonInvoker.h   |  1 +
  2 files changed, 70 insertions(+)
 
-diff --git a/xbmc/interfaces/python/PythonInvoker.cpp b/xbmc/interfaces/python/PythonInvoker.cpp
-index 6f1cfeb..20dc56f 100644
 --- a/xbmc/interfaces/python/PythonInvoker.cpp
 +++ b/xbmc/interfaces/python/PythonInvoker.cpp
 @@ -26,8 +26,11 @@
@@ -37,7 +35,7 @@ index 6f1cfeb..20dc56f 100644
  #include "threads/SingleLock.h"
  #include "threads/SystemClock.h"
  #include "utils/CharsetConverter.h"
-@@ -64,6 +67,44 @@ extern "C" FILE* fopen_utf8(const char* _Filename, const char* _Mode);
+@@ -64,6 +67,44 @@ extern "C" FILE* fopen_utf8(const char*
  using namespace XFILE;
  using namespace std::chrono_literals;
  
@@ -82,7 +80,7 @@ index 6f1cfeb..20dc56f 100644
  static const std::string getListOfAddonClassesAsString(
      XBMCAddon::AddonClass::Ref<XBMCAddon::Python::PythonLanguageHook>& languageHook)
  {
-@@ -679,6 +720,34 @@ void CPythonInvoker::onPythonModuleInitialization(void* moduleDict)
+@@ -679,6 +720,34 @@ void CPythonInvoker::onPythonModuleIniti
              "CPythonInvoker({}, {}): instantiating addon using automatically obtained id of \"{}\" "
              "dependent on version {} of the xbmc.python api",
              GetId(), m_sourceFile, m_addon->ID(), version.asString());
@@ -117,8 +115,6 @@ index 6f1cfeb..20dc56f 100644
  }
  
  void CPythonInvoker::onDeinitialization()
-diff --git a/xbmc/interfaces/python/PythonInvoker.h b/xbmc/interfaces/python/PythonInvoker.h
-index bd6f36d..2f161fc 100644
 --- a/xbmc/interfaces/python/PythonInvoker.h
 +++ b/xbmc/interfaces/python/PythonInvoker.h
 @@ -44,6 +44,7 @@ protected:
