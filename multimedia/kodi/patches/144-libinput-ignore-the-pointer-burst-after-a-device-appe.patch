@@ -1,0 +1,100 @@
+From 0f75d7ade74e4f31de54d22108e861251d6bb22f Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 18 Sep 2026 03:14:26 +0100
+Subject: [PATCH] Ignore the pointer burst that follows a device appearing
+
+A remote with a motion sensor starts reporting as soon as its link comes
+back, and the first reports are stale: a run of positions arrives without
+anyone touching it. Kodi takes that for user activity, which resets the
+idle timer that would otherwise blank the display and brings the pointer
+on screen. A remote that drops and re-establishes its connection by
+itself therefore keeps the box awake indefinitely.
+
+Drop motion for three seconds after a pointer device is added. Buttons
+are untouched, and so is a pointer already in use.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/platform/linux/input/LibInputHandler.cpp |  1 +
+ xbmc/platform/linux/input/LibInputPointer.cpp | 22 +++++++++++++++++++
+ xbmc/platform/linux/input/LibInputPointer.h   |  6 +++++
+ 3 files changed, 29 insertions(+)
+
+--- a/xbmc/platform/linux/input/LibInputHandler.cpp
++++ b/xbmc/platform/linux/input/LibInputHandler.cpp
+@@ -265,6 +265,7 @@ void CLibInputHandler::DeviceAdded(libin
+     CLog::Log(LOGDEBUG, "CLibInputHandler::{} - pointer type device added: {} ({})", __FUNCTION__,
+               name, sysname);
+     m_devices.push_back(libinput_device_ref(dev));
++    m_pointer->DeviceAdded();
+   }
+ 
+   if (libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_KEYBOARD))
+--- a/xbmc/platform/linux/input/LibInputPointer.cpp
++++ b/xbmc/platform/linux/input/LibInputPointer.cpp
+@@ -19,6 +19,22 @@
+ 
+ #include <linux/input.h>
+ 
++namespace
++{
++/* a remote with a motion sensor reports stale positions as its link returns */
++constexpr auto SETTLE_TIME = std::chrono::seconds(3);
++} // namespace
++
++void CLibInputPointer::DeviceAdded()
++{
++  m_settled = std::chrono::steady_clock::now() + SETTLE_TIME;
++}
++
++bool CLibInputPointer::IsSettling() const
++{
++  return std::chrono::steady_clock::now() < m_settled;
++}
++
+ void CLibInputPointer::ProcessButton(libinput_event_pointer *e)
+ {
+   const uint32_t b = libinput_event_pointer_get_button(e);
+@@ -71,6 +87,9 @@ void CLibInputPointer::ProcessButton(lib
+ 
+ void CLibInputPointer::ProcessMotion(libinput_event_pointer *e)
+ {
++  if (IsSettling())
++    return;
++
+   const double dx = libinput_event_pointer_get_dx(e);
+   const double dy = libinput_event_pointer_get_dy(e);
+ 
+@@ -102,6 +121,9 @@ void CLibInputPointer::ProcessMotion(lib
+ 
+ void CLibInputPointer::ProcessMotionAbsolute(libinput_event_pointer *e)
+ {
++  if (IsSettling())
++    return;
++
+   m_pos.X = static_cast<int>(libinput_event_pointer_get_absolute_x_transformed(e, CServiceBroker::GetWinSystem()->GetGfxContext().GetWidth()));
+   m_pos.Y = static_cast<int>(libinput_event_pointer_get_absolute_y_transformed(e, CServiceBroker::GetWinSystem()->GetGfxContext().GetHeight()));
+ 
+--- a/xbmc/platform/linux/input/LibInputPointer.h
++++ b/xbmc/platform/linux/input/LibInputPointer.h
+@@ -8,6 +8,8 @@
+ 
+ #pragma once
+ 
++#include <chrono>
++
+ #include <libinput.h>
+ 
+ struct pos
+@@ -26,7 +28,11 @@ public:
+   void ProcessMotion(libinput_event_pointer *e);
+   void ProcessMotionAbsolute(libinput_event_pointer *e);
+   void ProcessAxis(libinput_event_pointer *e);
++  void DeviceAdded();
+ 
+ private:
++  bool IsSettling() const;
++
++  std::chrono::steady_clock::time_point m_settled;
+   struct pos m_pos = { 0, 0 };
+ };

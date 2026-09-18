@@ -9,4 +9,13 @@
       </group>
     </category>
   </section>
+  <section id="system">
+    <category id="powermanagement">
+      <group id="1">
+        <setting id="powermanagement.displaysoff" type="integer">
+          <default>15</default>
+        </setting>
+      </group>
+    </category>
+  </section>
 </settings>
