@@ -1,0 +1,83 @@
+From 2c5aa12defc1ba1fafa6adf1b6ea452be4b6d65b Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 17 Sep 2026 21:38:22 +0100
+Subject: [PATCH] Accept a JWK set in license_key for ClearKey again
+
+Playlists in the wild configure ClearKey by putting a JWK set in
+inputstream.adaptive.license_key, which this addon now refuses outright:
+the channel fails with "the DRM license server url has not been
+configured" and playback stalls instead of starting.
+
+The refusal is avoidable. The keys in that JWK set are exactly what the
+addon rebuilds from its own configuration before handing them to the
+decrypter, so decode them into the key map rather than telling the user
+to rewrite a playlist they do not control.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ src/CompKodiProps.cpp | 45 +++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 41 insertions(+), 4 deletions(-)
+
+diff --git a/src/CompKodiProps.cpp b/src/CompKodiProps.cpp
+index 44365e2..d38ee52 100644
+--- a/src/CompKodiProps.cpp
++++ b/src/CompKodiProps.cpp
+@@ -11,6 +11,7 @@
+ #include "CompSettings.h"
+ #include "SrvBroker.h"
+ #include "decrypters/Helpers.h"
++#include "utils/Base64Utils.h"
+ #include "utils/StringUtils.h"
+ #include "utils/UrlUtils.h"
+ #include "utils/Utils.h"
+@@ -514,10 +515,46 @@ void ADP::KODI_PROPS::CCompKodiProps::ParseDrmOldProps(
+ 
+   if (drmKeySystem == DRM::KS_CLEARKEY && STRING::KeyExists(props, PROP_LICENSE_KEY))
+   {
+-    LOG::Log(LOGERROR, "The \"inputstream.adaptive.license_key\" property cannot be used to "
+-                       "configure ClearKey DRM,\n"
+-                       "use \"inputstream.adaptive.drm_legacy\" or \"inputstream.adaptive.drm\" "
+-                       "instead.\nSee Wiki integration page for more details.");
++    // Playlists in the wild carry the keys as a JWK set in license_key, which
++    // is the very format this addon rebuilds from its own configuration
++    std::string jwkSet;
++    STRING::GetMapValue(props, PROP_LICENSE_KEY, jwkSet);
++
++    njson jDict = njson::parse(jwkSet, nullptr, false);
++    if (jDict.is_discarded() || !jDict.contains("keys") || !jDict["keys"].is_array())
++    {
++      LOG::Log(LOGERROR, "The \"inputstream.adaptive.license_key\" property can only configure "
++                         "ClearKey DRM with a JWK set,\n"
++                         "use \"inputstream.adaptive.drm_legacy\" or "
++                         "\"inputstream.adaptive.drm\" instead.\n"
++                         "See Wiki integration page for more details.");
++      return;
++    }
++
++    DrmCfg& clearKeyCfg = m_drmConfigs[drmKeySystem];
++    clearKeyCfg.isNewConfig = false;
++    clearKeyCfg.priority = 1;
++    clearKeyCfg.isForceSingleSession = true;
++
++    for (auto& jKey : jDict["keys"])
++    {
++      if (!jKey.contains("kid") || !jKey.contains("k") || !jKey["kid"].is_string() ||
++          !jKey["k"].is_string())
++        continue;
++
++      const std::string kid =
++          STRING::ToHexadecimal(BASE64::DecodeToStr(BASE64::UrlSafeDecode(jKey["kid"].get<std::string>())));
++      const std::string key =
++          STRING::ToHexadecimal(BASE64::DecodeToStr(BASE64::UrlSafeDecode(jKey["k"].get<std::string>())));
++
++      if (!kid.empty() && !key.empty())
++        clearKeyCfg.license.keys[kid] = key;
++    }
++
++    if (clearKeyCfg.license.keys.empty())
++      LOG::Log(LOGERROR, "The \"inputstream.adaptive.license_key\" property carries no usable "
++                         "ClearKey key");
++
+     return;
+   }
+ 
