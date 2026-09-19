@@ -1,0 +1,120 @@
+From 161c0ef62a121adfd3d486f447db28ffb9f3064b Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 19 Sep 2026 23:03:04 +0100
+Subject: [PATCH] [linux][cpuinfo] make the CPU temperature sensor configurable
+
+The sensor is found by matching the hwmon device name against a built-in
+list, so a platform whose thermal zone is not on that list reports no
+temperature at all, and the list grows with every SoC that turns up.
+
+Add cputemphwmon to advancedsettings.xml, naming the hwmon device and,
+after a slash, the input to read, and use it in place of the built-in
+list when set. The lookup happens on the first read rather than in the
+constructor, which runs before the settings are read.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/platform/linux/CPUInfoLinux.cpp | 24 ++++++++++++++++++++++--
+ xbmc/platform/linux/CPUInfoLinux.h   |  6 ++++++
+ xbmc/settings/AdvancedSettings.cpp   |  2 ++
+ xbmc/settings/AdvancedSettings.h     |  1 +
+ 4 files changed, 31 insertions(+), 2 deletions(-)
+
+diff --git a/xbmc/platform/linux/CPUInfoLinux.cpp b/xbmc/platform/linux/CPUInfoLinux.cpp
+index 2f55970201..5278518d20 100644
+--- a/xbmc/platform/linux/CPUInfoLinux.cpp
++++ b/xbmc/platform/linux/CPUInfoLinux.cpp
+@@ -8,6 +8,9 @@
+ 
+ #include "CPUInfoLinux.h"
+ 
++#include "ServiceBroker.h"
++#include "settings/AdvancedSettings.h"
++#include "settings/SettingsComponent.h"
+ #include "utils/Set.h"
+ #include "utils/StringUtils.h"
+ #include "utils/Temperature.h"
+@@ -338,15 +341,32 @@ float CCPUInfoLinux::GetCPUFrequency()
+   return freq.has_value() ? *freq / 1000.0f : 0.0f;
+ }
+ 
++std::string CCPUInfoLinux::FindSensor() const
++{
++  const auto settings = CServiceBroker::GetSettingsComponent();
++  const auto advancedSettings = settings ? settings->GetAdvancedSettings() : nullptr;
++
++  if (advancedSettings && !advancedSettings->m_cpuTempHwmon.empty())
++    return HwmonTemperaturePath(advancedSettings->m_cpuTempHwmon);
++
++  return m_tempPath;
++}
++
+ bool CCPUInfoLinux::GetTemperature(CTemperature& temperature)
+ {
+   if (CheckUserTemperatureCommand(temperature))
+     return true;
+ 
+-  if (m_tempPath.empty())
++  if (!m_sensorResolved)
++  {
++    m_sensorPath = FindSensor();
++    m_sensorResolved = true;
++  }
++
++  if (m_sensorPath.empty())
+     return false;
+ 
+-  auto temp = CSysfsPath(m_tempPath).Get<double>();
++  auto temp = CSysfsPath(m_sensorPath).Get<double>();
+   if (!temp.has_value())
+     return false;
+ 
+diff --git a/xbmc/platform/linux/CPUInfoLinux.h b/xbmc/platform/linux/CPUInfoLinux.h
+index ed79afc5b6..3607b03e64 100644
+--- a/xbmc/platform/linux/CPUInfoLinux.h
++++ b/xbmc/platform/linux/CPUInfoLinux.h
+@@ -25,6 +25,12 @@ public:
+   bool GetTemperature(CTemperature& temperature) override;
+ 
+ private:
++  /*! \brief The sensor to read, resolved on first use because the settings
++   *         that may name it are read after this object is constructed */
++  std::string FindSensor() const;
++
++  std::string m_sensorPath;
+   std::string m_freqPath;
+   std::string m_tempPath;
++  bool m_sensorResolved{false};
+ };
+diff --git a/xbmc/settings/AdvancedSettings.cpp b/xbmc/settings/AdvancedSettings.cpp
+index 78a4a55535..38e23b9c76 100644
+--- a/xbmc/settings/AdvancedSettings.cpp
++++ b/xbmc/settings/AdvancedSettings.cpp
+@@ -474,6 +474,7 @@ void CAdvancedSettings::Initialize()
+ 
+   m_cpuTempCmd = "";
+   m_gpuTempCmd = "";
++  m_cpuTempHwmon = "";
+ 
+   m_powerdownCommand = "";
+   m_rebootCommand = "";
+@@ -1223,6 +1224,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
+ 
+   XMLUtils::GetString(pRootElement, "cputempcommand", m_cpuTempCmd);
+   XMLUtils::GetString(pRootElement, "gputempcommand", m_gpuTempCmd);
++  XMLUtils::GetString(pRootElement, "cputemphwmon", m_cpuTempHwmon);
+ 
+   const TiXmlElement* pPowerManagement = pRootElement->FirstChildElement("powermanagement");
+   if (pPowerManagement)
+diff --git a/xbmc/settings/AdvancedSettings.h b/xbmc/settings/AdvancedSettings.h
+index 4ee8f5cda9..45aee9c6ab 100644
+--- a/xbmc/settings/AdvancedSettings.h
++++ b/xbmc/settings/AdvancedSettings.h
+@@ -349,6 +349,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
+ 
+     std::string m_cpuTempCmd;
+     std::string m_gpuTempCmd;
++    std::string m_cpuTempHwmon;
+ 
+     /* Power management command overrides */
+     std::string m_powerdownCommand;

@@ -1,0 +1,109 @@
+From b1cbe9c7b1f5762828fadc72eafbfc0e7b638539 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 19 Sep 2026 23:01:46 +0100
+Subject: [PATCH] [linux][sysfs] factor out the hwmon temperature lookup
+
+Finding the temperature input of a named hwmon device is open coded in
+the CPU info, and the GPU info needs the same scan. Move it to SysfsPath
+as HwmonTemperaturePath(), which takes the device name and optionally
+the input to read after a slash, and use it from CCPUInfoLinux.
+
+No functional change.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/platform/linux/CPUInfoLinux.cpp | 22 +++-------------------
+ xbmc/platform/linux/SysfsPath.cpp    | 27 +++++++++++++++++++++++++++
+ xbmc/platform/linux/SysfsPath.h      |  5 +++++
+ 3 files changed, 35 insertions(+), 19 deletions(-)
+
+diff --git a/xbmc/platform/linux/CPUInfoLinux.cpp b/xbmc/platform/linux/CPUInfoLinux.cpp
+index 183d75d4e9..2f55970201 100644
+--- a/xbmc/platform/linux/CPUInfoLinux.cpp
++++ b/xbmc/platform/linux/CPUInfoLinux.cpp
+@@ -104,27 +104,11 @@ CCPUInfoLinux::CCPUInfoLinux()
+       "cpu_thermal",
+   });
+ 
+-  for (int i = 0; i < 20; i++)
++  for (const auto& module : modules)
+   {
+-    CSysfsPath path{"/sys/class/hwmon/hwmon" + std::to_string(i) + "/name"};
+-    if (!path.Exists())
+-      continue;
+-
+-    auto name = path.Get<std::string>();
+-
+-    if (!name.has_value())
+-      continue;
+-
+-    if (modules.contains(*name))
+-    {
+-      std::string tempStr{"/sys/class/hwmon/hwmon" + std::to_string(i) + "/temp1_input"};
+-      CSysfsPath tempPath{tempStr};
+-      if (!tempPath.Exists())
+-        continue;
+-
+-      m_tempPath = tempStr;
++    m_tempPath = HwmonTemperaturePath(module);
++    if (!m_tempPath.empty())
+       break;
+-    }
+   }
+ 
+   m_cpuCount = sysconf(_SC_NPROCESSORS_ONLN);
+diff --git a/xbmc/platform/linux/SysfsPath.cpp b/xbmc/platform/linux/SysfsPath.cpp
+index af4f9cb401..e6d4c062d9 100644
+--- a/xbmc/platform/linux/SysfsPath.cpp
++++ b/xbmc/platform/linux/SysfsPath.cpp
+@@ -45,3 +45,30 @@ std::optional<std::string> CSysfsPath::Get()
+     return std::nullopt;
+   }
+ }
++
++std::string HwmonTemperaturePath(std::string_view sensor)
++{
++  const std::size_t slash = sensor.find('/');
++  const std::string_view name = sensor.substr(0, slash);
++  const std::string input{slash == std::string_view::npos ? "temp1_input"
++                                                          : sensor.substr(slash + 1)};
++
++  for (int i = 0; i < 20; i++)
++  {
++    const std::string device{"/sys/class/hwmon/hwmon" + std::to_string(i)};
++
++    CSysfsPath namePath{device + "/name"};
++    if (!namePath.Exists())
++      continue;
++
++    const auto deviceName = namePath.Get<std::string>();
++    if (!deviceName.has_value() || *deviceName != name)
++      continue;
++
++    const std::string temperature{device + "/" + input};
++    if (CSysfsPath{temperature}.Exists())
++      return temperature;
++  }
++
++  return {};
++}
+diff --git a/xbmc/platform/linux/SysfsPath.h b/xbmc/platform/linux/SysfsPath.h
+index 3c19703be2..c81d4dd046 100644
+--- a/xbmc/platform/linux/SysfsPath.h
++++ b/xbmc/platform/linux/SysfsPath.h
+@@ -14,6 +14,7 @@
+ #include <fstream>
+ #include <optional>
+ #include <string>
++#include <string_view>
+ 
+ class CSysfsPath
+ {
+@@ -56,3 +57,7 @@ private:
+ 
+ template<>
+ std::optional<std::string> CSysfsPath::Get<std::string>();
++
++/*! \brief Find a temperature input of a named hwmon device, "amdgpu" or
++ *         "amdgpu/temp2_input"; empty if there is no such device or input */
++std::string HwmonTemperaturePath(std::string_view sensor);

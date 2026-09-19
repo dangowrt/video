@@ -1,0 +1,162 @@
+From 8138800f26329f75d24dfbd711bae40575870e04 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 19 Sep 2026 23:03:53 +0100
+Subject: [PATCH] [linux][gpuinfo] read the GPU temperature from hwmon
+
+CGPUInfoLinux reports no temperature at all, so the GPU temperature
+labels and the codec overlay are empty on Linux while every other
+platform fills them.
+
+Read it from hwmon, picking the device whose name matches one of the
+GPU drivers or a generic gpu_thermal zone. As for the CPU that list
+cannot cover every platform, so gputemphwmon in advancedsettings.xml
+names the device, and after a slash the input, and takes precedence.
+The lookup happens on the first read rather than in the constructor,
+which runs before the settings are read.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/platform/linux/GPUInfoLinux.cpp | 61 +++++++++++++++++++++++++++-
+ xbmc/platform/linux/GPUInfoLinux.h   |  9 ++++
+ xbmc/settings/AdvancedSettings.cpp   |  2 +
+ xbmc/settings/AdvancedSettings.h     |  1 +
+ 4 files changed, 71 insertions(+), 2 deletions(-)
+
+diff --git a/xbmc/platform/linux/GPUInfoLinux.cpp b/xbmc/platform/linux/GPUInfoLinux.cpp
+index dd8585a204..2deeea17e9 100644
+--- a/xbmc/platform/linux/GPUInfoLinux.cpp
++++ b/xbmc/platform/linux/GPUInfoLinux.cpp
+@@ -8,17 +8,74 @@
+ 
+ #include "GPUInfoLinux.h"
+ 
++#include "ServiceBroker.h"
++#include "settings/AdvancedSettings.h"
++#include "settings/SettingsComponent.h"
++#include "utils/Temperature.h"
++
++#include "platform/linux/SysfsPath.h"
++
++#include <array>
++#include <string>
++#include <string_view>
++
++namespace
++{
++constexpr std::array<std::string_view, 4> SENSORS = {
++    "amdgpu",
++    "radeon",
++    "nouveau",
++    "gpu_thermal",
++};
++
++std::string FindSensor()
++{
++  const auto settings = CServiceBroker::GetSettingsComponent();
++  const auto advancedSettings = settings ? settings->GetAdvancedSettings() : nullptr;
++
++  if (advancedSettings && !advancedSettings->m_gpuTempHwmon.empty())
++    return HwmonTemperaturePath(advancedSettings->m_gpuTempHwmon);
++
++  for (const auto& sensor : SENSORS)
++  {
++    const std::string path{HwmonTemperaturePath(sensor)};
++    if (!path.empty())
++      return path;
++  }
++
++  return {};
++}
++} // namespace
++
+ std::unique_ptr<CGPUInfo> CGPUInfo::GetGPUInfo()
+ {
+   return std::make_unique<CGPUInfoLinux>();
+ }
+ 
++const std::string& CGPUInfoLinux::TemperaturePath() const
++{
++  if (!m_tempPathResolved)
++  {
++    m_tempPath = FindSensor();
++    m_tempPathResolved = true;
++  }
++
++  return m_tempPath;
++}
++
+ bool CGPUInfoLinux::SupportsPlatformTemperature() const
+ {
+-  return false;
++  return !TemperaturePath().empty();
+ }
+ 
+ bool CGPUInfoLinux::GetGPUPlatformTemperature(CTemperature& temperature) const
+ {
+-  return false;
++  auto temp = CSysfsPath(TemperaturePath()).Get<double>();
++  if (!temp.has_value())
++    return false;
++
++  temperature = CTemperature::CreateFromCelsius(*temp / 1000.0);
++  temperature.SetValid(true);
++
++  return true;
+ }
+diff --git a/xbmc/platform/linux/GPUInfoLinux.h b/xbmc/platform/linux/GPUInfoLinux.h
+index 152068fa0f..86c3b2633b 100644
+--- a/xbmc/platform/linux/GPUInfoLinux.h
++++ b/xbmc/platform/linux/GPUInfoLinux.h
+@@ -10,6 +10,8 @@
+ 
+ #include "platform/posix/GPUInfoPosix.h"
+ 
++#include <string>
++
+ class CGPUInfoLinux : public CGPUInfoPosix
+ {
+ public:
+@@ -19,4 +21,11 @@ public:
+ private:
+   bool SupportsPlatformTemperature() const override;
+   bool GetGPUPlatformTemperature(CTemperature& temperature) const override;
++
++  /*! \brief The sensor to read, resolved on first use because the settings
++   *         that may name it are read after this object is constructed */
++  const std::string& TemperaturePath() const;
++
++  mutable std::string m_tempPath;
++  mutable bool m_tempPathResolved{false};
+ };
+diff --git a/xbmc/settings/AdvancedSettings.cpp b/xbmc/settings/AdvancedSettings.cpp
+index 38e23b9c76..08c953102d 100644
+--- a/xbmc/settings/AdvancedSettings.cpp
++++ b/xbmc/settings/AdvancedSettings.cpp
+@@ -475,6 +475,7 @@ void CAdvancedSettings::Initialize()
+   m_cpuTempCmd = "";
+   m_gpuTempCmd = "";
+   m_cpuTempHwmon = "";
++  m_gpuTempHwmon = "";
+ 
+   m_powerdownCommand = "";
+   m_rebootCommand = "";
+@@ -1225,6 +1226,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
+   XMLUtils::GetString(pRootElement, "cputempcommand", m_cpuTempCmd);
+   XMLUtils::GetString(pRootElement, "gputempcommand", m_gpuTempCmd);
+   XMLUtils::GetString(pRootElement, "cputemphwmon", m_cpuTempHwmon);
++  XMLUtils::GetString(pRootElement, "gputemphwmon", m_gpuTempHwmon);
+ 
+   const TiXmlElement* pPowerManagement = pRootElement->FirstChildElement("powermanagement");
+   if (pPowerManagement)
+diff --git a/xbmc/settings/AdvancedSettings.h b/xbmc/settings/AdvancedSettings.h
+index 45aee9c6ab..c587fef633 100644
+--- a/xbmc/settings/AdvancedSettings.h
++++ b/xbmc/settings/AdvancedSettings.h
+@@ -350,6 +350,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
+     std::string m_cpuTempCmd;
+     std::string m_gpuTempCmd;
+     std::string m_cpuTempHwmon;
++    std::string m_gpuTempHwmon;
+ 
+     /* Power management command overrides */
+     std::string m_powerdownCommand;
