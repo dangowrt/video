@@ -1,0 +1,112 @@
+From b956a428f1b0872509e677cecb3fa936b95a0205 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 19 Sep 2026 21:14:49 +0100
+Subject: [PATCH] [input] let pointer motion be kept from waking the display
+
+A pointing device that reports on its own wakes the display and ends the
+screensaver without anybody touching it. An air mouse or a remote with a
+motion sensor does this whenever it is carried across the room, and a
+touchscreen does it for a raindrop, which is not what waking the display
+is expected to mean.
+
+Add input.pointerwakesscreen, on by default so nothing changes, which
+when turned off drops pointer motion while the screensaver or DPMS is
+active, leaving a key or a button to wake the display. Motion is only
+dropped while the display is off; once it is awake the pointer behaves
+as before.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../resource.language.en_gb/resources/strings.po   | 14 ++++++++++----
+ system/settings/settings.xml                       |  8 ++++++++
+ xbmc/input/InputManager.cpp                        |  6 ++++++
+ xbmc/settings/Settings.h                           |  1 +
+ 4 files changed, 25 insertions(+), 4 deletions(-)
+
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index d54f3d209c..78c71b2fae 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -8592,7 +8592,12 @@ msgctxt "#14129"
+ msgid "Wake a manually switched off display on input"
+ msgstr ""
+ 
+-#empty strings from id 14130 to 14186
++#: system/settings/settings.xml
++msgctxt "#14130"
++msgid "Pointer motion wakes the display"
++msgstr ""
++
++#empty strings from id 14131 to 14186
+ 
+ #: system/settings/settings.xml
+ msgctxt "#14187"
+@@ -20479,8 +20484,6 @@ msgctxt "#36194"
+ msgid "Let input wake a display that was switched off from the power menu. When disabled, only switching the display back on from the power menu wakes it."
+ msgstr ""
+ 
+-#empty strings from id 36195
+-
+ #. Description of setting with label #21372 "Forced DVD player region"
+ #: system/settings/settings.xml
+ msgctxt "#36195"
+@@ -20953,7 +20956,10 @@ msgctxt "#36282"
+ msgid "This category contains the settings for how CDs are handled."
+ msgstr ""
+ 
+-#empty strings from id 36283
++#. Description of setting with label #14130 "Pointer motion wakes the display"
++msgctxt "#36283"
++msgid "Let motion from a pointing device wake the display and end the screensaver. When disabled, a key press or a button is needed, and a pointing device that reports on its own, an air mouse carried across a room or a touchscreen registering a raindrop, leaves the display as it is. Pointing devices behave normally once the display is awake."
++msgstr ""
+ 
+ #. Description of setting with label #227 "Load audio CD information from online service"
+ #: system/settings/settings.xml
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index 8330675ed6..7c7413c06a 100755
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -3614,6 +3614,14 @@
+           <control type="toggle" />
+           <default>true</default>
+         </setting>
++        <setting id="input.pointerwakesscreen" type="boolean" label="14130" help="36283">
++          <level>2</level>
++          <control type="toggle" />
++          <default>true</default>
++          <dependencies>
++            <dependency type="enable" setting="input.enablemouse">true</dependency>
++          </dependencies>
++        </setting>
+         <setting id="input.enablejoystick" type="boolean" label="35100" help="36378">
+           <level>2</level>
+           <control type="toggle" />
+diff --git a/xbmc/input/InputManager.cpp b/xbmc/input/InputManager.cpp
+index 8bc30634dd..04b5e99528 100644
+--- a/xbmc/input/InputManager.cpp
++++ b/xbmc/input/InputManager.cpp
+@@ -125,6 +125,12 @@ bool CInputManager::ProcessMouse(int windowId)
+   // Reset the screensaver and idle timers
+   auto& components = CServiceBroker::GetAppComponents();
+   const auto appPower = components.GetComponent<CApplicationPowerHandling>();
++
++  if (mousekey == KEY_MOUSE_MOVE && (appPower->IsInScreenSaver() || appPower->IsDPMSActive()) &&
++      !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
++          CSettings::SETTING_INPUT_POINTERWAKESSCREEN))
++    return true;
++
+   appPower->ResetSystemIdleTimer();
+   appPower->ResetScreenSaver();
+ 
+diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+index 3c40405510..d7f627a6a9 100644
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -426,6 +426,7 @@ public:
+   static constexpr auto SETTING_INPUT_PERIPHERALS = "input.peripherals";
+   static constexpr auto SETTING_INPUT_PERIPHERALLIBRARIES = "input.peripherallibraries";
+   static constexpr auto SETTING_INPUT_ENABLEMOUSE = "input.enablemouse";
++  static constexpr auto SETTING_INPUT_POINTERWAKESSCREEN = "input.pointerwakesscreen";
+   static constexpr auto SETTING_INPUT_ASKNEWCONTROLLERS = "input.asknewcontrollers";
+   static constexpr auto SETTING_INPUT_CONTROLLERCONFIG = "input.controllerconfig";
+   static constexpr auto SETTING_INPUT_RUMBLENOTIFY = "input.rumblenotify";
