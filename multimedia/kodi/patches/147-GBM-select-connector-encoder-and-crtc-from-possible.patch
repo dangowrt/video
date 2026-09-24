@@ -1,0 +1,198 @@
+From fe00798d03045318ada8914435a90080fdfe991f Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 24 Sep 2026 19:37:13 +0100
+Subject: [PATCH] GBM: select connector, encoder and crtc from the possible
+ sets
+
+Kodi starts only if some other KMS client has already set a mode. The
+connector search skips any connector whose encoder_id is zero, the
+encoder search matches that same encoder_id, and the crtc search keeps
+only the crtc the encoder is already driving. All three are zero on a
+DRM device that nobody has driven yet, so on a fresh boot Kodi reports
+"Failed to find connected connector" for a connected, working output.
+
+Use what the objects advertise rather than what they are bound to. A
+connector carries the list of encoders that can drive it, and an
+encoder the bitmask of crtcs it can use, which GetPossibleCrtcs()
+already reads. Pick the first combination that exists, preferring the
+attached one where there is one, so a device that another client has
+already configured behaves exactly as before.
+
+m_orig_crtc stays unset when no crtc was attached, so the mode restore
+on shutdown correctly does nothing, and FindPreferredMode() then picks
+DRM_MODE_TYPE_PREFERRED from the connector.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/windowing/gbm/drm/DRMConnector.cpp | 26 ++++++++-
+ xbmc/windowing/gbm/drm/DRMConnector.h   |  3 ++
+ xbmc/windowing/gbm/drm/DRMUtils.cpp     | 72 ++++++++++++++-----------
+ 3 files changed, 68 insertions(+), 33 deletions(-)
+
+--- a/xbmc/windowing/gbm/drm/DRMConnector.cpp
++++ b/xbmc/windowing/gbm/drm/DRMConnector.cpp
+@@ -51,7 +51,8 @@ std::map<drmModeConnection, std::string>
+ } // namespace
+ 
+ CDRMConnector::CDRMConnector(int fd, uint32_t connector)
+-  : CDRMObject(fd), m_connector(drmModeGetConnector(m_fd, connector))
++  : CDRMObject(fd),
++    m_connector(drmModeGetConnector(m_fd, connector))
+ {
+   if (!m_connector)
+     throw std::runtime_error("drmModeGetConnector failed: " + std::string{strerror(errno)});
+@@ -99,6 +100,29 @@ std::string CDRMConnector::GetName()
+   return GetType() + "-" + std::to_string(m_connector->connector_type_id);
+ }
+ 
++std::vector<CDRMEncoder*> CDRMConnector::GetPossibleEncoders(
++    const std::vector<std::unique_ptr<CDRMEncoder>>& encoders) const
++{
++  std::vector<CDRMEncoder*> possible;
++
++  for (int i = 0; i < m_connector->count_encoders; i++)
++  {
++    auto encoder = std::ranges::find_if(
++        encoders, [this, i](auto& enc) { return enc->GetEncoderId() == m_connector->encoders[i]; });
++
++    if (encoder == encoders.end())
++      continue;
++
++    // Put the attached encoder at the front, nothing is attached before a modeset
++    if (m_connector->encoder_id == encoder->get()->GetEncoderId())
++      possible.insert(possible.begin(), encoder->get());
++    else
++      possible.push_back(encoder->get());
++  }
++
++  return possible;
++}
++
+ std::vector<uint8_t> CDRMConnector::GetEDID() const
+ {
+ 
+--- a/xbmc/windowing/gbm/drm/DRMConnector.h
++++ b/xbmc/windowing/gbm/drm/DRMConnector.h
+@@ -8,6 +8,7 @@
+ 
+ #pragma once
+ 
++#include "DRMEncoder.h"
+ #include "DRMObject.h"
+ 
+ #include <string>
+@@ -33,6 +34,8 @@ public:
+ 
+   uint32_t GetEncoderId() const { return m_connector->encoder_id; }
+   uint32_t* GetConnectorId() const { return &m_connector->connector_id; }
++  std::vector<CDRMEncoder*> GetPossibleEncoders(
++      const std::vector<std::unique_ptr<CDRMEncoder>>& encoders) const;
+   int GetModesCount() const { return m_connector->count_modes; }
+   drmModeModeInfoPtr GetModeForIndex(int index) const { return &m_connector->modes[index]; }
+ 
+--- a/xbmc/windowing/gbm/drm/DRMUtils.cpp
++++ b/xbmc/windowing/gbm/drm/DRMUtils.cpp
+@@ -651,12 +651,9 @@ bool CDRMUtils::FindConnector()
+   std::string connectorName = settings->GetString(CSettings::SETTING_VIDEOSCREEN_MONITOR);
+   if (connectorName != "Default")
+   {
+-    connector = std::find_if(m_connectors.begin(), m_connectors.end(),
+-                             [&connectorName](auto& connector)
+-                             {
+-                               return connector->GetEncoderId() > 0 && connector->IsConnected() &&
+-                                      connector->GetName() == connectorName;
+-                             });
++    connector =
++        std::find_if(m_connectors.begin(), m_connectors.end(), [&connectorName](auto& connector)
++                     { return connector->IsConnected() && connector->GetName() == connectorName; });
+ 
+     if (connector == m_connectors.end())
+     {
+@@ -667,8 +664,7 @@ bool CDRMUtils::FindConnector()
+ 
+   if (connectorName == "Default")
+   {
+-    connector = std::ranges::find_if(m_connectors, [](auto& conn)
+-                                     { return conn->GetEncoderId() > 0 && conn->IsConnected(); });
++    connector = std::ranges::find_if(m_connectors, [](auto& conn) { return conn->IsConnected(); });
+   }
+ 
+   if (connector == m_connectors.end())
+@@ -685,41 +681,53 @@ bool CDRMUtils::FindConnector()
+ 
+ bool CDRMUtils::FindEncoder()
+ {
+-  auto encoder = std::ranges::find_if(
+-      m_encoders, [this](auto& enc) { return enc->GetEncoderId() == m_connector->GetEncoderId(); });
+-
+-  if (encoder == m_encoders.end())
++  for (auto* encoder : m_connector->GetPossibleEncoders(m_encoders))
+   {
+-    CLog::LogF(LOGDEBUG, "Failed to find encoder for connector id: {}",
+-               *m_connector->GetConnectorId());
+-    return false;
+-  }
++    if (encoder->GetPossibleCrtcs(m_crtcs).empty())
++      continue;
+ 
+-  CLog::LogF(LOGINFO, "Using encoder: {}", encoder->get()->GetEncoderId());
++    CLog::LogF(LOGINFO, "Using encoder: {}", encoder->GetEncoderId());
+ 
+-  m_encoder = encoder->get();
+-  return true;
++    m_encoder = encoder;
++    return true;
++  }
++
++  CLog::LogF(LOGDEBUG, "Failed to find encoder for connector id: {}",
++             *m_connector->GetConnectorId());
++  return false;
+ }
+ 
+ bool CDRMUtils::FindCrtc()
+ {
+-  for (auto& crtc : m_encoder->GetPossibleCrtcs(m_crtcs))
++  CDRMCrtc* attached = nullptr;
++
++  if (m_encoder->GetCrtcId() > 0)
+   {
+-    if (crtc->GetCrtcId() != m_encoder->GetCrtcId())
+-      continue;
+-    m_orig_crtc = crtc;
+-    m_crtc = m_orig_crtc;
+-    if (m_orig_crtc->GetModeValid())
+-    {
+-      m_mode = m_orig_crtc->GetMode();
+-      CLog::LogF(LOGDEBUG, "Original crtc id: {}, mode: {}x{}{} @ {} Hz", m_crtc->GetCrtcId(),
+-                 m_mode->hdisplay, m_mode->vdisplay,
+-                 m_mode->flags & DRM_MODE_FLAG_INTERLACE ? "i" : "", m_mode->vrefresh);
+-    }
++    auto crtc = std::ranges::find_if(m_crtcs, [this](auto& c)
++                                     { return c->GetCrtcId() == m_encoder->GetCrtcId(); });
++    if (crtc != m_crtcs.end())
++      attached = crtc->get();
++  }
++
++  auto possible = m_encoder->GetPossibleCrtcs(m_crtcs, attached);
++  if (possible.empty())
++    return false;
++
++  m_crtc = possible.front();
++
++  if (m_crtc != attached)
+     return true;
++
++  m_orig_crtc = m_crtc;
++  if (m_orig_crtc->GetModeValid())
++  {
++    m_mode = m_orig_crtc->GetMode();
++    CLog::LogF(LOGDEBUG, "Original crtc id: {}, mode: {}x{}{} @ {} Hz", m_crtc->GetCrtcId(),
++               m_mode->hdisplay, m_mode->vdisplay,
++               m_mode->flags & DRM_MODE_FLAG_INTERLACE ? "i" : "", m_mode->vrefresh);
+   }
+ 
+-  return false;
++  return true;
+ }
+ 
+ bool CDRMUtils::RestoreOriginalMode()

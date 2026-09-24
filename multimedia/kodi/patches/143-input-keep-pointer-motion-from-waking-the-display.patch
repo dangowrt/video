@@ -23,8 +23,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/settings/Settings.h                           |  1 +
  4 files changed, 25 insertions(+), 4 deletions(-)
 
-diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index d54f3d209c..78c71b2fae 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
 @@ -8592,7 +8592,12 @@ msgctxt "#14129"
@@ -62,8 +60,6 @@ index d54f3d209c..78c71b2fae 100644
  
  #. Description of setting with label #227 "Load audio CD information from online service"
  #: system/settings/settings.xml
-diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 8330675ed6..7c7413c06a 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
 @@ -3614,6 +3614,14 @@
@@ -81,11 +77,9 @@ index 8330675ed6..7c7413c06a 100755
          <setting id="input.enablejoystick" type="boolean" label="35100" help="36378">
            <level>2</level>
            <control type="toggle" />
-diff --git a/xbmc/input/InputManager.cpp b/xbmc/input/InputManager.cpp
-index 8bc30634dd..04b5e99528 100644
 --- a/xbmc/input/InputManager.cpp
 +++ b/xbmc/input/InputManager.cpp
-@@ -125,6 +125,12 @@ bool CInputManager::ProcessMouse(int windowId)
+@@ -125,6 +125,12 @@ bool CInputManager::ProcessMouse(int win
    // Reset the screensaver and idle timers
    auto& components = CServiceBroker::GetAppComponents();
    const auto appPower = components.GetComponent<CApplicationPowerHandling>();
@@ -98,8 +92,6 @@ index 8bc30634dd..04b5e99528 100644
    appPower->ResetSystemIdleTimer();
    appPower->ResetScreenSaver();
  
-diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 3c40405510..d7f627a6a9 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
 @@ -426,6 +426,7 @@ public:

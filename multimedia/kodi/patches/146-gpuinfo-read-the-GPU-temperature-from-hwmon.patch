@@ -22,8 +22,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/settings/AdvancedSettings.h     |  1 +
  4 files changed, 71 insertions(+), 2 deletions(-)
 
-diff --git a/xbmc/platform/linux/GPUInfoLinux.cpp b/xbmc/platform/linux/GPUInfoLinux.cpp
-index dd8585a204..2deeea17e9 100644
 --- a/xbmc/platform/linux/GPUInfoLinux.cpp
 +++ b/xbmc/platform/linux/GPUInfoLinux.cpp
 @@ -8,17 +8,74 @@
@@ -103,8 +101,6 @@ index dd8585a204..2deeea17e9 100644
 +
 +  return true;
  }
-diff --git a/xbmc/platform/linux/GPUInfoLinux.h b/xbmc/platform/linux/GPUInfoLinux.h
-index 152068fa0f..86c3b2633b 100644
 --- a/xbmc/platform/linux/GPUInfoLinux.h
 +++ b/xbmc/platform/linux/GPUInfoLinux.h
 @@ -10,6 +10,8 @@
@@ -128,8 +124,6 @@ index 152068fa0f..86c3b2633b 100644
 +  mutable std::string m_tempPath;
 +  mutable bool m_tempPathResolved{false};
  };
-diff --git a/xbmc/settings/AdvancedSettings.cpp b/xbmc/settings/AdvancedSettings.cpp
-index 38e23b9c76..08c953102d 100644
 --- a/xbmc/settings/AdvancedSettings.cpp
 +++ b/xbmc/settings/AdvancedSettings.cpp
 @@ -475,6 +475,7 @@ void CAdvancedSettings::Initialize()
@@ -140,7 +134,7 @@ index 38e23b9c76..08c953102d 100644
  
    m_powerdownCommand = "";
    m_rebootCommand = "";
-@@ -1225,6 +1226,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
+@@ -1225,6 +1226,7 @@ void CAdvancedSettings::ParseSettingsFil
    XMLUtils::GetString(pRootElement, "cputempcommand", m_cpuTempCmd);
    XMLUtils::GetString(pRootElement, "gputempcommand", m_gpuTempCmd);
    XMLUtils::GetString(pRootElement, "cputemphwmon", m_cpuTempHwmon);
@@ -148,11 +142,9 @@ index 38e23b9c76..08c953102d 100644
  
    const TiXmlElement* pPowerManagement = pRootElement->FirstChildElement("powermanagement");
    if (pPowerManagement)
-diff --git a/xbmc/settings/AdvancedSettings.h b/xbmc/settings/AdvancedSettings.h
-index 45aee9c6ab..c587fef633 100644
 --- a/xbmc/settings/AdvancedSettings.h
 +++ b/xbmc/settings/AdvancedSettings.h
-@@ -350,6 +350,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
+@@ -350,6 +350,7 @@ class CAdvancedSettings : public ISettin
      std::string m_cpuTempCmd;
      std::string m_gpuTempCmd;
      std::string m_cpuTempHwmon;

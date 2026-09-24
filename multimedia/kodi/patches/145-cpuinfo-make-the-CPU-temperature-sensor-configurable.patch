@@ -20,8 +20,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/settings/AdvancedSettings.h     |  1 +
  4 files changed, 31 insertions(+), 2 deletions(-)
 
-diff --git a/xbmc/platform/linux/CPUInfoLinux.cpp b/xbmc/platform/linux/CPUInfoLinux.cpp
-index 2f55970201..5278518d20 100644
 --- a/xbmc/platform/linux/CPUInfoLinux.cpp
 +++ b/xbmc/platform/linux/CPUInfoLinux.cpp
 @@ -8,6 +8,9 @@
@@ -69,8 +67,6 @@ index 2f55970201..5278518d20 100644
    if (!temp.has_value())
      return false;
  
-diff --git a/xbmc/platform/linux/CPUInfoLinux.h b/xbmc/platform/linux/CPUInfoLinux.h
-index ed79afc5b6..3607b03e64 100644
 --- a/xbmc/platform/linux/CPUInfoLinux.h
 +++ b/xbmc/platform/linux/CPUInfoLinux.h
 @@ -25,6 +25,12 @@ public:
@@ -86,8 +82,6 @@ index ed79afc5b6..3607b03e64 100644
    std::string m_tempPath;
 +  bool m_sensorResolved{false};
  };
-diff --git a/xbmc/settings/AdvancedSettings.cpp b/xbmc/settings/AdvancedSettings.cpp
-index 78a4a55535..38e23b9c76 100644
 --- a/xbmc/settings/AdvancedSettings.cpp
 +++ b/xbmc/settings/AdvancedSettings.cpp
 @@ -474,6 +474,7 @@ void CAdvancedSettings::Initialize()
@@ -98,7 +92,7 @@ index 78a4a55535..38e23b9c76 100644
  
    m_powerdownCommand = "";
    m_rebootCommand = "";
-@@ -1223,6 +1224,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
+@@ -1223,6 +1224,7 @@ void CAdvancedSettings::ParseSettingsFil
  
    XMLUtils::GetString(pRootElement, "cputempcommand", m_cpuTempCmd);
    XMLUtils::GetString(pRootElement, "gputempcommand", m_gpuTempCmd);
@@ -106,11 +100,9 @@ index 78a4a55535..38e23b9c76 100644
  
    const TiXmlElement* pPowerManagement = pRootElement->FirstChildElement("powermanagement");
    if (pPowerManagement)
-diff --git a/xbmc/settings/AdvancedSettings.h b/xbmc/settings/AdvancedSettings.h
-index 4ee8f5cda9..45aee9c6ab 100644
 --- a/xbmc/settings/AdvancedSettings.h
 +++ b/xbmc/settings/AdvancedSettings.h
-@@ -349,6 +349,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
+@@ -349,6 +349,7 @@ class CAdvancedSettings : public ISettin
  
      std::string m_cpuTempCmd;
      std::string m_gpuTempCmd;

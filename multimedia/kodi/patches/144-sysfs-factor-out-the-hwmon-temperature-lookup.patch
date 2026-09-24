@@ -17,8 +17,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/platform/linux/SysfsPath.h      |  5 +++++
  3 files changed, 35 insertions(+), 19 deletions(-)
 
-diff --git a/xbmc/platform/linux/CPUInfoLinux.cpp b/xbmc/platform/linux/CPUInfoLinux.cpp
-index 183d75d4e9..2f55970201 100644
 --- a/xbmc/platform/linux/CPUInfoLinux.cpp
 +++ b/xbmc/platform/linux/CPUInfoLinux.cpp
 @@ -104,27 +104,11 @@ CCPUInfoLinux::CCPUInfoLinux()
@@ -52,11 +50,9 @@ index 183d75d4e9..2f55970201 100644
    }
  
    m_cpuCount = sysconf(_SC_NPROCESSORS_ONLN);
-diff --git a/xbmc/platform/linux/SysfsPath.cpp b/xbmc/platform/linux/SysfsPath.cpp
-index af4f9cb401..e6d4c062d9 100644
 --- a/xbmc/platform/linux/SysfsPath.cpp
 +++ b/xbmc/platform/linux/SysfsPath.cpp
-@@ -45,3 +45,30 @@ std::optional<std::string> CSysfsPath::Get()
+@@ -45,3 +45,30 @@ std::optional<std::string> CSysfsPath::G
      return std::nullopt;
    }
  }
@@ -87,8 +83,6 @@ index af4f9cb401..e6d4c062d9 100644
 +
 +  return {};
 +}
-diff --git a/xbmc/platform/linux/SysfsPath.h b/xbmc/platform/linux/SysfsPath.h
-index 3c19703be2..c81d4dd046 100644
 --- a/xbmc/platform/linux/SysfsPath.h
 +++ b/xbmc/platform/linux/SysfsPath.h
 @@ -14,6 +14,7 @@

@@ -20,8 +20,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/settings/Settings.h                           |  1 +
  4 files changed, 22 insertions(+), 4 deletions(-)
 
-diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 45bc746556..d54f3d209c 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
 @@ -8587,7 +8587,12 @@ msgctxt "#14128"
@@ -52,8 +50,6 @@ index 45bc746556..d54f3d209c 100644
  
  #. Description of setting with label #21372 "Forced DVD player region"
  #: system/settings/settings.xml
-diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 3ab8d2129c..8330675ed6 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
 @@ -3756,6 +3756,11 @@
@@ -68,11 +64,9 @@ index 3ab8d2129c..8330675ed6 100755
          <setting id="powermanagement.restartplayer" type="boolean" label="1451" help="36416">
            <level>1</level>
            <default>true</default>
-diff --git a/xbmc/application/ApplicationPowerHandling.cpp b/xbmc/application/ApplicationPowerHandling.cpp
-index 3b9c2e080a..46da6b27ea 100644
 --- a/xbmc/application/ApplicationPowerHandling.cpp
 +++ b/xbmc/application/ApplicationPowerHandling.cpp
-@@ -119,11 +119,13 @@ bool CApplicationPowerHandling::WakeUpScreenSaverAndDPMS(bool bPowerOffKeyPresse
+@@ -119,11 +119,13 @@ bool CApplicationPowerHandling::WakeUpSc
    // First reset DPMS, if active
    if (m_dpmsIsActive)
    {
@@ -88,8 +82,6 @@ index 3b9c2e080a..46da6b27ea 100644
      ResetScreenSaverTimer();
      result = !m_screensaverActive || WakeUpScreenSaver(bPowerOffKeyPressed);
    }
-diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index c33a458aef..3c40405510 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
 @@ -446,6 +446,7 @@ public:
