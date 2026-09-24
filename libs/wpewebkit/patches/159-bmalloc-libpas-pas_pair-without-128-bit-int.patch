@@ -1,0 +1,31 @@
+From 865c6ffb90d4155206330d5a877576ce404fffba Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 24 Sep 2026 09:24:56 +0100
+Subject: [PATCH] bmalloc: build libpas where there is no 128-bit integer
+
+pas_pair is a two-word structure under Clang and on 32-bit ARM, and a
+__uint128_t everywhere else. GCC provides no 128-bit integer type on
+32-bit x86, so pas_utils.h fails to compile there with "unknown type
+name '__uint128_t'", even though libpas itself is only enabled on
+64-bit.
+
+Select the structure form whenever the compiler defines no
+__SIZEOF_INT128__, which covers every target lacking the type rather
+than enumerating them one architecture at a time.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ Source/bmalloc/libpas/src/libpas/pas_utils.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/Source/bmalloc/libpas/src/libpas/pas_utils.h
++++ b/Source/bmalloc/libpas/src/libpas/pas_utils.h
+@@ -920,7 +920,7 @@ static PAS_ALWAYS_INLINE uintptr_t pas_o
+     return value;
+ }
+ 
+-#if PAS_COMPILER(CLANG) || PAS_ARM32
++#if PAS_COMPILER(CLANG) || PAS_ARM32 || !defined(__SIZEOF_INT128__)
+ 
+ struct pas_pair;
+ typedef struct pas_pair pas_pair;
