@@ -49,12 +49,10 @@ start_service() {
 	done
 
 	# Plymouth holds DRM master until told otherwise, which would fail
-	# kodi's own drmSetMaster. Retaining the splash keeps the mode and
-	# the last frame up over the gap until kodi draws.
-	# --wait, because quit returns as soon as the command is sent and
-	# kodi would race plymouthd for drm master.
-	[ -x /usr/bin/plymouth ] && \
-		/usr/bin/plymouth quit --retain-splash --wait
+	# kodi's own drmSetMaster. Releasing keeps the daemon, the device
+	# and the mode alive, so the last frame stays up over the gap and
+	# the splash can come back at shutdown without a second modeset.
+	[ -x /etc/init.d/plymouth ] && /etc/init.d/plymouth release
 
 	mkdir -p "$data_dir" "$temp_dir"
 	chown "$KODI_USER:$KODI_USER" "$data_dir" "$temp_dir"
