@@ -1,0 +1,36 @@
+From 57535cb1dff34efc28b72b55997773eaec7a6bbe Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 25 Sep 2026 12:51:04 +0100
+Subject: [PATCH 101/101] cmake: warn without failing the build
+
+-Werror turns any warning a later compiler invents into a build failure
+for everyone packaging the library. The std::swap specialisation already
+trips -Wunused-function on current GCC.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ CMakeLists.txt | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 76b5a62..203fe6e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -41,11 +41,11 @@ else()
+ endif()
+ 
+ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+-    set(WARNINGS "-Werror" "-Wall")
++    set(WARNINGS "-Wall")
+ elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+-    set(WARNINGS "-Werror" "-Wall")
++    set(WARNINGS "-Wall")
+ elseif(MSVC)
+-    set(WARNINGS "/WX" "/W4")
++    set(WARNINGS "/W4")
+ endif()
+ target_compile_options(crossguid PRIVATE ${WARNINGS})
+ 
+-- 
+2.55.0
+
