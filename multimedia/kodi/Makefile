@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kodi
 PKG_VERSION:=22.0_beta2
-PKG_RELEASE:=22
+PKG_RELEASE:=23
 
 # Tag 22.0b2-Piers (version.txt: 22.0 BETA2); pinned by commit so the
 # tarball name stays stable should the tag ever move.
@@ -47,15 +47,14 @@ include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/cmake.mk
 include $(TOPDIR)/feeds/packages/lang/python/python3-version.mk
 
-# Kodi insists on building libdvdread/libdvdnav itself on Linux (it needs
-# its own patched libdvdnav) and would download the archives during the
-# cmake build; crossguid has no OpenWrt package and is built in-tree as
-# well. Fetch the exact files Kodi expects through OpenWrt's download
-# machinery instead and hand them over as local URLs below; Kodi's own
-# SHA512 check (tools/depends/target/*/*-VERSION) still applies to them.
+# Kodi insists on building libdvdread/libdvdnav itself on Linux, it needs
+# its own patched libdvdnav, and would download the archives during the
+# cmake build. Fetch the exact files it expects through OpenWrt's
+# download machinery instead and hand them over as local URLs below;
+# Kodi's own SHA512 check (tools/depends/target/*/*-VERSION) still
+# applies to them.
 LIBDVDREAD_VERSION:=7.0.1
 LIBDVDNAV_VERSION:=7.0.0
-CROSSGUID_VERSION:=ca1bf4b810e2d188d04cb6286f957008ee1b7681
 
 define Download/libdvdread
   FILE:=libdvdread-$(LIBDVDREAD_VERSION).tar.bz2
@@ -71,20 +70,13 @@ define Download/libdvdnav
 endef
 $(eval $(call Download,libdvdnav))
 
-define Download/crossguid
-  FILE:=crossguid-$(CROSSGUID_VERSION).tar.gz
-  URL:=https://mirrors.kodi.tv/build-deps/sources/
-  HASH:=6be27e0b3a4907f0cd3cfadec255ee1b925569e1bd06e67a4d2f4267299b69c4
-endef
-$(eval $(call Download,crossguid))
-
 define Package/kodi
   SECTION:=multimedia
   CATEGORY:=Multimedia
   TITLE:=Kodi media centre
   URL:=https://kodi.tv/
   DEPENDS:=@FFMPEG_GPL +libffmpeg +libass +waylandpp +libwayland \
-	+libxkbcommon +xkeyboard-config +libinput +libudev +libdisplay-info +libmesa +libdrm \
+	+libxkbcommon +xkeyboard-config +libinput +libudev +libdisplay-info +libmesa +libdrm +crossguid \
 	+KODI_WEBSERVER:libmicrohttpd +KODI_DBUS:libdbus +KODI_SMB:samba4-libs \
 	+KODI_PULSEAUDIO:libpulse +KODI_PIPEWIRE:pipewire \
 	+KODI_AVAHI:libavahi-client +KODI_AVAHI:avahi-dbus-daemon \
@@ -174,10 +166,7 @@ CMAKE_OPTIONS += \
 	-DENABLE_INCLUDEWHATYOUUSE=OFF
 
 # Internal (vendored/ExternalProject) dependencies: use the system
-# package wherever one exists. crossguid has none, so Kodi builds it as
-# a cmake ExternalProject from the pre-fetched archive; such a sub-build
-# only inherits a toolchain file, hence the one generated in
-# Build/Configure from files/openwrt-toolchain.cmake.in.
+# package, every one of these has an OpenWrt package.
 # Exception KissFFT=ON: builds Kodi's bundled in-tree copy
 # (xbmc/contrib, plain sources compiled with the target toolchain, no
 # download, no ExternalProject) - there is no system kissfft package.
@@ -191,9 +180,7 @@ CMAKE_OPTIONS += \
 	-DENABLE_INTERNAL_LZO2=OFF \
 	-DENABLE_INTERNAL_MARIADBCLIENT=OFF \
 	-DENABLE_INTERNAL_XSLT=OFF \
-	-DENABLE_INTERNAL_CROSSGUID=ON \
-	-DCROSSGUID_URL=$(DL_DIR)/crossguid-$(CROSSGUID_VERSION).tar.gz \
-	-DCROSSGUID_TOOLCHAIN_FILE=$(PKG_BUILD_DIR)/openwrt-toolchain.cmake \
+	-DENABLE_INTERNAL_CROSSGUID=OFF \
 	-DENABLE_INTERNAL_FLATBUFFERS=OFF \
 	-DFLATBUFFERS_FLATC_EXECUTABLE=$(STAGING_DIR_HOSTPKG)/bin/flatc \
 	-DENABLE_INTERNAL_NLOHMANNJSON=OFF \
@@ -280,23 +267,6 @@ TARGET_LDFLAGS += -Wl,-z,stack-size=2097152
 TARGET_LDFLAGS += \
 	-Wl,-rpath-link,$(STAGING_DIR)/usr/lib/pulseaudio \
 	-Wl,-rpath-link,$(STAGING_DIR)/usr/lib/samba
-
-define Build/Configure
-	$(STAGING_DIR_HOST)/bin/sed \
-		-e 's|@ARCH@|$(ARCH)|g' \
-		-e 's|@CC@|$(CMAKE_C_COMPILER)|g' \
-		-e 's|@CXX@|$(CMAKE_CXX_COMPILER)|g' \
-		-e 's|@LAUNCHER@|$(CMAKE_C_COMPILER_LAUNCHER)|g' \
-		-e 's|@AR@|$(CMAKE_AR)|g' \
-		-e 's|@NM@|$(CMAKE_NM)|g' \
-		-e 's|@RANLIB@|$(CMAKE_RANLIB)|g' \
-		-e 's|@FIND_ROOT_PATH@|$(CMAKE_FIND_ROOT_PATH)|g' \
-		-e 's|@CFLAGS@|$(TARGET_CFLAGS) $(EXTRA_CFLAGS) $(TARGET_CPPFLAGS) $(EXTRA_CPPFLAGS)|g' \
-		-e 's|@CXXFLAGS@|$(TARGET_CXXFLAGS) $(EXTRA_CXXFLAGS) $(TARGET_CPPFLAGS) $(EXTRA_CPPFLAGS)|g' \
-		-e 's|@LDFLAGS@|$(TARGET_LDFLAGS) $(EXTRA_LDFLAGS)|g' \
-		./files/openwrt-toolchain.cmake.in > $(PKG_BUILD_DIR)/openwrt-toolchain.cmake
-	$(call Build/Configure/Default)
-endef
 
 define Host/Configure
 	$(STAGING_DIR_HOST)/bin/cmake \

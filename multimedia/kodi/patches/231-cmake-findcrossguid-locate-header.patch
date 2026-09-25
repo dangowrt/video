@@ -1,0 +1,48 @@
+From e258f22a4c5c133c3607c1044bf73b270a4ad7de Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 25 Sep 2026 13:04:04 +0100
+Subject: [PATCH] FindCrossGUID: look the header up instead of trusting
+ pkg-config
+
+The include directory taken off PkgConfig::CROSSGUID is used to test
+whether crossguid is new enough to provide crossguid/guid.hpp. It is
+unusable for that twice over: pkg-config omits -I for a default include
+directory, leaving the property empty, and when it does report one it is
+a path on the target, which need not exist on the machine running cmake.
+Either way the test fails, HAVE_NEW_CROSSGUID stays undefined, and
+StringUtils.cpp includes the pre-0.2.0 <guid.h> that no current
+crossguid ships:
+
+  StringUtils.cpp:24:10: fatal error: guid.h: No such file or directory
+
+Use find_path, which honours CMAKE_FIND_ROOT_PATH and so answers for the
+target rather than for the build host.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ cmake/modules/FindCrossGUID.cmake | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/cmake/modules/FindCrossGUID.cmake b/cmake/modules/FindCrossGUID.cmake
+index 906b4c3..8900d9a 100644
+--- a/cmake/modules/FindCrossGUID.cmake
++++ b/cmake/modules/FindCrossGUID.cmake
+@@ -55,10 +55,13 @@ if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
+     if(TARGET PkgConfig::${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME} AND NOT TARGET ${${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_BUILD_NAME})
+       add_library(${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} ALIAS PkgConfig::${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME})
+ 
+-      get_target_property(_crossguid_include_dir PkgConfig::${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME} INTERFACE_INCLUDE_DIRECTORIES)
++      # An include directory from pkg-config names a path on the target and
++      # is omitted altogether when it is a default one, so it cannot be
++      # tested for the header. Look the header up instead.
++      find_path(_crossguid_include_dir NAMES crossguid/guid.hpp)
+ 
+       # NEW_CROSSGUID >= 0.2.0 release
+-      if(EXISTS "${_crossguid_include_dir}/crossguid/guid.hpp")
++      if(_crossguid_include_dir)
+         list(APPEND ${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_COMPILE_DEFINITIONS HAVE_NEW_CROSSGUID)
+       endif()
+     elseif(TARGET crossguid AND NOT TARGET ${${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_BUILD_NAME})
+-- 
+2.55.0
+
