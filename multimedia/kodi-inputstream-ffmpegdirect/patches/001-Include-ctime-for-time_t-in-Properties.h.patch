@@ -1,0 +1,23 @@
+From 99bd345bcdf90e08c196eaaea276bc0b2ab4cd1a Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 24 Oct 2026 13:07:31 +0100
+Subject: [PATCH] Include <ctime> for time_t in Properties.h
+
+Properties.h declares time_t members without including <ctime>, so it
+relies on another header to declare time_t. With musl none does.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ src/utils/Properties.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+--- a/src/utils/Properties.h
++++ b/src/utils/Properties.h
+@@ -7,6 +7,7 @@
+ 
+ #pragma once
+ 
++#include <ctime>
+ #include <string>
+ 
+ namespace ffmpegdirect
