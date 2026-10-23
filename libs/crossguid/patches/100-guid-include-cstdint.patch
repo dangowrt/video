@@ -1,0 +1,29 @@
+From 4fb3a188462af06a6fdedcd5b058313c17bae790 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 25 Sep 2026 12:51:04 +0100
+Subject: [PATCH 100/101] guid: include cstdint for the fixed width types
+
+The header uses uint64_t and uint8_t but relies on some other header to
+pull in <cstdint>. GCC 13 no longer does, and the build fails with
+"uint64_t was not declared in this scope".
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ include/crossguid/guid.hpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/include/crossguid/guid.hpp b/include/crossguid/guid.hpp
+index 61e0f17..a429761 100644
+--- a/include/crossguid/guid.hpp
++++ b/include/crossguid/guid.hpp
+@@ -36,6 +36,7 @@ THE SOFTWARE.
+ #include <string_view>
+ #include <utility>
+ #include <iomanip>
++#include <cstdint>
+ 
+ #define BEGIN_XG_NAMESPACE namespace xg {
+ #define END_XG_NAMESPACE }
+-- 
+2.55.0
+
