@@ -1,0 +1,82 @@
+#!/bin/sh
+# Park the USB audio device while nothing is playing. Unbinding it lets the
+# USB core suspend the device, which an amplifier reports as standby.
+
+STATE=/var/run/kodi-standby.amp
+CONF=/etc/kodi-standby.conf
+
+AMP_USB=
+AMP_USB_ID=
+
+[ -f "$CONF" ] && . "$CONF"
+
+log() {
+	logger -t kodi-standby "amp: $1"
+}
+
+# Whichever USB device currently carries an audio interface, unless the
+# configuration names one outright.
+amp_find() {
+	local dev name id intf
+
+	[ -n "$AMP_USB" ] && { echo "$AMP_USB"; return 0; }
+
+	for dev in /sys/bus/usb/devices/*; do
+		[ -e "$dev/idVendor" ] || continue
+		name=${dev##*/}
+
+		if [ -n "$AMP_USB_ID" ]; then
+			id="$(cat "$dev/idVendor"):$(cat "$dev/idProduct")"
+			[ "$id" = "$AMP_USB_ID" ] && { echo "$name"; return 0; }
+			continue
+		fi
+
+		for intf in /sys/bus/usb/devices/"$name":*/driver; do
+			case "$(readlink -f "$intf" 2>/dev/null)" in
+			*/snd-usb-audio) echo "$name"; return 0 ;;
+			esac
+		done
+	done
+
+	return 1
+}
+
+amp_down() {
+	local name
+
+	[ -f "$STATE" ] && return 0
+
+	name="$(amp_find)" || { log "no USB audio device present"; return 0; }
+	echo "$name" > "$STATE"
+
+	if echo "$name" > /sys/bus/usb/drivers/usb/unbind 2>/dev/null; then
+		log "unbound $name"
+	else
+		log "could not unbind $name"
+		rm -f "$STATE"
+	fi
+}
+
+# The device is gone from the audio interface scan once unbound, so the
+# name has to come back from the state file rather than another search.
+amp_up() {
+	local name
+
+	[ -f "$STATE" ] || return 0
+
+	name="$(cat "$STATE")"
+	rm -f "$STATE"
+
+	if echo "$name" > /sys/bus/usb/drivers/usb/bind 2>/dev/null; then
+		log "bound $name"
+	else
+		log "could not bind $name"
+	fi
+}
+
+case "$1" in
+audio-off) amp_down ;;
+audio-on) amp_up ;;
+esac
+
+exit 0
