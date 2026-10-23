@@ -1,0 +1,50 @@
+From ef08c8c26855a83689e45637e5b41b98a4455e4c Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 8 Oct 2026 14:12:26 +0100
+Subject: [PATCH] EndianSwap: drop the PowerPC inline assembly
+
+Endian_Swap16() and Endian_Swap32() carry PowerPC inline assembly next
+to the portable C versions. Use the C versions on every architecture;
+compilers recognise them as byte swaps.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/utils/EndianSwap.h | 20 --------------------
+ 1 file changed, 20 deletions(-)
+
+--- a/xbmc/utils/EndianSwap.h
++++ b/xbmc/utils/EndianSwap.h
+@@ -23,25 +23,6 @@
+ extern "C" {
+ #endif
+ 
+-#if defined(__GNUC__) && (defined(__powerpc__) || defined(__ppc__))
+-static __inline__ uint16_t Endian_Swap16(uint16_t x)
+-{
+-        uint16_t result;
+-
+-        __asm__("rlwimi %0,%2,8,16,23" : "=&r" (result) : "0" (x >> 8), "r" (x));
+-        return result;
+-}
+-
+-static __inline__ uint32_t Endian_Swap32(uint32_t x)
+-{
+-        uint32_t result;
+-
+-        __asm__("rlwimi %0,%2,24,16,23" : "=&r" (result) : "0" (x>>24), "r" (x));
+-        __asm__("rlwimi %0,%2,8,8,15"   : "=&r" (result) : "0" (result),    "r" (x));
+-        __asm__("rlwimi %0,%2,24,0,7"   : "=&r" (result) : "0" (result),    "r" (x));
+-        return result;
+-}
+-#else
+ static __inline__ uint16_t Endian_Swap16(uint16_t x) {
+         return((x<<8)|(x>>8));
+ }
+@@ -49,7 +30,6 @@ static __inline__ uint16_t Endian_Swap16
+ static __inline__ uint32_t Endian_Swap32(uint32_t x) {
+         return((x<<24)|((x<<8)&0x00FF0000)|((x>>8)&0x0000FF00)|(x>>24));
+ }
+-#endif
+ 
+ static __inline__ uint64_t Endian_Swap64(uint64_t x) {
+         uint32_t hi, lo;

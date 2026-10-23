@@ -1,0 +1,47 @@
+From 9d77554a9cd2b0579c4ce258f44c8c60a808a7e1 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 22 Oct 2026 15:41:08 +0100
+Subject: [PATCH] WebPlayer: give the web client inputstream.adaptive's CDM
+
+A page that uses Encrypted Media Extensions needs a content decryption
+module, and the client has no way to find the one installed for Kodi.
+Pass inputstream.adaptive's decrypter path, translated, in
+KODI_WEB_CDM_DIR when the client is started, so pages decrypt with the
+same CDM as Kodi's own players and follow that add-on's setting.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/cores/WebPlayer/WebClientManager.cpp | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+--- a/xbmc/cores/WebPlayer/WebClientManager.cpp
++++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
+@@ -98,6 +98,18 @@ std::string FirstRenderNode()
+   return path;
+ }
+ 
++std::string CdmDirectory()
++{
++  ADDON::AddonPtr addon;
++  if (!CServiceBroker::GetAddonMgr().GetAddon("inputstream.adaptive", addon,
++                                              ADDON::AddonType::INPUTSTREAM,
++                                              ADDON::OnlyEnabled::CHOICE_YES))
++    return {};
++
++  const std::string path = addon->GetSetting("DECRYPTERPATH");
++  return path.empty() ? path : CSpecialProtocol::TranslatePath(path);
++}
++
+ void NotifyUplinkMissing(const std::string& profile, const std::string& uplink)
+ {
+   CLog::Log(LOGERROR, "CWebClientManager::{}: the uplink \"{}\" of {} does not resolve",
+@@ -212,6 +224,9 @@ void CWebClientManager::Spawn()
+   // the client's audio sinks play through Kodi's audio engine
+   if (m_audio)
+     env.emplace(KODI_WEB_AUDIO_ENV, m_audio->GetPath());
++  // pages decrypt with the CDM that inputstream.adaptive installed
++  if (const std::string cdm = CdmDirectory(); !cdm.empty())
++    env.emplace("KODI_WEB_CDM_DIR", cdm);
+   m_host->SpawnClient({command}, std::move(env));
+ }
+ 

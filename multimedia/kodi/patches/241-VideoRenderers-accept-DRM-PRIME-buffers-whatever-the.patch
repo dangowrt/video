@@ -1,0 +1,47 @@
+From 265fd2b15577eadd81ffca08450552e39f7da8da Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 8 Oct 2026 19:21:29 +0100
+Subject: [PATCH] VideoRenderers: accept DRM PRIME buffers whatever the decoder
+ setting
+
+Both DRM PRIME renderers refuse to be created while
+videoplayer.useprimedecoder is off. That setting governs whether
+VideoPlayer instantiates the DRM PRIME decoder, and
+CDVDVideoCodecDRMPRIME::Create() already honours it, so with the
+setting off VideoPlayer never produces a DRM PRIME buffer and the
+check in the renderers never decides anything for it. A player that
+receives DRM PRIME buffers from elsewhere, such as a Wayland client's
+dmabufs, found no renderer with the default settings. The buffer type
+is the criterion, and the renderers keep the PRIME render method
+setting that selects between plane scanout and EGL.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../VideoRenderers/HwDecRender/RendererDRMPRIME.cpp            | 3 ---
+ .../VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp        | 3 ---
+ 2 files changed, 6 deletions(-)
+
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.cpp
+@@ -42,9 +42,6 @@ CRendererDRMPRIME::~CRendererDRMPRIME()
+ CBaseRenderer* CRendererDRMPRIME::Create(CVideoBuffer* buffer)
+ {
+   auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+-  if (!settings->GetBool(CSettings::SETTING_VIDEOPLAYER_USEPRIMEDECODER))
+-    return nullptr;
+-
+   if (buffer && settings->GetInt(CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER) == 0)
+   {
+     auto buf = dynamic_cast<CVideoBufferDRMPRIME*>(buffer);
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
+@@ -41,9 +41,6 @@ CBaseRenderer* CRendererDRMPRIMEGLES::Cr
+     return nullptr;
+ 
+   auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+-  if (!settings->GetBool(CSettings::SETTING_VIDEOPLAYER_USEPRIMEDECODER))
+-    return nullptr;
+-
+   if (settings->GetInt(CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER) != 1)
+     return nullptr;
+ 

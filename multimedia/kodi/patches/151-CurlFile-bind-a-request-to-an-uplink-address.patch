@@ -1,0 +1,178 @@
+From 74121d43787372a56e85013f941907fde45d72b6 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 17 Sep 2026 18:41:54 +0100
+Subject: [PATCH] CurlFile: bind a request to an uplink address
+
+Add a local_addr protocol option, so a URL can say which uplink it must
+leave through, and hand the resolved address to curl as CURLOPT_INTERFACE.
+The option has to be recognised explicitly because the dispatcher turns
+anything it does not know into an HTTP request header, which would put
+the address on the wire.
+
+The handle pool matches on protocol and host alone, so a pooled handle
+carries its connections across requests that want different uplinks.
+Key it on the uplink as well.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/filesystem/CurlFile.cpp   | 24 +++++++++++++++++++-----
+ xbmc/filesystem/CurlFile.h     |  1 +
+ xbmc/filesystem/DllLibCurl.cpp | 10 ++++++++--
+ xbmc/filesystem/DllLibCurl.h   |  4 +++-
+ 4 files changed, 31 insertions(+), 8 deletions(-)
+
+--- a/xbmc/filesystem/CurlFile.cpp
++++ b/xbmc/filesystem/CurlFile.cpp
+@@ -13,6 +13,7 @@
+ #include "URL.h"
+ #include "filesystem/SpecialProtocol.h"
+ #include "network/DNSNameCache.h"
++#include "network/UplinkAddress.h"
+ #include "settings/AdvancedSettings.h"
+ #include "settings/Settings.h"
+ #include "settings/SettingsComponent.h"
+@@ -511,6 +512,7 @@ void CCurlFile::Close()
+   m_url.clear();
+   m_referer.clear();
+   m_cookie.clear();
++  m_uplinkAddress.clear();
+ 
+   m_opened = false;
+   m_forWrite = false;
+@@ -732,6 +734,13 @@ void CCurlFile::SetCommonOptions(CReadSt
+   if (!m_cipherlist.empty())
+     g_curlInterface.easy_setopt(h, CURLOPT_SSL_CIPHER_LIST, m_cipherlist.c_str());
+ 
++  if (!m_uplinkAddress.empty())
++  {
++    const std::string address = KODI::NETWORK::ResolveUplinkAddress(m_uplinkAddress);
++    if (!address.empty())
++      g_curlInterface.easy_setopt(h, CURLOPT_INTERFACE, address.c_str());
++  }
++
+   if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_curlDisableHTTP2)
+     g_curlInterface.easy_setopt(h, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+   else
+@@ -955,6 +964,8 @@ void CCurlFile::ParseAndCorrectUrl(CURL
+           SetAcceptCharset(value);
+         else if (name == "sslcipherlist")
+           m_cipherlist = value;
++        else if (name == "local_addr" || name == "local-address")
++          m_uplinkAddress = value;
+         else if (name == "connection-timeout")
+           m_connecttimeout = strtol(value.c_str(), NULL, 10);
+         else if (name == "failonerror")
+@@ -1151,7 +1162,8 @@ bool CCurlFile::Open(const CURL& url)
+     g_curlInterface.easy_acquire(url2.GetProtocol().c_str(),
+                                 url2.GetHostName().c_str(),
+                                 &m_state->m_easyHandle,
+-                                &m_state->m_multiHandle);
++                                &m_state->m_multiHandle,
++                                m_uplinkAddress.c_str());
+ 
+   // setup common curl options
+   SetCommonOptions(m_state,
+@@ -1265,7 +1277,8 @@ bool CCurlFile::OpenForWrite(const CURL&
+   g_curlInterface.easy_acquire(url2.GetProtocol().c_str(),
+                               url2.GetHostName().c_str(),
+                               &m_state->m_easyHandle,
+-                              &m_state->m_multiHandle);
++                              &m_state->m_multiHandle,
++                              m_uplinkAddress.c_str());
+ 
+   // setup common curl options
+   SetCommonOptions(m_state);
+@@ -1395,7 +1408,7 @@ bool CCurlFile::Exists(const CURL& url)
+   assert(m_state->m_easyHandle == NULL);
+   g_curlInterface.easy_acquire(url2.GetProtocol().c_str(),
+                               url2.GetHostName().c_str(),
+-                              &m_state->m_easyHandle, NULL);
++                              &m_state->m_easyHandle, NULL, m_uplinkAddress.c_str());
+ 
+   SetCommonOptions(m_state);
+   SetRequestHeaders(m_state);
+@@ -1513,7 +1526,8 @@ int64_t CCurlFile::Seek(int64_t iFilePos
+       g_curlInterface.easy_acquire(url.GetProtocol().c_str(),
+                                   url.GetHostName().c_str(),
+                                   &m_state->m_easyHandle,
+-                                  &m_state->m_multiHandle );
++                                  &m_state->m_multiHandle,
++                                  m_uplinkAddress.c_str());
+     }
+     else
+     {
+@@ -1603,7 +1617,7 @@ int CCurlFile::Stat(const CURL& url, str
+   assert(m_state->m_easyHandle == NULL);
+   g_curlInterface.easy_acquire(url2.GetProtocol().c_str(),
+                               url2.GetHostName().c_str(),
+-                              &m_state->m_easyHandle, NULL);
++                              &m_state->m_easyHandle, NULL, m_uplinkAddress.c_str());
+ 
+   SetCommonOptions(m_state);
+   SetRequestHeaders(m_state);
+--- a/xbmc/filesystem/CurlFile.h
++++ b/xbmc/filesystem/CurlFile.h
+@@ -178,6 +178,7 @@ namespace XFILE
+       std::string m_password;
+       std::string m_httpauth;
+       std::string m_cipherlist;
++      std::string m_uplinkAddress;
+       bool m_ftppasvip;
+       int m_connecttimeout;
+       int m_redirectlimit;
+--- a/xbmc/filesystem/DllLibCurl.cpp
++++ b/xbmc/filesystem/DllLibCurl.cpp
+@@ -171,10 +171,13 @@ void DllLibCurlGlobal::CheckIdle()
+ void DllLibCurlGlobal::easy_acquire(const char* protocol,
+                                     const char* hostname,
+                                     CURL_HANDLE** easy_handle,
+-                                    CURLM** multi_handle)
++                                    CURLM** multi_handle,
++                                    const char* uplinkaddress /* = nullptr */)
+ {
+   assert(easy_handle != NULL);
+ 
++  const std::string uplink = uplinkaddress ? uplinkaddress : "";
++
+   std::unique_lock lock(m_critSection);
+ 
+   for (auto& it : m_sessions)
+@@ -183,7 +186,9 @@ void DllLibCurlGlobal::easy_acquire(cons
+     {
+       /* allow reuse of requester is trying to connect to same host */
+       /* curl will take care of any differences in username/password */
+-      if (it.m_protocol.compare(protocol) == 0 && it.m_hostname.compare(hostname) == 0)
++      /* a handle bound to another uplink would keep its own connections */
++      if (it.m_protocol.compare(protocol) == 0 && it.m_hostname.compare(hostname) == 0 &&
++          it.m_uplinkaddress == uplink)
+       {
+         it.m_busy = true;
+         if (easy_handle)
+@@ -211,6 +216,7 @@ void DllLibCurlGlobal::easy_acquire(cons
+   session.m_busy = true;
+   session.m_protocol = protocol;
+   session.m_hostname = hostname;
++  session.m_uplinkaddress = uplink;
+ 
+   if (easy_handle)
+   {
+--- a/xbmc/filesystem/DllLibCurl.h
++++ b/xbmc/filesystem/DllLibCurl.h
+@@ -73,7 +73,8 @@ public:
+   void easy_acquire(const char* protocol,
+                     const char* hostname,
+                     CURL_HANDLE** easy_handle,
+-                    CURLM** multi_handle);
++                    CURLM** multi_handle,
++                    const char* uplinkaddress = nullptr);
+   void easy_release(CURL_HANDLE** easy_handle, CURLM** multi_handle);
+   void easy_duplicate(CURL_HANDLE* easy,
+                       const CURLM* multi,
+@@ -91,6 +92,7 @@ public:
+         m_idletimestamp; // timestamp of when this object when idle
+     std::string m_protocol;
+     std::string m_hostname;
++    std::string m_uplinkaddress;
+     bool m_busy;
+     CURL_HANDLE* m_easy;
+     CURLM* m_multi;

@@ -1,0 +1,28 @@
+From 5db82acc3e80f55d825890c10d41e1c21281f4ec Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 8 Oct 2026 14:12:25 +0100
+Subject: [PATCH] [cmake] FindSSE: do not probe the build host's CPU
+
+FindSSE reads /proc/cpuinfo to find the SSE extensions, which describes
+the machine Kodi is built on, not the one it runs on. The resulting
+flags then change with the build host. Use a fixed list of extensions
+for an x86 Linux target.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ cmake/modules/FindSSE.cmake | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+--- a/cmake/modules/FindSSE.cmake
++++ b/cmake/modules/FindSSE.cmake
+@@ -4,7 +4,9 @@ include(TestCXXAcceptsFlag)
+ 
+ if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+    if(CPU MATCHES "x86_64" OR CPU MATCHES "i.86")
+-     execute_process(COMMAND cat /proc/cpuinfo OUTPUT_VARIABLE CPUINFO)
++     # cross compiling: the build host's CPU says nothing about the target,
++     # so assume the baseline feature set of the x86_64 ABI instead of probing
++     set(CPUINFO "sse sse2 pni ssse3 sse4_1 sse4_2 avx avx2")
+ 
+      string(REGEX REPLACE "^.*(sse).*$" "\\1" _SSE_THERE "${CPUINFO}")
+      string(COMPARE EQUAL "sse" "${_SSE_THERE}" _SSE_TRUE)

@@ -1,0 +1,509 @@
+From c6070548549784c84aa09869ff977bb9f1462f30 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 9 Oct 2026 10:38:30 +0100
+Subject: [PATCH] WebPlayer: give the web window its own layout and OSD
+
+The web window loaded the skin's fullscreen video layout and its OSD
+action opened the video OSD, so a page showed a seek bar, a time of 0 of
+an unknown length and play, pause and seek buttons that mean nothing for
+a web view.
+
+Give the window its own empty Estuary layout and add a web OSD, opened
+by the OSD action and closed by it again or by Back, with the page's
+title and address, history back and forward, reload, and close, which
+ends the web view. The client manager keeps what the view a player
+asked for reports, so the OSD can show it and enable the history
+buttons. Media keys stay with the page, which handles them itself.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../resources/strings.po                      |  20 +++-
+ addons/skin.estuary/xml/DialogWebOSD.xml      |  63 ++++++++++
+ addons/skin.estuary/xml/WebFullScreen.xml     |   4 +
+ system/keymaps/keyboard.xml                   |   5 +
+ xbmc/cores/WebPlayer/CMakeLists.txt           |   2 +
+ xbmc/cores/WebPlayer/GUIDialogWebOSD.cpp      | 112 ++++++++++++++++++
+ xbmc/cores/WebPlayer/GUIDialogWebOSD.h        |  42 +++++++
+ .../WebPlayer/GUIWindowFullScreenWeb.cpp      |   4 +-
+ xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.h |   7 +-
+ xbmc/cores/WebPlayer/WebClientManager.cpp     |  21 ++++
+ xbmc/cores/WebPlayer/WebClientManager.h       |  15 +++
+ xbmc/guilib/GUIWindowManager.cpp              |   3 +
+ xbmc/guilib/WindowIDs.h                       |   1 +
+ xbmc/input/WindowTranslator.cpp               |   1 +
+ 14 files changed, 294 insertions(+), 6 deletions(-)
+ create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
+ create mode 100644 addons/skin.estuary/xml/WebFullScreen.xml
+ create mode 100644 xbmc/cores/WebPlayer/GUIDialogWebOSD.cpp
+ create mode 100644 xbmc/cores/WebPlayer/GUIDialogWebOSD.h
+
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25723,7 +25723,25 @@ msgctxt "#40243"
+ msgid "Let web pages use video codecs this device can only decode in software. Off keeps pages to the codecs the hardware decodes, so a page offering several picks one of those."
+ msgstr ""
+ 
+-#empty strings from id 40244 to 40399
++#. Web OSD button going back in the page's history
++#: addons/skin.estuary/xml/DialogWebOSD.xml
++msgctxt "#40244"
++msgid "Back"
++msgstr ""
++
++#. Web OSD button going forward in the page's history
++#: addons/skin.estuary/xml/DialogWebOSD.xml
++msgctxt "#40245"
++msgid "Forward"
++msgstr ""
++
++#. Web OSD button loading the page again
++#: addons/skin.estuary/xml/DialogWebOSD.xml
++msgctxt "#40246"
++msgid "Reload"
++msgstr ""
++
++#empty strings from id 40247 to 40399
+ 
+ # Video versions
+ 
+--- /dev/null
++++ b/addons/skin.estuary/xml/DialogWebOSD.xml
+@@ -0,0 +1,63 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<window>
++	<defaultcontrol always="true">13</defaultcontrol>
++	<depth>DepthOSD</depth>
++	<include>Animation_TopSlide</include>
++	<controls>
++		<control type="group">
++			<left>0</left>
++			<top>0</top>
++			<width>100%</width>
++			<height>250</height>
++			<control type="image">
++				<left>0</left>
++				<top>0</top>
++				<width>100%</width>
++				<height>250</height>
++				<texture colordiffuse="dialog_tint">colors/white.png</texture>
++			</control>
++			<control type="label" id="2">
++				<left>60</left>
++				<top>20</top>
++				<width>1800</width>
++				<height>60</height>
++				<font>font37</font>
++				<aligny>center</aligny>
++				<shadowcolor>black</shadowcolor>
++			</control>
++			<control type="label" id="3">
++				<left>60</left>
++				<top>80</top>
++				<width>1800</width>
++				<height>40</height>
++				<font>font12</font>
++				<textcolor>grey</textcolor>
++				<aligny>center</aligny>
++			</control>
++			<control type="grouplist" id="9000">
++				<left>60</left>
++				<top>135</top>
++				<width>1800</width>
++				<height>100</height>
++				<orientation>horizontal</orientation>
++				<itemgap>20</itemgap>
++				<include content="DefaultDialogButton">
++					<param name="id" value="11" />
++					<param name="label" value="$LOCALIZE[40244]" />
++				</include>
++				<include content="DefaultDialogButton">
++					<param name="id" value="12" />
++					<param name="label" value="$LOCALIZE[40245]" />
++				</include>
++				<include content="DefaultDialogButton">
++					<param name="id" value="13" />
++					<param name="label" value="$LOCALIZE[40246]" />
++				</include>
++				<include content="DefaultDialogButton">
++					<param name="id" value="14" />
++					<param name="label" value="$LOCALIZE[15067]" />
++				</include>
++			</control>
++		</control>
++	</controls>
++</window>
+--- /dev/null
++++ b/addons/skin.estuary/xml/WebFullScreen.xml
+@@ -0,0 +1,4 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<window>
++	<controls />
++</window>
+--- a/system/keymaps/keyboard.xml
++++ b/system/keymaps/keyboard.xml
+@@ -486,6 +486,11 @@
+       <home>ActivateWindow(Home)</home>
+     </keyboard>
+   </FullscreenWeb>
++  <WebOSD>
++    <keyboard>
++      <menu>OSD</menu>
++    </keyboard>
++  </WebOSD>
+   <GameOSD>
+     <keyboard>
+       <m>OSD</m>
+--- a/xbmc/cores/WebPlayer/CMakeLists.txt
++++ b/xbmc/cores/WebPlayer/CMakeLists.txt
+@@ -1,11 +1,13 @@
+ if(TARGET ${APP_NAME_LC}::WaylandServer)
+   set(SOURCES GUIDialogWebKeyboard.cpp
++              GUIDialogWebOSD.cpp
+               GUIWindowFullScreenWeb.cpp
+               WebClientManager.cpp
+               WebPlayer.cpp
+               WebVideoBuffer.cpp)
+ 
+   set(HEADERS GUIDialogWebKeyboard.h
++              GUIDialogWebOSD.h
+               GUIWindowFullScreenWeb.h
+               WebClientManager.h
+               WebPlayer.h
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/GUIDialogWebOSD.cpp
+@@ -0,0 +1,112 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "GUIDialogWebOSD.h"
++
++#include "ServiceBroker.h"
++#include "application/ApplicationComponents.h"
++#include "guilib/GUIMessage.h"
++#include "guilib/WindowIDs.h"
++#include "input/actions/Action.h"
++#include "input/actions/ActionIDs.h"
++#include "messaging/ApplicationMessenger.h"
++
++using namespace KODI::WEB;
++using namespace KODI::WAYLANDHOST;
++
++namespace
++{
++
++constexpr int CTL_LABEL_TITLE = 2;
++constexpr int CTL_LABEL_URL = 3;
++constexpr int CTL_BUTTON_BACK = 11;
++constexpr int CTL_BUTTON_FORWARD = 12;
++constexpr int CTL_BUTTON_RELOAD = 13;
++constexpr int CTL_BUTTON_CLOSE = 14;
++
++std::shared_ptr<CWebClientManager> Manager()
++{
++  return CServiceBroker::GetAppComponents().GetComponent<CWebClientManager>();
++}
++
++} // unnamed namespace
++
++CGUIDialogWebOSD::CGUIDialogWebOSD() : CGUIDialog(WINDOW_DIALOG_WEB_OSD, "DialogWebOSD.xml")
++{
++  m_loadType = KEEP_IN_MEMORY;
++}
++
++bool CGUIDialogWebOSD::OnAction(const CAction& action)
++{
++  if (action.GetID() == ACTION_SHOW_OSD)
++  {
++    Close();
++    return true;
++  }
++
++  return CGUIDialog::OnAction(action);
++}
++
++bool CGUIDialogWebOSD::OnMessage(CGUIMessage& message)
++{
++  if (message.GetMessage() != GUI_MSG_CLICKED)
++    return CGUIDialog::OnMessage(message);
++
++  const auto manager = Manager();
++  switch (message.GetSenderId())
++  {
++    case CTL_BUTTON_BACK:
++      manager->Navigate(m_shown.profile, WebNavigation::BACK);
++      break;
++    case CTL_BUTTON_FORWARD:
++      manager->Navigate(m_shown.profile, WebNavigation::FORWARD);
++      break;
++    case CTL_BUTTON_RELOAD:
++      manager->Navigate(m_shown.profile, WebNavigation::RELOAD);
++      break;
++    case CTL_BUTTON_CLOSE:
++      CServiceBroker::GetAppMessenger()->PostMsg(TMSG_MEDIA_STOP);
++      break;
++    default:
++      return CGUIDialog::OnMessage(message);
++  }
++
++  Close();
++  return true;
++}
++
++void CGUIDialogWebOSD::FrameMove()
++{
++  UpdateControls(false);
++  CGUIDialog::FrameMove();
++}
++
++void CGUIDialogWebOSD::OnInitWindow()
++{
++  UpdateControls(true);
++  CGUIDialog::OnInitWindow();
++  if (m_shown.canGoBack)
++    SET_CONTROL_FOCUS(CTL_BUTTON_BACK, 0);
++}
++
++void CGUIDialogWebOSD::UpdateControls(bool force)
++{
++  CWebClientManager::ViewState shown;
++  if (const auto manager = Manager())
++    manager->GetShownView(shown);
++
++  if (force || shown.title != m_shown.title)
++    SET_CONTROL_LABEL(CTL_LABEL_TITLE, shown.title);
++  if (force || shown.url != m_shown.url)
++    SET_CONTROL_LABEL(CTL_LABEL_URL, shown.url);
++  if (force || shown.canGoBack != m_shown.canGoBack)
++    CONTROL_ENABLE_ON_CONDITION(CTL_BUTTON_BACK, shown.canGoBack);
++  if (force || shown.canGoForward != m_shown.canGoForward)
++    CONTROL_ENABLE_ON_CONDITION(CTL_BUTTON_FORWARD, shown.canGoForward);
++  m_shown = std::move(shown);
++}
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/GUIDialogWebOSD.h
+@@ -0,0 +1,42 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "WebClientManager.h"
++#include "guilib/GUIDialog.h"
++
++namespace KODI
++{
++namespace WEB
++{
++
++/*!
++ * \brief The bar shown over a web page: its title and address, history
++ * navigation, reload and closing the page
++ */
++class CGUIDialogWebOSD : public CGUIDialog
++{
++public:
++  CGUIDialogWebOSD();
++
++  bool OnAction(const CAction& action) override;
++  bool OnMessage(CGUIMessage& message) override;
++  void FrameMove() override;
++
++protected:
++  void OnInitWindow() override;
++
++private:
++  void UpdateControls(bool force);
++
++  CWebClientManager::ViewState m_shown;
++};
++
++} // namespace WEB
++} // namespace KODI
+--- a/xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.cpp
++++ b/xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.cpp
+@@ -25,7 +25,7 @@
+ using namespace KODI::WEB;
+ 
+ CGUIWindowFullScreenWeb::CGUIWindowFullScreenWeb()
+-  : CGUIWindow(WINDOW_FULLSCREEN_WEB, "VideoFullScreen.xml")
++  : CGUIWindow(WINDOW_FULLSCREEN_WEB, "WebFullScreen.xml")
+ {
+   m_controlStats = new GUICONTROLSTATS;
+   m_loadType = KEEP_IN_MEMORY;
+@@ -171,7 +171,7 @@ void CGUIWindowFullScreenWeb::OnDeinitWi
+ 
+ void CGUIWindowFullScreenWeb::ToggleOSD()
+ {
+-  CGUIDialog* osd = CServiceBroker::GetGUI()->GetWindowManager().GetDialog(WINDOW_DIALOG_VIDEO_OSD);
++  CGUIDialog* osd = CServiceBroker::GetGUI()->GetWindowManager().GetDialog(WINDOW_DIALOG_WEB_OSD);
+   if (!osd)
+     return;
+ 
+--- a/xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.h
++++ b/xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.h
+@@ -16,9 +16,10 @@ namespace WEB
+ {
+ 
+ /*!
+- * \brief The window shown while the web player is active: the page is the
+- * video layer, Kodi's OSD and dialogs sit on top, and the keys and pointer
+- * events the keymap does not claim go to the web client.
++ * \brief The window shown while the web player is active: the page fills
++ * the screen through the render manager, the web OSD and Kodi's dialogs sit
++ * on top, and the keys and pointer events the keymap does not claim go to
++ * the web client.
+  */
+ class CGUIWindowFullScreenWeb : public CGUIWindow
+ {
+--- a/xbmc/cores/WebPlayer/WebClientManager.cpp
++++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
+@@ -196,6 +196,8 @@ bool CWebClientManager::RequestView(cons
+   std::unique_lock lock(m_lock);
+   m_observer = &observer;
+   m_observedProfile = profile;
++  m_shown = ViewState{};
++  m_shown.profile = profile;
+   m_wantPending = false;
+ 
+   const auto view = m_views.find(profile);
+@@ -235,6 +237,16 @@ void CWebClientManager::ReleaseView(IWeb
+   }
+ }
+ 
++bool CWebClientManager::GetShownView(ViewState& state) const
++{
++  std::unique_lock lock(m_lock);
++  if (!m_observer)
++    return false;
++
++  state = m_shown;
++  return true;
++}
++
+ void CWebClientManager::LoadUrl(const std::string& profile, const std::string& url)
+ {
+   if (m_host)
+@@ -464,6 +476,8 @@ void CWebClientManager::OnWebViewUrl(con
+ {
+   std::unique_lock lock(m_lock);
+   IWebViewObserver* observer = ObserverOf(profile);
++  if (observer)
++    m_shown.url = url;
+   lock.unlock();
+   if (observer)
+     observer->OnWebViewUrl(profile, url);
+@@ -473,6 +487,8 @@ void CWebClientManager::OnWebViewTitle(c
+ {
+   std::unique_lock lock(m_lock);
+   IWebViewObserver* observer = ObserverOf(profile);
++  if (observer)
++    m_shown.title = title;
+   lock.unlock();
+   if (observer)
+     observer->OnWebViewTitle(profile, title);
+@@ -493,6 +509,11 @@ void CWebClientManager::OnWebViewNavigat
+ {
+   std::unique_lock lock(m_lock);
+   IWebViewObserver* observer = ObserverOf(profile);
++  if (observer)
++  {
++    m_shown.canGoBack = canGoBack;
++    m_shown.canGoForward = canGoForward;
++  }
+   lock.unlock();
+   if (observer)
+     observer->OnWebViewNavigationState(profile, canGoBack, canGoForward);
+--- a/xbmc/cores/WebPlayer/WebClientManager.h
++++ b/xbmc/cores/WebPlayer/WebClientManager.h
+@@ -69,6 +69,15 @@ public:
+     FAILED,
+   };
+ 
++  struct ViewState
++  {
++    std::string profile;
++    std::string url;
++    std::string title;
++    bool canGoBack{false};
++    bool canGoForward{false};
++  };
++
+   CWebClientManager() = default;
+   ~CWebClientManager() override;
+ 
+@@ -86,6 +95,11 @@ public:
+   bool RequestView(const std::string& profile, IWebViewObserver& observer);
+   void ReleaseView(IWebViewObserver& observer);
+ 
++  /*!
++   * \brief What the view a player asked for reports; false without one
++   */
++  bool GetShownView(ViewState& state) const;
++
+   void LoadUrl(const std::string& profile, const std::string& url);
+   void Navigate(const std::string& profile, WAYLANDHOST::WebNavigation action);
+   void SetActive(const std::string& profile, bool active);
+@@ -140,6 +154,7 @@ private:
+   bool m_respawned{false};
+   IWebViewObserver* m_observer{nullptr};
+   std::string m_observedProfile;
++  ViewState m_shown;
+   bool m_wantPending{false};
+   std::map<std::string, WAYLANDHOST::CWaylandSurface*> m_views;
+   std::map<WAYLANDHOST::CWaylandSurface*, std::string> m_surfaces;
+--- a/xbmc/guilib/GUIWindowManager.cpp
++++ b/xbmc/guilib/GUIWindowManager.cpp
+@@ -148,6 +148,7 @@
+ #include "cores/RetroPlayer/guiwindows/GameWindowFullScreen.h"
+ #if defined(HAVE_WAYLAND_SERVER)
+ #include "cores/WebPlayer/GUIDialogWebKeyboard.h"
++#include "cores/WebPlayer/GUIDialogWebOSD.h"
+ #include "cores/WebPlayer/GUIWindowFullScreenWeb.h"
+ #endif
+ #include "games/agents/windows/GUIAgentWindow.h"
+@@ -372,6 +373,7 @@ void CGUIWindowManager::CreateWindows()
+ #if defined(HAVE_WAYLAND_SERVER)
+   Add(new WEB::CGUIWindowFullScreenWeb);
+   Add(new WEB::CGUIDialogWebKeyboard);
++  Add(new WEB::CGUIDialogWebOSD);
+ #endif
+ }
+ 
+@@ -507,6 +509,7 @@ bool CGUIWindowManager::DestroyWindows()
+     DestroyWindow(WINDOW_FULLSCREEN_GAME);
+     DestroyWindow(WINDOW_FULLSCREEN_WEB);
+     DestroyWindow(WINDOW_DIALOG_WEB_KEYBOARD);
++    DestroyWindow(WINDOW_DIALOG_WEB_OSD);
+ 
+     Remove(WINDOW_SETTINGS_SERVICE);
+     Remove(WINDOW_SETTINGS_MYPVR);
+--- a/xbmc/guilib/WindowIDs.h
++++ b/xbmc/guilib/WindowIDs.h
+@@ -99,6 +99,7 @@
+ #define WINDOW_DIALOG_SUBTITLE_OSD_SETTINGS  10159
+ #define WINDOW_DIALOG_BUSY_NOCANCEL       10160
+ #define WINDOW_DIALOG_WEB_KEYBOARD        10161
++#define WINDOW_DIALOG_WEB_OSD             10162
+ 
+ #define WINDOW_MUSIC_PLAYLIST             10500
+ #define WINDOW_MUSIC_NAV                  10502
+--- a/xbmc/input/WindowTranslator.cpp
++++ b/xbmc/input/WindowTranslator.cpp
+@@ -149,6 +149,7 @@ const CWindowTranslator::WindowMapByName
+ 
+     {"fullscreengame", WINDOW_FULLSCREEN_GAME},
+     {"fullscreenweb", WINDOW_FULLSCREEN_WEB},
++    {"webosd", WINDOW_DIALOG_WEB_OSD},
+     {"visualisation", WINDOW_VISUALISATION},
+     {"slideshow", WINDOW_SLIDESHOW},
+     {"weather", WINDOW_WEATHER},
