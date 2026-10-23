@@ -1,0 +1,212 @@
+From 56560a2fb54b5d7d65310310afacf2cde5a267a8 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 8 Oct 2026 22:50:07 +0100
+Subject: [PATCH] windowing/gbm: tell whether a keyboard with letter keys is
+ attached
+
+Remotes and media key devices report the keyboard capability to
+libinput, so the capability alone cannot say whether somebody can
+type. Count the devices that carry the letter keys, the test udev uses
+for a keyboard, and expose it on the window system, so that a feature
+which would otherwise offer the on-screen keyboard can stay out of a
+typist's way.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/platform/linux/input/LibInputHandler.cpp | 60 ++++++++++++++-----
+ xbmc/platform/linux/input/LibInputHandler.h   | 19 ++++--
+ xbmc/windowing/gbm/WinSystemGbm.cpp           |  5 ++
+ xbmc/windowing/gbm/WinSystemGbm.h             |  1 +
+ 4 files changed, 63 insertions(+), 22 deletions(-)
+
+--- a/xbmc/platform/linux/input/LibInputHandler.cpp
++++ b/xbmc/platform/linux/input/LibInputHandler.cpp
+@@ -27,7 +27,7 @@
+ #include <sys/ioctl.h>
+ #include <unistd.h>
+ 
+-static int open_restricted(const char *path, int flags, void __attribute__((unused)) *user_data)
++static int open_restricted(const char* path, int flags, void __attribute__((unused)) * user_data)
+ {
+   int fd = open(path, flags);
+ 
+@@ -47,18 +47,20 @@ static int open_restricted(const char *p
+   return fd;
+ }
+ 
+-static void close_restricted(int fd, void  __attribute__((unused)) *user_data)
++static void close_restricted(int fd, void __attribute__((unused)) * user_data)
+ {
+   close(fd);
+ }
+ 
+-static const struct libinput_interface m_interface =
+-{
+-  open_restricted,
+-  close_restricted,
++static const struct libinput_interface m_interface = {
++    open_restricted,
++    close_restricted,
+ };
+ 
+-static void LogHandler(libinput  __attribute__((unused)) *libinput, libinput_log_priority priority, const char *format, va_list args)
++static void LogHandler(libinput __attribute__((unused)) * libinput,
++                       libinput_log_priority priority,
++                       const char* format,
++                       va_list args)
+ {
+   if (priority == LIBINPUT_LOG_PRIORITY_DEBUG)
+   {
+@@ -181,7 +183,7 @@ void CLibInputHandler::Process()
+       return;
+     }
+ 
+-    libinput_event *ev;
++    libinput_event* ev;
+     while ((ev = libinput_get_event(m_li)) != nullptr)
+     {
+       ProcessEvent(ev);
+@@ -198,10 +200,10 @@ void CLibInputHandler::Process()
+   }
+ }
+ 
+-void CLibInputHandler::ProcessEvent(libinput_event *ev)
++void CLibInputHandler::ProcessEvent(libinput_event* ev)
+ {
+   libinput_event_type type = libinput_event_get_type(ev);
+-  libinput_device *dev = libinput_event_get_device(ev);
++  libinput_device* dev = libinput_event_get_device(ev);
+ 
+   switch (type)
+   {
+@@ -248,10 +250,32 @@ void CLibInputHandler::ProcessEvent(libi
+   }
+ }
+ 
+-void CLibInputHandler::DeviceAdded(libinput_device *dev)
++namespace
++{
++
++// udev calls a device a keyboard when it has the letter keys; a remote
++// control reports the keyboard capability without them
++bool HasLetterKeys(libinput_device* dev)
++{
++  for (uint32_t key = KEY_Q; key <= KEY_P; ++key)
++  {
++    if (!libinput_device_keyboard_has_key(dev, key))
++      return false;
++  }
++  for (uint32_t key = KEY_A; key <= KEY_L; ++key)
++  {
++    if (!libinput_device_keyboard_has_key(dev, key))
++      return false;
++  }
++  return true;
++}
++
++} // unnamed namespace
++
++void CLibInputHandler::DeviceAdded(libinput_device* dev)
+ {
+-  const char *sysname = libinput_device_get_sysname(dev);
+-  const char *name = libinput_device_get_name(dev);
++  const char* sysname = libinput_device_get_sysname(dev);
++  const char* name = libinput_device_get_name(dev);
+ 
+   if (libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_TOUCH))
+   {
+@@ -273,13 +297,15 @@ void CLibInputHandler::DeviceAdded(libin
+               name, sysname);
+     m_devices.push_back(libinput_device_ref(dev));
+     m_keyboard->GetRepeat(dev);
++    if (HasLetterKeys(dev))
++      ++m_keyboards;
+   }
+ }
+ 
+-void CLibInputHandler::DeviceRemoved(libinput_device *dev)
++void CLibInputHandler::DeviceRemoved(libinput_device* dev)
+ {
+-  const char *sysname = libinput_device_get_sysname(dev);
+-  const char *name = libinput_device_get_name(dev);
++  const char* sysname = libinput_device_get_sysname(dev);
++  const char* name = libinput_device_get_name(dev);
+ 
+   if (libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_TOUCH))
+   {
+@@ -301,6 +327,8 @@ void CLibInputHandler::DeviceRemoved(lib
+   {
+     CLog::Log(LOGDEBUG, "CLibInputHandler::{} - keyboard type device removed: {} ({})",
+               __FUNCTION__, name, sysname);
++    if (HasLetterKeys(dev))
++      --m_keyboards;
+     auto device = std::ranges::find(m_devices, libinput_device_unref(dev));
+     m_devices.erase(device);
+   }
+--- a/xbmc/platform/linux/input/LibInputHandler.h
++++ b/xbmc/platform/linux/input/LibInputHandler.h
+@@ -11,6 +11,7 @@
+ #include "interfaces/IAnnouncer.h"
+ #include "threads/Thread.h"
+ 
++#include <atomic>
+ #include <memory>
+ #include <vector>
+ 
+@@ -37,14 +38,20 @@ public:
+ 
+   bool SetKeymap(const std::string& layout);
+ 
++  /*!
++   * \brief Whether a keyboard with letter keys is attached, as opposed
++   * to a remote or a media key device; any thread
++   */
++  bool HasKeyboard() const { return m_keyboards.load() > 0; }
++
+ private:
+   void Process() override;
+-  void ProcessEvent(libinput_event *ev);
+-  void DeviceAdded(libinput_device *dev);
+-  void DeviceRemoved(libinput_device *dev);
++  void ProcessEvent(libinput_event* ev);
++  void DeviceAdded(libinput_device* dev);
++  void DeviceRemoved(libinput_device* dev);
+ 
+-  udev *m_udev;
+-  libinput *m_li;
++  udev* m_udev;
++  libinput* m_li;
+   int m_liFd;
+ 
+   std::unique_ptr<CLibInputKeyboard> m_keyboard;
+@@ -52,5 +59,5 @@ private:
+   std::unique_ptr<CLibInputSettings> m_settings;
+   std::unique_ptr<CLibInputTouch> m_touch;
+   std::vector<libinput_device*> m_devices;
++  std::atomic<int> m_keyboards{0};
+ };
+-
+--- a/xbmc/windowing/gbm/WinSystemGbm.cpp
++++ b/xbmc/windowing/gbm/WinSystemGbm.cpp
+@@ -342,6 +342,11 @@ bool CWinSystemGbm::UseLimitedColor()
+       CSettings::SETTING_VIDEOSCREEN_LIMITEDRANGE);
+ }
+ 
++bool CWinSystemGbm::HasKeyboard() const
++{
++  return m_libinput && m_libinput->HasKeyboard();
++}
++
+ bool CWinSystemGbm::Hide()
+ {
+   bool ret = m_DRM->SetActive(false);
+--- a/xbmc/windowing/gbm/WinSystemGbm.h
++++ b/xbmc/windowing/gbm/WinSystemGbm.h
+@@ -57,6 +57,7 @@ public:
+   bool UseLimitedColor() override;
+ 
+   bool Hide() override;
++  bool HasKeyboard() const;
+   bool Show(bool raise = true) override;
+   void Register(IDispResource* resource) override;
+   void Unregister(IDispResource* resource) override;

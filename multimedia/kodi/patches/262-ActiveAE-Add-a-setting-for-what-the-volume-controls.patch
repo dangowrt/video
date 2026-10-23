@@ -1,0 +1,229 @@
+From 01defee938603fcd95517d1d6c3df6459afd6de1 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 9 Oct 2026 20:14:20 +0100
+Subject: [PATCH] [ActiveAE] Add a setting for what the volume controls
+
+The volume and mute scale Kodi's own audio only, which leaves other
+programs on the same output device at their own level.
+
+Add a Volume control setting with the choices Kodi's audio, the default,
+and Output device, shown when the selected device has a volume control.
+With Output device the engine sets the device's volume and mute through
+the sink factory whenever they change, whether its sink is open or not,
+and leaves Kodi's samples unscaled. The device keeps its own volume
+until Kodi has restored its saved one, so it never jumps to full volume
+at start-up.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../resources/strings.po                      | 29 ++++++++++--
+ system/settings/settings.xml                  | 14 ++++++
+ .../AudioEngine/Engines/ActiveAE/ActiveAE.cpp | 47 ++++++++++++++++++-
+ .../AudioEngine/Engines/ActiveAE/ActiveAE.h   |  4 ++
+ .../Engines/ActiveAE/ActiveAESettings.cpp     |  1 +
+ xbmc/cores/AudioEngine/Interfaces/AE.h        |  4 ++
+ xbmc/settings/Settings.h                      |  1 +
+ 7 files changed, 95 insertions(+), 5 deletions(-)
+
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -18331,8 +18331,25 @@ msgctxt "#34130"
+ msgid "384.0"
+ msgstr ""
+ 
+-#empty strings from id 34131 to 34200
+-#34131-34200 reserved for future use
++#: system/settings/settings.xml
++msgctxt "#34131"
++msgid "Volume control"
++msgstr ""
++
++#. Value of setting "System -> Audio output -> Volume control" with label #34131
++#: system/settings/settings.xml
++msgctxt "#34132"
++msgid "Kodi's audio"
++msgstr ""
++
++#. Value of setting "System -> Audio output -> Volume control" with label #34131
++#: system/settings/settings.xml
++msgctxt "#34133"
++msgid "Output device"
++msgstr ""
++
++#empty strings from id 34134 to 34200
++#34134-34200 reserved for future use
+ 
+ #: xbmc/PlayListPlayer.cpp
+ msgctxt "#34201"
+@@ -22274,7 +22291,13 @@ msgctxt "#36448"
+ msgid "Video files only: display order in the stream selection dialogs. [Media] stream order in the media, [Sorted] sorted using the stream attributes[CR]"
+ msgstr ""
+ 
+-#empty strings from id 36449 to 36459
++#. Description of setting "System -> Audio output -> Volume control" with label #34131
++#: system/settings/settings.xml
++msgctxt "#36449"
++msgid "Select what the volume and mute change. [Kodi's audio] scales Kodi's own audio before it reaches the output device. [Output device] sets the volume of the output device, which applies to every program playing on it."
++msgstr ""
++
++#empty strings from id 36450 to 36459
+ 
+ #. Description of settings with label #14112 "Enable event logging"
+ #: system/settings/settings.xml
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -3411,6 +3411,20 @@
+           </constraints>
+           <control type="list" format="integer" />
+         </setting>
++        <setting id="audiooutput.volumecontrol" type="integer" label="34131" help="36449">
++          <level>1</level>
++          <default>0</default> <!-- AE_VOLUME_STREAM -->
++          <dependencies>
++            <dependency type="visible" on="property" name="aesettingvisible" setting="audiooutput.audiodevice">audiooutput.volumecontrol</dependency>
++          </dependencies>
++          <constraints>
++            <options>
++              <option label="34132">0</option> <!-- AE_VOLUME_STREAM -->
++              <option label="34133">1</option> <!-- AE_VOLUME_DEVICE -->
++            </options>
++          </constraints>
++          <control type="list" format="string" />
++        </setting>
+         <setting id="audiooutput.maintainoriginalvolume" type="boolean" label="346" help="36533">
+           <level>2</level>
+           <default>true</default>
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+@@ -394,11 +394,15 @@ void CActiveAE::StateMachine(int signal,
+         case CActiveAEControlProtocol::VOLUME:
+           m_volume = *(float*)msg->data;
+           m_volumeScaled = CAEUtil::GainToScale(CAEUtil::PercentToGain(m_volume));
+-          if (m_sinkHasVolume)
++          m_volumeReceived = true;
++          if (!m_deviceVolume.empty())
++            ApplyDeviceVolume();
++          else if (m_sinkHasVolume)
+             m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::VOLUME, &m_volume, sizeof(float));
+           return;
+         case CActiveAEControlProtocol::MUTE:
+           m_muted = *(bool*)msg->data;
++          ApplyDeviceVolume();
+           return;
+         case CActiveAEControlProtocol::KEEPCONFIG:
+           m_extKeepConfig = std::chrono::milliseconds(*reinterpret_cast<unsigned int*>(msg->data));
+@@ -2437,7 +2441,7 @@ bool CActiveAE::RunStages()
+ 
+         // mix gui sounds
+         MixSounds(*(out->pkt));
+-        if (!m_sinkHasVolume || m_muted)
++        if ((!m_sinkHasVolume && m_deviceVolume.empty()) || m_muted)
+           Deamplify(*(out->pkt));
+ 
+         if (m_mode == MODE_TRANSCODE && m_encoder)
+@@ -2827,6 +2831,39 @@ void CActiveAE::LoadSettings()
+   m_settings.silenceTimeoutMinutes = settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_STREAMSILENCE);
+   m_settings.mixSubLevel = settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_MIXSUBLEVEL) / 100.0;
+   m_settings.lowLatencyMode = settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_LOWLATENCY);
++
++  UpdateDeviceVolume();
++}
++
++void CActiveAE::UpdateDeviceVolume()
++{
++  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
++
++  std::string device;
++  if (settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_VOLUMECONTROL) == AE_VOLUME_DEVICE &&
++      CAESinkFactory::HasDeviceVolume(m_settings.device))
++    device = m_settings.device;
++
++  if (device == m_deviceVolume)
++    return;
++
++  CLog::LogF(LOGINFO, "volume controls {}",
++             device.empty() ? "Kodi's audio" : "the volume of " + device);
++  m_deviceVolume = device;
++
++  // Kodi's volume arrives only after the engine has started; until then the
++  // device keeps its own
++  if (m_volumeReceived)
++    ApplyDeviceVolume();
++}
++
++void CActiveAE::ApplyDeviceVolume()
++{
++  if (m_deviceVolume.empty())
++    return;
++
++  if (!CAESinkFactory::SetDeviceVolume(m_deviceVolume, m_volume, m_muted))
++    CLog::LogF(LOGWARNING, "cannot set the volume of {}", m_deviceVolume);
+ }
+ 
+ void CActiveAE::ValidateOutputDevices(bool saveChanges)
+@@ -3046,6 +3083,12 @@ bool CActiveAE::IsSettingVisible(const s
+     if (m_sink.GetDeviceType(CServiceBroker::GetSettingsComponent()->GetSettings()->GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE)) != AE_DEVTYPE_IEC958)
+       return true;
+   }
++  else if (settingId == CSettings::SETTING_AUDIOOUTPUT_VOLUMECONTROL)
++  {
++    return CAESinkFactory::HasDeviceVolume(
++        CServiceBroker::GetSettingsComponent()->GetSettings()->GetString(
++            CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE));
++  }
+   else if (settingId == CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH)
+   {
+     if (m_sink.HasPassthroughDevice() && CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) != AE_CONFIG_FIXED)
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
+@@ -316,6 +316,8 @@ protected:
+   void UnconfigureSink();
+   void Dispose();
+   void LoadSettings();
++  void UpdateDeviceVolume();
++  void ApplyDeviceVolume();
+   void ValidateOutputDevices(bool saveChanges);
+   void HandleDeviceCountChange(const std::string& driver, bool defaultDeviceChanged);
+   bool NeedReconfigureBuffers();
+@@ -411,6 +413,8 @@ protected:
+   float m_volumeScaled; // multiplier to scale samples in order to achieve the volume specified in m_volume
+   bool m_muted;
+   bool m_sinkHasVolume;
++  bool m_volumeReceived{false};
++  std::string m_deviceVolume;
+ 
+   // viz
+   std::vector<IAudioCallback*> m_audioCallback;
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESettings.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESettings.cpp
+@@ -50,6 +50,7 @@ CActiveAESettings::CActiveAESettings(CAc
+              CSettings::SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH,
+              CSettings::SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH,
+              CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE,
++             CSettings::SETTING_AUDIOOUTPUT_VOLUMECONTROL,
+              CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE,
+              CSettings::SETTING_AUDIOOUTPUT_STREAMSILENCE,
+              CSettings::SETTING_AUDIOOUTPUT_STREAMNOISE,
+--- a/xbmc/cores/AudioEngine/Interfaces/AE.h
++++ b/xbmc/cores/AudioEngine/Interfaces/AE.h
+@@ -49,6 +49,10 @@ struct Interface_AudioEngine;
+ #define AE_CONFIG_AUTO  2
+ #define AE_CONFIG_MATCH 3
+ 
++/* volume control options */
++#define AE_VOLUME_STREAM 0 /*! scale Kodi's own audio */
++#define AE_VOLUME_DEVICE 1 /*! set the volume of the output device */
++
+ enum AEQuality
+ {
+   AE_QUALITY_UNKNOWN = -1, /*! Unset, unknown or incorrect quality level */
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -406,6 +406,7 @@ public:
+   static constexpr auto SETTING_AUDIOOUTPUT_AUDIODEVICE = "audiooutput.audiodevice";
+   static constexpr auto SETTING_AUDIOOUTPUT_CHANNELS = "audiooutput.channels";
+   static constexpr auto SETTING_AUDIOOUTPUT_CONFIG = "audiooutput.config";
++  static constexpr auto SETTING_AUDIOOUTPUT_VOLUMECONTROL = "audiooutput.volumecontrol";
+   static constexpr auto SETTING_AUDIOOUTPUT_SAMPLERATE = "audiooutput.samplerate";
+   static constexpr auto SETTING_AUDIOOUTPUT_STEREOUPMIX = "audiooutput.stereoupmix";
+   static constexpr auto SETTING_AUDIOOUTPUT_MAINTAINORIGINALVOLUME =
