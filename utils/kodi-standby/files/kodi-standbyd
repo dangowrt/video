@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Follow Kodi's DPMS state and power the box down and up along with it.
+
+Kodi announces OnDPMSActivated when it blanks the display and
+OnDPMSDeactivated when any key press brings it back, both of which reach
+its JSON-RPC socket on the loopback interface. That makes the display the
+single source of truth for whether anyone is watching.
+
+Blanking the display stops playback, as it would on a television. Music is
+the exception: an audio-only stream carries on, and the audio output stays
+powered until the last audio player stops. Kodi reports that on the same
+socket, so the box never has to guess or wait out a timer.
+"""
+import json
+import socket
+import subprocess
+import sys
+import time
+
+ADDRESS = ("127.0.0.1", 9090)
+COMMAND = "/usr/sbin/kodi-standby"
+RETRY = 5
+
+
+def act(*args):
+    subprocess.call([COMMAND, *args])
+
+
+class Session:
+    """One connection to Kodi, and the state derived from it."""
+
+    def __init__(self, sock):
+        self.sock = sock
+        self.pending = {}
+        self.next_id = 1
+        self.standby = False
+        self.audio = False
+
+    def request(self, method, params=None, then=None):
+        message = {"jsonrpc": "2.0", "id": self.next_id, "method": method}
+        if params is not None:
+            message["params"] = params
+        if then is not None:
+            self.pending[self.next_id] = then
+        self.next_id += 1
+        self.sock.sendall(json.dumps(message).encode("utf-8"))
+
+    def apply_audio(self):
+        """The output is needed while anything plays or anyone is watching."""
+        act("audio", "on" if self.audio or not self.standby else "off")
+
+    def players_known(self, players):
+        video = any(p.get("type") == "video" for p in players)
+
+        if self.standby and video:
+            # Anything alongside a video belongs to it, so it all stops.
+            for player in players:
+                self.request("Player.Stop", {"playerid": player["playerid"]})
+            self.audio = False
+        else:
+            self.audio = any(p.get("type") == "audio" for p in players)
+
+        self.apply_audio()
+
+    def poll_players(self):
+        self.request("Player.GetActivePlayers", then=self.players_known)
+
+    def dpms(self, blanked):
+        self.standby = blanked
+        if blanked:
+            # Stop video before the cores go, so the teardown is not done
+            # by a single core competing with a decoder.
+            self.poll_players()
+            act("enter")
+        else:
+            act("leave")
+            self.poll_players()
+
+    def handle(self, message):
+        method = message.get("method")
+
+        if method == "GUI.OnDPMSActivated":
+            self.dpms(True)
+        elif method == "GUI.OnDPMSDeactivated":
+            self.dpms(False)
+        elif method in ("Player.OnPlay", "Player.OnResume", "Player.OnStop",
+                        "Player.OnAVStart"):
+            self.poll_players()
+        elif "id" in message:
+            then = self.pending.pop(message["id"], None)
+            if then is not None and "result" in message:
+                then(message["result"])
+
+
+def messages(sock):
+    decoder = json.JSONDecoder()
+    text = ""
+
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            return
+        text += chunk.decode("utf-8", "replace")
+        while text:
+            text = text.lstrip()
+            try:
+                message, end = decoder.raw_decode(text)
+            except ValueError:
+                break
+            text = text[end:]
+            yield message
+
+
+def main():
+    while True:
+        try:
+            with socket.create_connection(ADDRESS, timeout=10) as sock:
+                sock.settimeout(None)
+                # Kodi is up and drawing, so whatever state we were left in
+                # is stale
+                act("leave")
+                session = Session(sock)
+                session.apply_audio()
+                for message in messages(sock):
+                    session.handle(message)
+        except OSError as error:
+            print(f"kodi-standbyd: {error}", file=sys.stderr, flush=True)
+        time.sleep(RETRY)
+
+
+main()
