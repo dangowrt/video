@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<settings version="1">
+  <section id="@ADDON_ID@">
+    <category id="network" label="30020" help="30021">
+      <group id="1">
+        <setting id="uplinkaddress" type="string" label="30022" help="30023">
+          <level>3</level>
+          <default></default>
+          <constraints>
+            <allowempty>true</allowempty>
+          </constraints>
+          <control type="edit" format="string" />
+        </setting>
+      </group>
+    </category>
+  </section>
+</settings>

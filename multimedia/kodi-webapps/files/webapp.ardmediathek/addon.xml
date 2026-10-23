@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="webapp.ardmediathek" name="ARD Mediathek" version="1.0.0" provider-name="Daniel Golle">
+  <extension point="kodi.webapp" starturl="https://tv.ardmediathek.de/index.html?platform=browser">
+    <useragent>@USER_AGENT@</useragent>
+    <userscript>profile/scripts/00-scale.js</userscript>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">The ARD Mediathek TV edition inside Kodi</summary>
+    <description lang="en_GB">Opens the TV edition of the ARD Mediathek in Kodi's web view.</description>
+    <platform>all</platform>
+    <license>GPL-2.0-or-later</license>
+  </extension>
+</addon>
