@@ -1,0 +1,186 @@
+From 51d8ee16b4829cbb0ad98f04ca3d1cd8cf3bd0ad Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 8 Oct 2026 15:01:29 +0100
+Subject: [PATCH] input: let a handler take keyboard events before translation
+
+Keyboard driver handlers see a CKey, which no longer carries the scan
+code the windowing system delivered. A component that forwards keys to
+another process, such as a Wayland client, needs that code.
+
+Add IKeyboardEventHandler, offered the XBMC_keysym together with the
+translated CKey for every press and release before Kodi tracks the key
+or looks it up in the keymaps. A handler that returns true consumes the
+event, so a window can hand the keys its keymap does not claim to
+someone else.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/input/InputManager.cpp                   | 36 ++++++++++++++-
+ xbmc/input/InputManager.h                     | 11 +++++
+ xbmc/input/keyboard/interfaces/CMakeLists.txt |  1 +
+ .../interfaces/IKeyboardEventHandler.h        | 45 +++++++++++++++++++
+ 4 files changed, 91 insertions(+), 2 deletions(-)
+ create mode 100644 xbmc/input/keyboard/interfaces/IKeyboardEventHandler.h
+
+--- a/xbmc/input/InputManager.cpp
++++ b/xbmc/input/InputManager.cpp
+@@ -25,6 +25,7 @@
+ #include "input/keyboard/KeyboardEasterEgg.h"
+ #include "input/keyboard/XBMC_vkeys.h"
+ #include "input/keyboard/interfaces/IKeyboardDriverHandler.h"
++#include "input/keyboard/interfaces/IKeyboardEventHandler.h"
+ #include "input/keymaps/ButtonTranslator.h"
+ #include "input/keymaps/KeymapEnvironment.h"
+ #include "input/keymaps/joysticks/JoystickMapper.h"
+@@ -370,21 +371,52 @@ bool CInputManager::Process(int windowId
+   return true;
+ }
+ 
++void CInputManager::RegisterKeyboardEventHandler(KEYBOARD::IKeyboardEventHandler* handler)
++{
++  if (handler == nullptr)
++    return;
++
++  if (std::ranges::find(m_keyboardEventHandlers, handler) == m_keyboardEventHandlers.end())
++    m_keyboardEventHandlers.insert(m_keyboardEventHandlers.begin(), handler);
++}
++
++void CInputManager::UnregisterKeyboardEventHandler(KEYBOARD::IKeyboardEventHandler* handler)
++{
++  std::erase(m_keyboardEventHandlers, handler);
++}
++
++bool CInputManager::OnKeyboardEvent(const XBMC_keysym& keysym, const CKey& key, bool pressed)
++{
++  for (auto* handler : m_keyboardEventHandlers)
++  {
++    if (handler->OnKeyboardEvent(keysym, key, pressed))
++      return true;
++  }
++  return false;
++}
++
+ bool CInputManager::OnEvent(XBMC_Event& newEvent)
+ {
+   switch (newEvent.type)
+   {
+     case XBMC_KEYDOWN:
+     {
+-      m_Keyboard.ProcessKeyDown(newEvent.key.keysym);
+       CKey key = m_Keyboard.TranslateKey(newEvent.key.keysym);
++      if (OnKeyboardEvent(newEvent.key.keysym, key, true))
++        break;
++      m_Keyboard.ProcessKeyDown(newEvent.key.keysym);
+       OnKey(key);
+       break;
+     }
+     case XBMC_KEYUP:
++    {
++      CKey key = m_Keyboard.TranslateKey(newEvent.key.keysym);
++      if (OnKeyboardEvent(newEvent.key.keysym, key, false))
++        break;
+       m_Keyboard.ProcessKeyUp();
+-      OnKeyUp(m_Keyboard.TranslateKey(newEvent.key.keysym));
++      OnKeyUp(key);
+       break;
++    }
+     case XBMC_KEYCOMPOSING_COMPOSING:
+     case XBMC_KEYCOMPOSING_CANCELLED:
+     case XBMC_KEYCOMPOSING_FINISHED:
+--- a/xbmc/input/InputManager.h
++++ b/xbmc/input/InputManager.h
+@@ -37,6 +37,7 @@ class ICecInputProvider;
+ namespace KEYBOARD
+ {
+ class IKeyboardDriverHandler;
++class IKeyboardEventHandler;
+ }
+ 
+ namespace KEYMAP
+@@ -239,6 +240,9 @@ public:
+   void RegisterKeyboardDriverHandler(KODI::KEYBOARD::IKeyboardDriverHandler* handler);
+   void UnregisterKeyboardDriverHandler(KODI::KEYBOARD::IKeyboardDriverHandler* handler);
+ 
++  void RegisterKeyboardEventHandler(KODI::KEYBOARD::IKeyboardEventHandler* handler);
++  void UnregisterKeyboardEventHandler(KODI::KEYBOARD::IKeyboardEventHandler* handler);
++
+   virtual void RegisterMouseDriverHandler(KODI::MOUSE::IMouseDriverHandler* handler);
+   virtual void UnregisterMouseDriverHandler(KODI::MOUSE::IMouseDriverHandler* handler);
+ 
+@@ -246,6 +250,12 @@ public:
+   void UnregisterCecInputProvider(KODI::CEC::ICecInputProvider* handler);
+ 
+ private:
++  /*! \brief Offer a keyboard event to the registered event handlers
++   *
++   * \return True if a handler consumed the event
++   */
++  bool OnKeyboardEvent(const XBMC_keysym& keysym, const CKey& key, bool pressed);
++
+   /*! \brief Process keyboard event and translate into an action
+    *
+    * \param key keypress details
+@@ -317,6 +327,7 @@ private:
+   std::unique_ptr<KODI::KEYMAP::CJoystickMapper> m_joystickTranslator;
+ 
+   std::vector<KODI::KEYBOARD::IKeyboardDriverHandler*> m_keyboardHandlers;
++  std::vector<KODI::KEYBOARD::IKeyboardEventHandler*> m_keyboardEventHandlers;
+   std::vector<KODI::MOUSE::IMouseDriverHandler*> m_mouseHandlers;
+   std::vector<KODI::CEC::ICecInputProvider*> m_cecInputProviders;
+ 
+--- a/xbmc/input/keyboard/interfaces/CMakeLists.txt
++++ b/xbmc/input/keyboard/interfaces/CMakeLists.txt
+@@ -1,4 +1,5 @@
+ set(HEADERS IKeyboardDriverHandler.h
++            IKeyboardEventHandler.h
+             IKeyboardInputHandler.h
+             IKeyboardInputProvider.h
+ )
+--- /dev/null
++++ b/xbmc/input/keyboard/interfaces/IKeyboardEventHandler.h
+@@ -0,0 +1,45 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++class CKey;
++struct XBMC_keysym;
++
++namespace KODI
++{
++namespace KEYBOARD
++{
++
++/*!
++ * \ingroup keyboard
++ *
++ * \brief Interface for handling keyboard events before Kodi acts on them
++ *
++ * The event still carries the driver's scan code, which is what a handler
++ * that forwards keys to another process needs.
++ */
++class IKeyboardEventHandler
++{
++public:
++  virtual ~IKeyboardEventHandler() = default;
++
++  /*!
++   * \brief A key was pressed or released
++   *
++   * \param keysym The event as delivered by the windowing system
++   * \param key The key as Kodi's keymaps see it
++   * \param pressed True on press, false on release
++   *
++   * \return True if the event was handled and Kodi must not act on it
++   */
++  virtual bool OnKeyboardEvent(const XBMC_keysym& keysym, const CKey& key, bool pressed) = 0;
++};
++
++} // namespace KEYBOARD
++} // namespace KODI

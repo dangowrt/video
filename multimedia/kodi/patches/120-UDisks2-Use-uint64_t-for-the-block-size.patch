@@ -1,0 +1,24 @@
+From 2a58f4837750d80e81b305306c843b90a8ee58be Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 8 Oct 2026 14:12:26 +0100
+Subject: [PATCH] [UDisks2] Use uint64_t for the block size
+
+u_int64_t is a BSD extension of sys/types.h, not a C or POSIX type, and
+not every C library declares it by default. Use the standard uint64_t.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/platform/linux/storage/UDisks2Provider.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/xbmc/platform/linux/storage/UDisks2Provider.h
++++ b/xbmc/platform/linux/storage/UDisks2Provider.h
+@@ -46,7 +46,7 @@ class CUDisks2Provider : public IStorage
+     std::string m_label;
+     std::string m_device;
+     bool m_isSystem = false;
+-    u_int64_t m_size = 0;
++    uint64_t m_size = 0;
+ 
+     explicit Block(const char *object);
+     ~Block() = default;

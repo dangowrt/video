@@ -1,0 +1,465 @@
+From 3e08fb485a84ed826f2f70a6c9fe7028bfe83bb3 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 9 Oct 2026 20:14:14 +0100
+Subject: [PATCH] [AESinkPipewire] Set the volume of the output device
+
+Kodi scales its own samples for the volume, so other programs playing on
+the same device, a web page for one, keep their own level and ignore
+Kodi's volume keys, and quiet playback loses resolution before the
+converter.
+
+Provide a device volume through the sink factory: set a named device's
+volume and mute with Kodi's gain curve and leave the scaling to
+PipeWire. A card's sink takes them on the route its profile device is
+on, where PipeWire drives the card's own mixer, as pipewire-pulse does;
+any other sink takes them in its node's Props. The default device is not
+tracked, so it has a volume control only when it is the one device
+there is.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/cores/AudioEngine/CMakeLists.txt         |   2 +
+ .../Sinks/pipewire/AESinkPipewire.cpp         |  40 +++++++
+ .../Sinks/pipewire/AESinkPipewire.h           |   7 +-
+ .../Sinks/pipewire/PipewireDevice.cpp         | 109 ++++++++++++++++++
+ .../Sinks/pipewire/PipewireDevice.h           |  62 ++++++++++
+ .../Sinks/pipewire/PipewireNode.cpp           |  35 ++++++
+ .../AudioEngine/Sinks/pipewire/PipewireNode.h |   6 +
+ .../Sinks/pipewire/PipewireRegistry.cpp       |  14 ++-
+ .../Sinks/pipewire/PipewireRegistry.h         |   3 +
+ 9 files changed, 276 insertions(+), 2 deletions(-)
+ create mode 100644 xbmc/cores/AudioEngine/Sinks/pipewire/PipewireDevice.cpp
+ create mode 100644 xbmc/cores/AudioEngine/Sinks/pipewire/PipewireDevice.h
+
+--- a/xbmc/cores/AudioEngine/CMakeLists.txt
++++ b/xbmc/cores/AudioEngine/CMakeLists.txt
+@@ -78,6 +78,7 @@ if(TARGET ${APP_NAME_LC}::Pipewire)
+                       Sinks/pipewire/Pipewire.cpp
+                       Sinks/pipewire/PipewireContext.cpp
+                       Sinks/pipewire/PipewireCore.cpp
++                      Sinks/pipewire/PipewireDevice.cpp
+                       Sinks/pipewire/PipewireNode.cpp
+                       Sinks/pipewire/PipewireProxy.cpp
+                       Sinks/pipewire/PipewireRegistry.cpp
+@@ -87,6 +88,7 @@ if(TARGET ${APP_NAME_LC}::Pipewire)
+                       Sinks/pipewire/Pipewire.h
+                       Sinks/pipewire/PipewireContext.h
+                       Sinks/pipewire/PipewireCore.h
++                      Sinks/pipewire/PipewireDevice.h
+                       Sinks/pipewire/PipewireNode.h
+                       Sinks/pipewire/PipewireProxy.h
+                       Sinks/pipewire/PipewireRegistry.h
+--- a/xbmc/cores/AudioEngine/Sinks/pipewire/AESinkPipewire.cpp
++++ b/xbmc/cores/AudioEngine/Sinks/pipewire/AESinkPipewire.cpp
+@@ -16,6 +16,7 @@
+ #include "cores/AudioEngine/Sinks/pipewire/PipewireRegistry.h"
+ #include "cores/AudioEngine/Sinks/pipewire/PipewireStream.h"
+ #include "cores/AudioEngine/Sinks/pipewire/PipewireThreadLoop.h"
++#include "cores/AudioEngine/Utils/AEUtil.h"
+ #include "utils/Map.h"
+ #include "utils/StringUtils.h"
+ #include "utils/log.h"
+@@ -260,6 +261,8 @@ bool CAESinkPipewire::Register()
+   entry.createFunc = CAESinkPipewire::Create;
+   entry.enumerateFunc = CAESinkPipewire::EnumerateDevicesEx;
+   entry.cleanupFunc = CAESinkPipewire::Destroy;
++  entry.hasDeviceVolumeFunc = CAESinkPipewire::HasDeviceVolume;
++  entry.setDeviceVolumeFunc = CAESinkPipewire::SetDeviceVolume;
+   AE::CAESinkFactory::RegisterSink(entry);
+ 
+   return true;
+@@ -540,6 +543,43 @@ double CAESinkPipewire::GetCacheTotal()
+   return m_latency.count();
+ }
+ 
++bool CAESinkPipewire::HasDeviceVolume(const std::string& device)
++{
++  PIPEWIRE::CLoopLockGuard lock(pipewire->GetThreadLoop());
++  return GetDeviceNode(device) != nullptr;
++}
++
++bool CAESinkPipewire::SetDeviceVolume(const std::string& device, float volume, bool mute)
++{
++  PIPEWIRE::CLoopLockGuard lock(pipewire->GetThreadLoop());
++
++  PIPEWIRE::CPipewireNode* node = GetDeviceNode(device);
++  if (!node)
++    return false;
++
++  node->SetVolume(CAEUtil::GainToScale(CAEUtil::PercentToGain(volume)), mute);
++  return true;
++}
++
++PIPEWIRE::CPipewireNode* CAESinkPipewire::GetDeviceNode(const std::string& device)
++{
++  auto& nodes = pipewire->GetRegistry().GetNodes();
++
++  // the default device is not tracked, so it has a volume only when it is
++  // the one device there is
++  if (device == "Default")
++    return nodes.size() == 1 && nodes.begin()->second->HasInfo() ? nodes.begin()->second.get()
++                                                                 : nullptr;
++
++  const auto node = std::find_if(nodes.begin(), nodes.end(),
++                                 [&device](const auto& entry)
++                                 {
++                                   const auto& [id, node] = entry;
++                                   return node->HasInfo() && device == node->Get(PW_KEY_NODE_NAME);
++                                 });
++  return node == nodes.end() ? nullptr : node->second.get();
++}
++
+ unsigned int CAESinkPipewire::AddPackets(uint8_t** data,
+                                          unsigned int frames_in,
+                                          unsigned int offset)
+--- a/xbmc/cores/AudioEngine/Sinks/pipewire/AESinkPipewire.h
++++ b/xbmc/cores/AudioEngine/Sinks/pipewire/AESinkPipewire.h
+@@ -17,8 +17,9 @@ namespace KODI
+ {
+ namespace PIPEWIRE
+ {
++class CPipewireNode;
+ class CPipewireStream;
+-}
++} // namespace PIPEWIRE
+ } // namespace KODI
+ 
+ namespace AE
+@@ -36,6 +37,8 @@ public:
+   static std::unique_ptr<IAESink> Create(std::string& device, AEAudioFormat& desiredFormat);
+   static void EnumerateDevicesEx(AEDeviceInfoList& list, bool force = false);
+   static void Destroy();
++  static bool HasDeviceVolume(const std::string& device);
++  static bool SetDeviceVolume(const std::string& device, float volume, bool mute);
+ 
+   // overrides via IAESink
+   const char* GetName() override { return "PIPEWIRE"; }
+@@ -50,6 +53,8 @@ public:
+   void Drain() override;
+ 
+ private:
++  static KODI::PIPEWIRE::CPipewireNode* GetDeviceNode(const std::string& device);
++
+   AEAudioFormat m_format;
+   std::chrono::duration<double, std::ratio<1>> m_latency;
+ 
+--- /dev/null
++++ b/xbmc/cores/AudioEngine/Sinks/pipewire/PipewireDevice.cpp
+@@ -0,0 +1,109 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "PipewireDevice.h"
++
++#include <array>
++#include <span>
++
++#include <spa/param/props.h>
++#include <spa/param/route.h>
++#include <spa/pod/builder.h>
++#include <spa/pod/parser.h>
++
++using namespace KODI;
++using namespace PIPEWIRE;
++
++CPipewireDevice::CPipewireDevice(CPipewireRegistry& registry, uint32_t id, const char* type)
++  : CPipewireProxy(registry, id, type, PW_VERSION_DEVICE),
++    m_deviceEvents(CreateDeviceEvents())
++{
++  pw_proxy_add_object_listener(m_proxy.get(), &m_objectListener, &m_deviceEvents, this);
++}
++
++CPipewireDevice::~CPipewireDevice()
++{
++  spa_hook_remove(&m_objectListener);
++}
++
++bool CPipewireDevice::SetVolume(uint32_t profileDevice,
++                                const std::vector<float>& volumes,
++                                bool mute)
++{
++  const auto route = m_routes.find(profileDevice);
++  if (route == m_routes.end())
++    return false;
++
++  std::array<uint8_t, 1024> buffer;
++  auto builder = SPA_POD_BUILDER_INIT(buffer.data(), buffer.size());
++  std::array<spa_pod_frame, 2> frames;
++
++  spa_pod_builder_push_object(&builder, &frames[0], SPA_TYPE_OBJECT_ParamRoute, SPA_PARAM_Route);
++  spa_pod_builder_add(&builder, SPA_PARAM_ROUTE_index, SPA_POD_Int(route->second),
++                      SPA_PARAM_ROUTE_device, SPA_POD_Int(profileDevice), 0);
++  spa_pod_builder_prop(&builder, SPA_PARAM_ROUTE_props, 0);
++  spa_pod_builder_push_object(&builder, &frames[1], SPA_TYPE_OBJECT_Props, SPA_PARAM_Props);
++  spa_pod_builder_add(&builder, SPA_PROP_channelVolumes,
++                      SPA_POD_Array(sizeof(float), SPA_TYPE_Float, volumes.size(), volumes.data()),
++                      SPA_PROP_mute, SPA_POD_Bool(mute), 0);
++  spa_pod_builder_pop(&builder, &frames[1]);
++  spa_pod_builder_prop(&builder, SPA_PARAM_ROUTE_save, 0);
++  spa_pod_builder_bool(&builder, true);
++  const auto* param = static_cast<const spa_pod*>(spa_pod_builder_pop(&builder, &frames[0]));
++
++  pw_device_set_param(reinterpret_cast<pw_device*>(m_proxy.get()), SPA_PARAM_Route, 0, param);
++  return true;
++}
++
++void CPipewireDevice::Info(void* userdata, const struct pw_device_info* info)
++{
++  auto& device = *reinterpret_cast<CPipewireDevice*>(userdata);
++
++  if ((info->change_mask & PW_DEVICE_CHANGE_MASK_PARAMS) == 0)
++    return;
++
++  for (const auto& param : std::span(info->params, info->n_params))
++  {
++    if (param.id != SPA_PARAM_Route || (param.flags & SPA_PARAM_INFO_READ) == 0)
++      continue;
++
++    device.m_routes.clear();
++    pw_device_enum_params(reinterpret_cast<pw_device*>(device.m_proxy.get()), 0, param.id, 0, 0,
++                          nullptr);
++  }
++}
++
++void CPipewireDevice::Param(void* userdata,
++                            int seq,
++                            uint32_t id,
++                            uint32_t index,
++                            uint32_t next,
++                            const struct spa_pod* param)
++{
++  auto& device = *reinterpret_cast<CPipewireDevice*>(userdata);
++
++  int32_t routeIndex = 0;
++  int32_t profileDevice = 0;
++  if (id != SPA_PARAM_Route ||
++      spa_pod_parse_object(param, SPA_TYPE_OBJECT_ParamRoute, nullptr, SPA_PARAM_ROUTE_index,
++                           SPA_POD_Int(&routeIndex), SPA_PARAM_ROUTE_device,
++                           SPA_POD_Int(&profileDevice)) < 0)
++    return;
++
++  device.m_routes[static_cast<uint32_t>(profileDevice)] = static_cast<uint32_t>(routeIndex);
++}
++
++pw_device_events CPipewireDevice::CreateDeviceEvents()
++{
++  pw_device_events deviceEvents = {};
++  deviceEvents.version = PW_VERSION_DEVICE_EVENTS;
++  deviceEvents.info = Info;
++  deviceEvents.param = Param;
++
++  return deviceEvents;
++}
+--- /dev/null
++++ b/xbmc/cores/AudioEngine/Sinks/pipewire/PipewireDevice.h
+@@ -0,0 +1,62 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "PipewireProxy.h"
++
++#include <cstdint>
++#include <map>
++#include <vector>
++
++#include <pipewire/device.h>
++
++namespace KODI
++{
++namespace PIPEWIRE
++{
++
++class CPipewireRegistry;
++
++/*!
++ * \brief An audio card, tracked for the routes its profile devices are
++ * connected to, which is where the card's sinks have their volume
++ */
++class CPipewireDevice : public CPipewireProxy
++{
++public:
++  explicit CPipewireDevice(CPipewireRegistry& registry, uint32_t id, const char* type);
++  CPipewireDevice() = delete;
++  ~CPipewireDevice() override;
++
++  /*!
++   * \brief Set the volumes and mute of the route a profile device is on;
++   * false when it has none. The thread loop must be locked.
++   */
++  bool SetVolume(uint32_t profileDevice, const std::vector<float>& volumes, bool mute);
++
++private:
++  static void Info(void* userdata, const struct pw_device_info* info);
++  static void Param(void* userdata,
++                    int seq,
++                    uint32_t id,
++                    uint32_t index,
++                    uint32_t next,
++                    const struct spa_pod* param);
++
++  static pw_device_events CreateDeviceEvents();
++
++  const pw_device_events m_deviceEvents;
++
++  spa_hook m_objectListener;
++
++  std::map<uint32_t, uint32_t> m_routes;
++};
++
++} // namespace PIPEWIRE
++} // namespace KODI
+--- a/xbmc/cores/AudioEngine/Sinks/pipewire/PipewireNode.cpp
++++ b/xbmc/cores/AudioEngine/Sinks/pipewire/PipewireNode.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include "PipewireContext.h"
+ #include "PipewireCore.h"
++#include "PipewireDevice.h"
+ #include "PipewireRegistry.h"
+ #include "PipewireThreadLoop.h"
+ #include "ServiceBroker.h"
+@@ -17,7 +18,14 @@
+ #include "utils/StringUtils.h"
+ #include "utils/log.h"
+ 
++#include <algorithm>
++#include <array>
++#include <vector>
++
++#include <pipewire/keys.h>
+ #include <spa/param/format.h>
++#include <spa/param/props.h>
++#include <spa/pod/builder.h>
+ #include <spa/pod/iter.h>
+ 
+ using namespace KODI;
+@@ -66,6 +74,33 @@ std::string CPipewireNode::Get(const std
+   return value ? value : "";
+ }
+ 
++void CPipewireNode::SetVolume(float volume, bool mute)
++{
++  const std::vector<float> volumes(std::max<size_t>(m_channels.size(), 1), volume);
++
++  // a card's sink has its volume on the route its profile device is on;
++  // the node only reflects it
++  const std::string card = Get(PW_KEY_DEVICE_ID);
++  const std::string profileDevice = Get("card.profile.device");
++  if (!card.empty() && !profileDevice.empty())
++  {
++    auto& devices = GetRegistry().GetDevices();
++    const auto device = devices.find(static_cast<uint32_t>(std::stoul(card)));
++    if (device != devices.end() &&
++        device->second->SetVolume(static_cast<uint32_t>(std::stoul(profileDevice)), volumes, mute))
++      return;
++  }
++
++  std::array<uint8_t, 512> buffer;
++  auto builder = SPA_POD_BUILDER_INIT(buffer.data(), buffer.size());
++  const auto* props = static_cast<const spa_pod*>(spa_pod_builder_add_object(
++      &builder, SPA_TYPE_OBJECT_Props, SPA_PARAM_Props, SPA_PROP_channelVolumes,
++      SPA_POD_Array(sizeof(float), SPA_TYPE_Float, volumes.size(), volumes.data()), SPA_PROP_mute,
++      SPA_POD_Bool(mute)));
++
++  pw_node_set_param(reinterpret_cast<pw_node*>(m_proxy.get()), SPA_PARAM_Props, 0, props);
++}
++
+ template<typename T>
+ static T Parse(uint32_t type, void* body, uint32_t size)
+ {
+--- a/xbmc/cores/AudioEngine/Sinks/pipewire/PipewireNode.h
++++ b/xbmc/cores/AudioEngine/Sinks/pipewire/PipewireNode.h
+@@ -41,6 +41,12 @@ public:
+   std::set<uint32_t>& GetRates() { return m_rates; }
+   std::set<spa_audio_iec958_codec>& GetIEC958Codecs() { return m_iec958Codecs; }
+ 
++  /*!
++   * \brief Set the volume of every channel as an amplitude factor, and the
++   * mute; the thread loop must be locked
++   */
++  void SetVolume(float volume, bool mute);
++
+ private:
+   bool Parse(uint32_t type, void* body, uint32_t size);
+ 
+--- a/xbmc/cores/AudioEngine/Sinks/pipewire/PipewireRegistry.cpp
++++ b/xbmc/cores/AudioEngine/Sinks/pipewire/PipewireRegistry.cpp
+@@ -9,6 +9,7 @@
+ #include "PipewireRegistry.h"
+ 
+ #include "PipewireCore.h"
++#include "PipewireDevice.h"
+ #include "PipewireNode.h"
+ #include "utils/log.h"
+ 
+@@ -45,13 +46,22 @@ void CPipewireRegistry::OnGlobalAdded(vo
+ {
+   auto& registry = *reinterpret_cast<CPipewireRegistry*>(userdata);
+ 
+-  if (strcmp(type, PW_TYPE_INTERFACE_Node) != 0)
++  if (!props)
+     return;
+ 
+   const char* mediaClass = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
+   if (!mediaClass)
+     return;
+ 
++  if (strcmp(type, PW_TYPE_INTERFACE_Device) == 0 && strcmp(mediaClass, "Audio/Device") == 0)
++  {
++    registry.m_devices[id] = std::make_unique<CPipewireDevice>(registry, id, type);
++    return;
++  }
++
++  if (strcmp(type, PW_TYPE_INTERFACE_Node) != 0)
++    return;
++
+   if (strcmp(mediaClass, "Audio/Sink") != 0)
+     return;
+ 
+@@ -75,6 +85,8 @@ void CPipewireRegistry::OnGlobalRemoved(
+ 
+     nodes.erase(it);
+   }
++
++  registry.m_devices.erase(id);
+ }
+ 
+ pw_registry_events CPipewireRegistry::CreateRegistryEvents()
+--- a/xbmc/cores/AudioEngine/Sinks/pipewire/PipewireRegistry.h
++++ b/xbmc/cores/AudioEngine/Sinks/pipewire/PipewireRegistry.h
+@@ -20,6 +20,7 @@ namespace PIPEWIRE
+ {
+ 
+ class CPipewireCore;
++class CPipewireDevice;
+ class CPipewireNode;
+ 
+ class CPipewireRegistry
+@@ -34,6 +35,7 @@ public:
+   CPipewireCore& GetCore() const { return m_core; }
+ 
+   std::map<uint32_t, std::unique_ptr<CPipewireNode>>& GetNodes() { return m_nodes; }
++  std::map<uint32_t, std::unique_ptr<CPipewireDevice>>& GetDevices() { return m_devices; }
+ 
+ private:
+   static void OnGlobalAdded(void* userdata,
+@@ -59,6 +61,7 @@ private:
+   std::unique_ptr<pw_registry, PipewireRegistryDeleter> m_registry;
+ 
+   std::map<uint32_t, std::unique_ptr<CPipewireNode>> m_nodes;
++  std::map<uint32_t, std::unique_ptr<CPipewireDevice>> m_devices;
+ };
+ 
+ } // namespace PIPEWIRE

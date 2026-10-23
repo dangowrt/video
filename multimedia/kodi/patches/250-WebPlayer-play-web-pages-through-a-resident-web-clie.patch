@@ -1,0 +1,1563 @@
+From 90087807b03162987eee2abeea3893b9f41fa60b Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 8 Oct 2026 20:40:43 +0100
+Subject: [PATCH] WebPlayer: play web pages through a resident web client
+
+Kodi has no way to show a web page. Add a player core that shows one
+through a web client hosted by the Wayland host. CWebClientManager, an
+application component, runs the host for Kodi's lifetime, starts the
+client named by web.clientcommand once the GUI is up (web.enabled,
+web.preload), waits for kodi_web_v1 ready, restarts a client that was
+up once and stays failed after a second loss until the next web
+request. The client keeps its data under special://profile/webdata and
+its cache under special://temp/webcache through XDG_DATA_HOME and
+XDG_CACHE_HOME, so profile data follows the Kodi profile.
+
+The player asks the manager for the view of the item's web.profile
+property, loads the URL into it, activates it, and feeds the frames the
+view commits to the render manager as DRM PRIME pictures, so the
+existing renderers show them and the GUI composes over the page like
+over any video; the view's frame callbacks complete on Kodi's render
+loop, which paces the client to the display. On stop the view is
+deactivated and loads about:blank, so the next page opens at once. The
+player is registered as "WebPlayer" of type "web" and selected through
+JSON-RPC Player.Open with playername. Kodi neither probes an item
+addressed to it as a playlist nor looks up its MIME type or resolves
+its path, since each would fetch the page through Kodi's HTTP client
+before the view loads it.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../resources/strings.po                      |  62 ++-
+ .../optional/common/waylandserver.txt         |   1 +
+ system/settings/settings.xml                  |  27 ++
+ xbmc/application/Application.cpp              |  18 +-
+ xbmc/application/ApplicationPlay.cpp          |   5 +-
+ xbmc/cores/WebPlayer/CMakeLists.txt           |  14 +
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 381 ++++++++++++++++++
+ xbmc/cores/WebPlayer/WebClientManager.h       | 132 ++++++
+ xbmc/cores/WebPlayer/WebPlayer.cpp            | 358 ++++++++++++++++
+ xbmc/cores/WebPlayer/WebPlayer.h              | 121 ++++++
+ xbmc/cores/WebPlayer/WebPlayerDefs.h          |  26 ++
+ xbmc/cores/WebPlayer/WebVideoBuffer.cpp       | 112 +++++
+ xbmc/cores/WebPlayer/WebVideoBuffer.h         |  68 ++++
+ .../playercorefactory/PlayerCoreConfig.cpp    |   9 +
+ .../playercorefactory/PlayerCoreFactory.cpp   |   7 +
+ xbmc/settings/SettingConditions.cpp           |   3 +
+ xbmc/settings/Settings.h                      |   3 +
+ 17 files changed, 1343 insertions(+), 4 deletions(-)
+ create mode 100644 xbmc/cores/WebPlayer/CMakeLists.txt
+ create mode 100644 xbmc/cores/WebPlayer/WebClientManager.cpp
+ create mode 100644 xbmc/cores/WebPlayer/WebClientManager.h
+ create mode 100644 xbmc/cores/WebPlayer/WebPlayer.cpp
+ create mode 100644 xbmc/cores/WebPlayer/WebPlayer.h
+ create mode 100644 xbmc/cores/WebPlayer/WebPlayerDefs.h
+ create mode 100644 xbmc/cores/WebPlayer/WebVideoBuffer.cpp
+ create mode 100644 xbmc/cores/WebPlayer/WebVideoBuffer.h
+
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25640,7 +25640,67 @@ msgctxt "#40230"
+ msgid "Turn on to show individual versions in the movies view, turn off to group them"
+ msgstr ""
+ 
+-#empty strings from id 40231 to 40399
++#. Settings section for pages shown inside Kodi
++#: system/settings/settings.xml
++msgctxt "#40231"
++msgid "Web"
++msgstr ""
++
++#. Help for the Web settings section
++#: system/settings/settings.xml
++msgctxt "#40232"
++msgid "Settings for the web pages Kodi shows through its web client."
++msgstr ""
++
++#. Help for the Web settings category
++#: system/settings/settings.xml
++msgctxt "#40233"
++msgid "This category contains the settings of the web client Kodi starts to show pages."
++msgstr ""
++
++#. Settings group with the web client's settings
++#: system/settings/settings.xml
++msgctxt "#40234"
++msgid "Web client"
++msgstr ""
++
++#. Name of the setting holding the web client's executable
++#: system/settings/settings.xml
++msgctxt "#40235"
++msgid "Client command"
++msgstr ""
++
++#. Help for setting Client command
++#: system/settings/settings.xml
++msgctxt "#40236"
++msgid "The program Kodi starts as its web client. It connects to Kodi as a Wayland client over an inherited socket and shows the requested page."
++msgstr ""
++
++#. Name of the setting that turns the web client on
++#: system/settings/settings.xml
++msgctxt "#40237"
++msgid "Show web pages"
++msgstr ""
++
++#. Help for setting Show web pages
++#: system/settings/settings.xml
++msgctxt "#40238"
++msgid "Start a web client and show web pages inside Kodi. Turning this off removes every web entry point."
++msgstr ""
++
++#. Name of the setting that starts the web client with Kodi
++#: system/settings/settings.xml
++msgctxt "#40239"
++msgid "Start the web client with Kodi"
++msgstr ""
++
++#. Help for setting Start the web client with Kodi
++#: system/settings/settings.xml
++msgctxt "#40240"
++msgid "Keep the web client running from start-up so that pages open at once. Turn off to start it on first use and save memory."
++msgstr ""
++
++#empty strings from id 40241 to 40399
+ 
+ # Video versions
+ 
+--- a/cmake/treedata/optional/common/waylandserver.txt
++++ b/cmake/treedata/optional/common/waylandserver.txt
+@@ -1 +1,2 @@
+ xbmc/platform/linux/waylandhost platform/linux/waylandhost # WAYLANDSERVER
++xbmc/cores/WebPlayer cores/webplayer # WAYLANDSERVER
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -2890,6 +2890,33 @@
+       </group>
+     </category>
+   </section>
++  <section id="web" label="40231" help="40232">
++    <category id="client" label="16000" help="40233">
++      <requirement>HAVE_WAYLAND_SERVER</requirement>
++      <group id="1" label="40234">
++        <setting id="web.enabled" type="boolean" label="40237" help="40238">
++          <level>1</level>
++          <default>true</default>
++          <control type="toggle" />
++        </setting>
++        <setting id="web.preload" type="boolean" parent="web.enabled" label="40239" help="40240">
++          <level>1</level>
++          <default>true</default>
++          <dependencies>
++            <dependency type="enable">
++              <condition setting="web.enabled" operator="is">true</condition>
++            </dependency>
++          </dependencies>
++          <control type="toggle" />
++        </setting>
++        <setting id="web.clientcommand" type="string" label="40235" help="40236">
++          <level>2</level>
++          <default>kodi-webview</default>
++          <control type="edit" format="string" />
++        </setting>
++      </group>
++    </category>
++  </section>
+   <section id="system" label="13000" help="36349">
+     <category id="display" label="14220" help="36603">
+       <group id="1" label="16000">
+--- a/xbmc/application/Application.cpp
++++ b/xbmc/application/Application.cpp
+@@ -46,9 +46,13 @@
+ #include "application/ApplicationPowerHandling.h"
+ #include "application/ApplicationSkinHandling.h"
+ #include "application/ApplicationStackHelper.h"
++#if defined(HAVE_WAYLAND_SERVER)
++#include "cores/WebPlayer/WebClientManager.h"
++#endif
+ #include "application/ApplicationVolumeHandling.h"
+ #include "cores/AudioEngine/Engines/ActiveAE/ActiveAE.h"
+ #include "cores/FFmpeg.h"
++#include "cores/WebPlayer/WebPlayerDefs.h"
+ #include "cores/playercorefactory/PlayerCoreFactory.h"
+ #include "dialogs/GUIDialogBusy.h"
+ #include "dialogs/GUIDialogCache.h"
+@@ -238,6 +242,9 @@ CApplication::CApplication(void)
+   RegisterComponent(std::make_shared<CApplicationSkinHandling>(this, this, m_bInitializing));
+   RegisterComponent(std::make_shared<CApplicationVolumeHandling>());
+   RegisterComponent(std::make_shared<CApplicationStackHelper>());
++#if defined(HAVE_WAYLAND_SERVER)
++  RegisterComponent(std::make_shared<KODI::WEB::CWebClientManager>());
++#endif
+ }
+ 
+ CApplication::~CApplication(void)
+@@ -788,6 +795,10 @@ bool CApplication::Initialize()
+       // the startup window is considered part of the initialization as it most likely switches to the final window
+       uiInitializationFinished = firstWindow != WINDOW_STARTUP_ANIM;
+     }
++
++#if defined(HAVE_WAYLAND_SERVER)
++    GetComponent<KODI::WEB::CWebClientManager>()->Start();
++#endif
+   }
+ 
+   g_sysinfo.Refresh();
+@@ -1703,6 +1714,10 @@ bool CApplication::Cleanup()
+     ResetCurrentItem();
+     StopPlaying();
+ 
++#if defined(HAVE_WAYLAND_SERVER)
++    GetComponent<KODI::WEB::CWebClientManager>()->Stop();
++#endif
++
+     if (m_ServiceManager)
+       m_ServiceManager->DeinitStageThree();
+ 
+@@ -2010,7 +2025,8 @@ bool CApplication::PlayMedia(CFileItem&
+       return ProcessAndStartPlaylist(smartpl.GetName(), playlist, smartplPlaylistId);
+     }
+   }
+-  else if ((PLAYLIST::IsPlayList(item) && !item.IsGame()) || NETWORK::IsInternetStream(item))
++  else if (player != KODI::WEB::PLAYER_NAME &&
++           ((PLAYLIST::IsPlayList(item) && !item.IsGame()) || NETWORK::IsInternetStream(item)))
+   {
+     // Not owner. Dialog auto-deletes itself.
+     CGUIDialogCache* dlgCache = new CGUIDialogCache(
+--- a/xbmc/application/ApplicationPlay.cpp
++++ b/xbmc/application/ApplicationPlay.cpp
+@@ -14,6 +14,7 @@
+ #include "ServiceBroker.h"
+ #include "Util.h"
+ #include "cores/AudioEngine/Interfaces/AE.h"
++#include "cores/WebPlayer/WebPlayerDefs.h"
+ #include "cores/playercorefactory/PlayerCoreFactory.h"
+ #include "filesystem/DirectoryFactory.h"
+ #include "filesystem/DiscDirectoryHelper.h"
+@@ -349,7 +350,7 @@ CApplicationPlay::GatherPlaybackDetailsR
+   }
+ 
+   // Ensure the MIME type has been retrieved for http:// and shout:// streams
+-  if (m_item.GetMimeType().empty())
++  if (m_item.GetMimeType().empty() && m_player != KODI::WEB::PLAYER_NAME)
+     m_item.FillInMimeType();
+ 
+   if (VIDEO::IsDiscStub(m_item))
+@@ -358,7 +359,7 @@ CApplicationPlay::GatherPlaybackDetailsR
+   if (PLAYLIST::IsPlayList(m_item) && !m_item.IsGame())
+     return GatherPlaybackDetailsResult::RESULT_ERROR; // non-game playlists not supported
+ 
+-  if (!ResolvePath())
++  if (m_player != KODI::WEB::PLAYER_NAME && !ResolvePath())
+     return GatherPlaybackDetailsResult::RESULT_ERROR;
+ 
+   if (!isStack)
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/CMakeLists.txt
+@@ -0,0 +1,14 @@
++if(TARGET ${APP_NAME_LC}::WaylandServer)
++  set(SOURCES WebClientManager.cpp
++              WebPlayer.cpp
++              WebVideoBuffer.cpp)
++
++  set(HEADERS WebClientManager.h
++              WebPlayer.h
++              WebPlayerDefs.h
++              WebVideoBuffer.h)
++
++  include_directories(${CMAKE_BINARY_DIR}/${CORE_BUILD_DIR}/platform/linux/waylandhost)
++
++  core_add_library(webplayer)
++endif()
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
+@@ -0,0 +1,381 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "WebClientManager.h"
++
++#include "ServiceBroker.h"
++#include "filesystem/SpecialProtocol.h"
++#include "settings/Settings.h"
++#include "settings/SettingsComponent.h"
++#include "utils/log.h"
++#include "windowing/GraphicContext.h"
++#include "windowing/WinSystem.h"
++
++#include "platform/linux/waylandhost/WaylandBuffer.h"
++#include "platform/linux/waylandhost/WaylandSurface.h"
++
++#if defined(HAVE_GBM)
++#include "windowing/gbm/WinSystemGbm.h"
++#include "windowing/gbm/drm/DRMUtils.h"
++
++#include "platform/linux/input/LibInputSettings.h"
++#endif
++
++#include <cmath>
++#include <mutex>
++#include <utility>
++
++#include <xf86drm.h>
++
++using namespace KODI::WEB;
++using namespace KODI::WAYLANDHOST;
++
++namespace
++{
++
++std::string FirstRenderNode()
++{
++  std::string path;
++  drmDevicePtr devices[16] = {};
++  const int count = drmGetDevices2(0, devices, std::size(devices));
++  for (int i = 0; i < count && path.empty(); ++i)
++  {
++    if (devices[i]->available_nodes & (1 << DRM_NODE_RENDER))
++      path = devices[i]->nodes[DRM_NODE_RENDER];
++  }
++  if (count > 0)
++    drmFreeDevices(devices, count);
++  return path;
++}
++
++} // unnamed namespace
++
++CWebClientManager::~CWebClientManager()
++{
++  Stop();
++}
++
++void CWebClientManager::Start()
++{
++  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
++  if (!settings->GetBool(CSettings::SETTING_WEB_ENABLED) || m_host)
++    return;
++
++  if (!StartHost())
++    return;
++
++  CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
++  if (settings->GetBool(CSettings::SETTING_WEB_PRELOAD))
++    Spawn();
++}
++
++void CWebClientManager::Stop()
++{
++  if (!m_host)
++    return;
++
++  CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
++  m_host->Stop();
++  m_host.reset();
++
++  std::unique_lock lock(m_lock);
++  m_state = State::ABSENT;
++  m_views.clear();
++  m_surfaces.clear();
++  m_observer = nullptr;
++}
++
++bool CWebClientManager::StartHost()
++{
++  WaylandHostConfig config;
++  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
++  config.width = gfx.GetWidth();
++  config.height = gfx.GetHeight();
++  config.refreshMilliHz = static_cast<int32_t>(std::lround(gfx.GetFPS() * 1000.0f));
++
++#if defined(HAVE_GBM)
++  if (auto* gbm = dynamic_cast<WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem()))
++  {
++    if (auto drm = gbm->GetDrm())
++      config.renderDevicePath = drm->GetRenderDevicePath();
++    config.keyboardLayout = CServiceBroker::GetSettingsComponent()->GetSettings()->GetString(
++        CLibInputSettings::SETTING_INPUT_LIBINPUTKEYBOARDLAYOUT);
++  }
++#endif
++  if (config.renderDevicePath.empty())
++    config.renderDevicePath = FirstRenderNode();
++  if (config.renderDevicePath.empty())
++  {
++    CLog::Log(LOGERROR, "CWebClientManager::{}: no render device for the clients", __FUNCTION__);
++    return false;
++  }
++
++  CLog::Log(LOGINFO, "CWebClientManager::{}: hosting {}x{} at {} mHz on {}", __FUNCTION__,
++            config.width, config.height, config.refreshMilliHz, config.renderDevicePath);
++
++  m_host = std::make_unique<CWaylandHost>(*this, std::move(config));
++  if (m_host->Start())
++    return true;
++
++  m_host.reset();
++  return false;
++}
++
++void CWebClientManager::Spawn()
++{
++  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
++  const std::string command = settings->GetString(CSettings::SETTING_WEB_CLIENTCOMMAND);
++  CLog::Log(LOGINFO, "CWebClientManager::{}: starting {}", __FUNCTION__, command);
++  m_state = State::STARTING;
++  // the client keeps profile data under XDG_DATA_HOME; Kodi's profile is
++  // where it survives restarts and follows the Kodi profile in use
++  std::map<std::string, std::string> env{
++      {"WPE_PLATFORM", "wayland"},
++      {"XDG_DATA_HOME", CSpecialProtocol::TranslatePath("special://profile/webdata")},
++      {"XDG_CACHE_HOME", CSpecialProtocol::TranslatePath("special://temp/webcache")}};
++  m_host->SpawnClient({command}, std::move(env));
++}
++
++CWebClientManager::State CWebClientManager::GetState() const
++{
++  std::unique_lock lock(m_lock);
++  return m_state;
++}
++
++bool CWebClientManager::RequestView(const std::string& profile, IWebViewObserver& observer)
++{
++  if (!m_host)
++    return false;
++
++  std::unique_lock lock(m_lock);
++  m_observer = &observer;
++  m_observedProfile = profile;
++  m_wantPending = false;
++
++  const auto view = m_views.find(profile);
++  if (view != m_views.end() && view->second)
++  {
++    CWaylandSurface& surface = *view->second;
++    lock.unlock();
++    observer.OnWebViewAvailable(profile, surface);
++    return true;
++  }
++
++  switch (m_state)
++  {
++    case State::READY:
++      m_host->WebWantView(profile, {});
++      break;
++    case State::STARTING:
++      m_wantPending = true;
++      break;
++    case State::ABSENT:
++    case State::FAILED:
++      m_respawned = false;
++      m_wantPending = true;
++      Spawn();
++      break;
++  }
++  return true;
++}
++
++void CWebClientManager::ReleaseView(IWebViewObserver& observer)
++{
++  std::unique_lock lock(m_lock);
++  if (m_observer == &observer)
++  {
++    m_observer = nullptr;
++    m_wantPending = false;
++  }
++}
++
++void CWebClientManager::LoadUrl(const std::string& profile, const std::string& url)
++{
++  if (m_host)
++    m_host->WebViewLoadUrl(profile, url);
++}
++
++void CWebClientManager::Navigate(const std::string& profile, WebNavigation action)
++{
++  if (m_host)
++    m_host->WebViewNavigate(profile, action);
++}
++
++void CWebClientManager::SetActive(const std::string& profile, bool active)
++{
++  if (m_host)
++    m_host->WebViewSetActive(profile, active);
++}
++
++void CWebClientManager::FrameMove()
++{
++  if (m_host)
++    m_host->FrameDone();
++}
++
++IWebViewObserver* CWebClientManager::ObserverOf(const std::string& profile)
++{
++  return m_observer && m_observedProfile == profile ? m_observer : nullptr;
++}
++
++void CWebClientManager::OnSurfaceMapped(CWaylandSurface& surface)
++{
++  CLog::Log(LOGINFO, "CWebClientManager::{}: client surface \"{}\" is up", __FUNCTION__,
++            surface.GetTitle());
++}
++
++void CWebClientManager::OnSurfaceUnmapped(CWaylandSurface& surface)
++{
++  std::unique_lock lock(m_lock);
++  const auto entry = m_surfaces.find(&surface);
++  IWebViewObserver* observer = entry == m_surfaces.end() ? nullptr : ObserverOf(entry->second);
++  lock.unlock();
++  if (observer)
++    observer->OnWebViewUnmapped(surface);
++}
++
++void CWebClientManager::OnSurfaceFrame(CWaylandSurface& surface,
++                                       std::shared_ptr<CWaylandBuffer> buffer)
++{
++  std::unique_lock lock(m_lock);
++  const auto entry = m_surfaces.find(&surface);
++  IWebViewObserver* observer = entry == m_surfaces.end() ? nullptr : ObserverOf(entry->second);
++  lock.unlock();
++  if (observer)
++    observer->OnWebViewFrame(surface, std::move(buffer));
++  else
++    buffer->Unlock();
++}
++
++void CWebClientManager::OnClientExited(pid_t pid, int status)
++{
++  std::unique_lock lock(m_lock);
++  CLog::Log(LOGWARNING, "CWebClientManager::{}: the web client (pid {}) exited with status {}",
++            __FUNCTION__, pid, status);
++  m_views.clear();
++  m_surfaces.clear();
++  IWebViewObserver* observer = m_observer;
++  const std::string profile = m_observedProfile;
++
++  // one restart per request; a client that fails again stays down until
++  // the next web request
++  if (m_state == State::READY && !m_respawned)
++  {
++    m_respawned = true;
++    m_wantPending = observer != nullptr;
++    Spawn();
++  }
++  else
++  {
++    m_state = State::FAILED;
++    m_wantPending = false;
++  }
++  lock.unlock();
++
++  if (observer)
++    observer->OnWebViewGone(profile);
++}
++
++void CWebClientManager::OnWebClientReady()
++{
++  std::unique_lock lock(m_lock);
++  m_state = State::READY;
++  // a view the client created on its own before ready answers the request
++  const bool want = m_wantPending && m_views.find(m_observedProfile) == m_views.end();
++  m_wantPending = false;
++  const std::string profile = m_observedProfile;
++  lock.unlock();
++  if (want)
++    m_host->WebWantView(profile, {});
++}
++
++void CWebClientManager::OnWebViewCreated(const std::string& profile, CWaylandSurface& surface)
++{
++  std::unique_lock lock(m_lock);
++  m_views[profile] = &surface;
++  m_surfaces[&surface] = profile;
++  IWebViewObserver* observer = ObserverOf(profile);
++  if (observer)
++    m_wantPending = false;
++  lock.unlock();
++  if (observer)
++    observer->OnWebViewAvailable(profile, surface);
++}
++
++void CWebClientManager::OnWebViewUnavailable(const std::string& profile, const std::string& message)
++{
++  std::unique_lock lock(m_lock);
++  IWebViewObserver* observer = ObserverOf(profile);
++  lock.unlock();
++  if (observer)
++    observer->OnWebViewUnavailable(profile, message);
++}
++
++void CWebClientManager::OnWebViewUrl(const std::string& profile, const std::string& url)
++{
++  std::unique_lock lock(m_lock);
++  IWebViewObserver* observer = ObserverOf(profile);
++  lock.unlock();
++  if (observer)
++    observer->OnWebViewUrl(profile, url);
++}
++
++void CWebClientManager::OnWebViewTitle(const std::string& profile, const std::string& title)
++{
++  std::unique_lock lock(m_lock);
++  IWebViewObserver* observer = ObserverOf(profile);
++  lock.unlock();
++  if (observer)
++    observer->OnWebViewTitle(profile, title);
++}
++
++void CWebClientManager::OnWebViewProgress(const std::string& profile, uint32_t percent)
++{
++  std::unique_lock lock(m_lock);
++  IWebViewObserver* observer = ObserverOf(profile);
++  lock.unlock();
++  if (observer)
++    observer->OnWebViewProgress(profile, percent);
++}
++
++void CWebClientManager::OnWebViewNavigationState(const std::string& profile,
++                                                 bool canGoBack,
++                                                 bool canGoForward)
++{
++  std::unique_lock lock(m_lock);
++  IWebViewObserver* observer = ObserverOf(profile);
++  lock.unlock();
++  if (observer)
++    observer->OnWebViewNavigationState(profile, canGoBack, canGoForward);
++}
++
++void CWebClientManager::OnWebViewError(const std::string& profile,
++                                       uint32_t code,
++                                       const std::string& message)
++{
++  std::unique_lock lock(m_lock);
++  IWebViewObserver* observer = ObserverOf(profile);
++  lock.unlock();
++  if (observer)
++    observer->OnWebViewError(profile, code, message);
++}
++
++void CWebClientManager::OnWebViewDestroyed(const std::string& profile)
++{
++  std::unique_lock lock(m_lock);
++  const auto view = m_views.find(profile);
++  if (view != m_views.end())
++  {
++    m_surfaces.erase(view->second);
++    m_views.erase(view);
++  }
++  IWebViewObserver* observer = ObserverOf(profile);
++  lock.unlock();
++  if (observer)
++    observer->OnWebViewGone(profile);
++}
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/WebClientManager.h
+@@ -0,0 +1,132 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "application/IApplicationComponent.h"
++#include "guilib/DispResource.h"
++#include "threads/CriticalSection.h"
++
++#include "platform/linux/waylandhost/WaylandHost.h"
++
++#include <map>
++#include <memory>
++#include <string>
++
++namespace KODI
++{
++namespace WEB
++{
++
++/*!
++ * \brief What a player wants to know about the view it asked for. All
++ * methods run on the host thread.
++ */
++class IWebViewObserver
++{
++public:
++  virtual ~IWebViewObserver() = default;
++
++  virtual void OnWebViewAvailable(const std::string& profile,
++                                  WAYLANDHOST::CWaylandSurface& surface) = 0;
++  virtual void OnWebViewUnavailable(const std::string& profile, const std::string& message) = 0;
++  virtual void OnWebViewGone(const std::string& profile) = 0;
++  virtual void OnWebViewFrame(WAYLANDHOST::CWaylandSurface& surface,
++                              std::shared_ptr<WAYLANDHOST::CWaylandBuffer> buffer) = 0;
++  virtual void OnWebViewUnmapped(WAYLANDHOST::CWaylandSurface& surface) = 0;
++  virtual void OnWebViewUrl(const std::string& profile, const std::string& url) = 0;
++  virtual void OnWebViewTitle(const std::string& profile, const std::string& title) = 0;
++  virtual void OnWebViewProgress(const std::string& profile, uint32_t percent) = 0;
++  virtual void OnWebViewNavigationState(const std::string& profile,
++                                        bool canGoBack,
++                                        bool canGoForward) = 0;
++  virtual void OnWebViewError(const std::string& profile,
++                              uint32_t code,
++                              const std::string& message) = 0;
++};
++
++/*!
++ * \brief Runs the Wayland host for Kodi's lifetime and keeps the web client
++ * warm: the client is started once the GUI is up, its views survive the
++ * player that showed them, and a crashed client is started again once.
++ */
++class CWebClientManager : public IApplicationComponent,
++                          public WAYLANDHOST::IWaylandHostObserver,
++                          public IRenderLoop
++{
++public:
++  enum class State
++  {
++    ABSENT,
++    STARTING,
++    READY,
++    FAILED,
++  };
++
++  CWebClientManager() = default;
++  ~CWebClientManager() override;
++
++  void Start();
++  void Stop();
++
++  bool IsEnabled() const { return m_host != nullptr; }
++  State GetState() const;
++  WAYLANDHOST::CWaylandHost* GetHost() const { return m_host.get(); }
++
++  /*!
++   * \brief Ask for the view of a profile on behalf of an observer; the
++   * answer comes through the observer, at once if the view exists
++   */
++  bool RequestView(const std::string& profile, IWebViewObserver& observer);
++  void ReleaseView(IWebViewObserver& observer);
++
++  void LoadUrl(const std::string& profile, const std::string& url);
++  void Navigate(const std::string& profile, WAYLANDHOST::WebNavigation action);
++  void SetActive(const std::string& profile, bool active);
++
++  // implementation of IRenderLoop
++  void FrameMove() override;
++
++  // implementation of IWaylandHostObserver
++  void OnSurfaceMapped(WAYLANDHOST::CWaylandSurface& surface) override;
++  void OnSurfaceUnmapped(WAYLANDHOST::CWaylandSurface& surface) override;
++  void OnSurfaceFrame(WAYLANDHOST::CWaylandSurface& surface,
++                      std::shared_ptr<WAYLANDHOST::CWaylandBuffer> buffer) override;
++  void OnClientExited(pid_t pid, int status) override;
++  void OnWebClientReady() override;
++  void OnWebViewCreated(const std::string& profile, WAYLANDHOST::CWaylandSurface& surface) override;
++  void OnWebViewUnavailable(const std::string& profile, const std::string& message) override;
++  void OnWebViewUrl(const std::string& profile, const std::string& url) override;
++  void OnWebViewTitle(const std::string& profile, const std::string& title) override;
++  void OnWebViewProgress(const std::string& profile, uint32_t percent) override;
++  void OnWebViewNavigationState(const std::string& profile,
++                                bool canGoBack,
++                                bool canGoForward) override;
++  void OnWebViewError(const std::string& profile,
++                      uint32_t code,
++                      const std::string& message) override;
++  void OnWebViewDestroyed(const std::string& profile) override;
++
++private:
++  bool StartHost();
++  void Spawn();
++  IWebViewObserver* ObserverOf(const std::string& profile);
++
++  std::unique_ptr<WAYLANDHOST::CWaylandHost> m_host;
++  mutable CCriticalSection m_lock;
++  State m_state{State::ABSENT};
++  bool m_respawned{false};
++  IWebViewObserver* m_observer{nullptr};
++  std::string m_observedProfile;
++  bool m_wantPending{false};
++  std::map<std::string, WAYLANDHOST::CWaylandSurface*> m_views;
++  std::map<WAYLANDHOST::CWaylandSurface*, std::string> m_surfaces;
++};
++
++} // namespace WEB
++} // namespace KODI
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/WebPlayer.cpp
+@@ -0,0 +1,358 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "WebPlayer.h"
++
++#include "FileItem.h"
++#include "ServiceBroker.h"
++#include "WebPlayerDefs.h"
++#include "WebVideoBuffer.h"
++#include "application/ApplicationComponents.h"
++#include "cores/DataCacheCore.h"
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
++#include "cores/VideoPlayer/Process/ProcessInfo.h"
++#include "messaging/ApplicationMessenger.h"
++#include "utils/log.h"
++#include "windowing/GraphicContext.h"
++#include "windowing/WinSystem.h"
++
++#include "platform/linux/waylandhost/WaylandBuffer.h"
++#include "platform/linux/waylandhost/WaylandSurface.h"
++
++using namespace KODI::WEB;
++using namespace KODI::WAYLANDHOST;
++
++namespace
++{
++
++constexpr int RENDER_BUFFERS = 3;
++
++} // unnamed namespace
++
++CWebPlayer::CWebPlayer(IPlayerCallback& callback)
++  : IPlayer(callback),
++    m_renderManager(m_clock, this)
++{
++}
++
++CWebPlayer::~CWebPlayer()
++{
++  CloseFile();
++}
++
++bool CWebPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options)
++{
++  CloseFile();
++
++  m_manager = CServiceBroker::GetAppComponents().GetComponent<CWebClientManager>();
++  if (!m_manager || !m_manager->IsEnabled())
++  {
++    CLog::Log(LOGERROR, "CWebPlayer::{}: the web client is disabled", __FUNCTION__);
++    return false;
++  }
++
++  m_item = std::make_unique<CFileItem>(file);
++  m_options = options;
++  m_stop = false;
++  m_configured = false;
++  m_surface = nullptr;
++  m_url = file.GetDynPath();
++  m_profile = file.GetProperty(PROPERTY_PROFILE).asString(DEFAULT_PROFILE);
++  m_fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
++
++  m_processInfo.reset(CProcessInfo::CreateInstance());
++  m_processInfo->SetDataCache(&CServiceBroker::GetDataCacheCore());
++  m_processInfo->SetSpeed(1.0f);
++  m_processInfo->SetTempo(1.0f);
++  m_processInfo->SetFrameAdvance(false);
++  m_processInfo->SetStateRealtime(true);
++  m_pool = std::make_shared<CWebVideoBufferPool>();
++
++  m_clock.SetSpeed(DVD_PLAYSPEED_NORMAL);
++  m_clock.Discontinuity(0.0);
++  m_renderManager.PreInit();
++
++  if (!m_manager->RequestView(m_profile, *this))
++  {
++    m_renderManager.UnInit();
++    return false;
++  }
++
++  CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
++  m_playing = true;
++  m_callback.OnPlayBackStarted(*m_item);
++  return true;
++}
++
++bool CWebPlayer::CloseFile(bool reopen)
++{
++  if (!m_manager)
++    return true;
++
++  const bool wasPlaying = m_playing.exchange(false);
++  m_stop = true;
++  m_manager->ReleaseView(*this);
++  if (m_surface)
++  {
++    m_manager->SetActive(m_profile, false);
++    m_manager->LoadUrl(m_profile, "about:blank");
++  }
++  m_surface = nullptr;
++  m_manager.reset();
++
++  CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
++  m_renderManager.UnInit();
++  m_pool.reset();
++  CServiceBroker::GetDataCacheCore().Reset();
++  m_processInfo.reset();
++
++  if (wasPlaying)
++    m_callback.OnPlayBackStopped();
++  return true;
++}
++
++void CWebPlayer::Render(bool clear, uint32_t alpha, bool gui)
++{
++  m_renderManager.Render(clear, 0, alpha, gui);
++}
++
++void CWebPlayer::FlushRenderer()
++{
++  m_renderManager.Flush(true, true);
++}
++
++void CWebPlayer::SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch)
++{
++  if (!m_processInfo)
++    return;
++
++  m_processInfo->GetVideoSettingsLocked().SetViewMode(mode, zoom, par, shift, stretch);
++  m_renderManager.SetVideoSettings(m_processInfo->GetVideoSettings());
++  m_renderManager.SetViewMode(mode);
++}
++
++float CWebPlayer::GetRenderAspectRatio() const
++{
++  return m_renderManager.GetAspectRatio();
++}
++
++void CWebPlayer::TriggerUpdateResolution()
++{
++  std::string stereoMode;
++  m_renderManager.TriggerUpdateResolution(0, 0, 0, stereoMode);
++}
++
++bool CWebPlayer::IsRenderingVideo() const
++{
++  return m_renderManager.IsConfigured();
++}
++
++void CWebPlayer::GetRects(CRect& source, CRect& dest, CRect& view) const
++{
++  m_renderManager.GetVideoRect(source, dest, view);
++}
++
++unsigned int CWebPlayer::GetOrientation() const
++{
++  return m_renderManager.GetOrientation();
++}
++
++bool CWebPlayer::Supports(ERENDERFEATURE feature) const
++{
++  return m_renderManager.Supports(feature);
++}
++
++bool CWebPlayer::Supports(ESCALINGMETHOD method) const
++{
++  return m_renderManager.Supports(method);
++}
++
++CVideoSettings CWebPlayer::GetVideoSettings() const
++{
++  return m_processInfo ? m_processInfo->GetVideoSettings() : CVideoSettings();
++}
++
++void CWebPlayer::SetVideoSettings(CVideoSettings& settings)
++{
++  if (!m_processInfo)
++    return;
++
++  m_processInfo->SetVideoSettings(settings);
++  m_renderManager.SetVideoSettings(settings);
++}
++
++void CWebPlayer::FrameMove()
++{
++  m_renderManager.FrameMove();
++}
++
++void CWebPlayer::OnWebViewAvailable(const std::string& profile, CWaylandSurface& surface)
++{
++  CLog::Log(LOGINFO, "CWebPlayer::{}: view for profile \"{}\" loads {}", __FUNCTION__, profile,
++            m_url);
++  m_surface = &surface;
++  m_manager->LoadUrl(profile, m_url);
++  m_manager->SetActive(profile, true);
++}
++
++void CWebPlayer::OnWebViewUnavailable(const std::string& profile, const std::string& message)
++{
++  CLog::Log(LOGERROR, "CWebPlayer::{}: no view for profile \"{}\": {}", __FUNCTION__, profile,
++            message);
++  StopFromClient();
++}
++
++void CWebPlayer::OnWebViewGone(const std::string& profile)
++{
++  CLog::Log(LOGINFO, "CWebPlayer::{}: the view for profile \"{}\" is gone", __FUNCTION__, profile);
++  m_surface = nullptr;
++  StopFromClient();
++}
++
++void CWebPlayer::OnWebViewUnmapped(CWaylandSurface& surface)
++{
++  CLog::Log(LOGINFO, "CWebPlayer::{}: client surface \"{}\" is gone", __FUNCTION__,
++            surface.GetTitle());
++}
++
++void CWebPlayer::OnWebViewUrl(const std::string& profile, const std::string& url)
++{
++  CLog::Log(LOGDEBUG, "CWebPlayer::{}: {}: {}", __FUNCTION__, profile, url);
++}
++
++void CWebPlayer::OnWebViewTitle(const std::string& profile, const std::string& title)
++{
++  CLog::Log(LOGDEBUG, "CWebPlayer::{}: {}: {}", __FUNCTION__, profile, title);
++}
++
++void CWebPlayer::OnWebViewProgress(const std::string& profile, uint32_t percent)
++{
++  CLog::Log(LOGDEBUG, "CWebPlayer::{}: {}: {}%", __FUNCTION__, profile, percent);
++}
++
++void CWebPlayer::OnWebViewNavigationState(const std::string& profile,
++                                          bool canGoBack,
++                                          bool canGoForward)
++{
++  CLog::Log(LOGDEBUG, "CWebPlayer::{}: {}: back {} forward {}", __FUNCTION__, profile, canGoBack,
++            canGoForward);
++}
++
++void CWebPlayer::OnWebViewError(const std::string& profile,
++                                uint32_t code,
++                                const std::string& message)
++{
++  CLog::Log(LOGERROR, "CWebPlayer::{}: {}: error {}: {}", __FUNCTION__, profile, code, message);
++}
++
++void CWebPlayer::OnWebViewFrame(CWaylandSurface& surface, std::shared_ptr<CWaylandBuffer> buffer)
++{
++  if (&surface != m_surface || m_stop || !m_pool)
++  {
++    buffer->Unlock();
++    return;
++  }
++
++  auto* videoBuffer = static_cast<CWebVideoBuffer*>(m_pool->Get());
++  videoBuffer->SetBuffer(buffer);
++
++  VideoPicture picture;
++  picture.Reset();
++  picture.videoBuffer = videoBuffer;
++  picture.iWidth = buffer->GetWidth();
++  picture.iHeight = buffer->GetHeight();
++  picture.iDisplayWidth = picture.iWidth;
++  picture.iDisplayHeight = picture.iHeight;
++  picture.pixelFormat = AV_PIX_FMT_DRM_PRIME;
++  picture.color_space = AVCOL_SPC_BT709;
++  picture.color_range = 1;
++  picture.color_primaries = AVCOL_PRI_BT709;
++  picture.color_transfer = AVCOL_TRC_BT709;
++  picture.chroma_position = AVCHROMA_LOC_UNSPECIFIED;
++  picture.pts = m_clock.GetClock();
++  picture.dts = DVD_NOPTS_VALUE;
++  videoBuffer->SetPictureParams(picture);
++
++  if (!m_configured)
++  {
++    CLog::Log(LOGINFO, "CWebPlayer::{}: first frame {}x{} format {:#x} modifier {:#x} planes {}",
++              __FUNCTION__, buffer->GetWidth(), buffer->GetHeight(), buffer->GetFormat(),
++              buffer->GetModifier(), buffer->GetPlaneCount());
++    if (!ConfigureRenderer(picture))
++      return;
++  }
++
++  if (!m_renderManager.AddVideoPicture(picture, m_stop, VS_INTERLACEMETHOD_NONE, false))
++    CLog::Log(LOGDEBUG, "CWebPlayer::{}: frame dropped, no free render buffer", __FUNCTION__);
++}
++
++bool CWebPlayer::ConfigureRenderer(const VideoPicture& picture)
++{
++  m_processInfo->SetVideoDimensions(picture.iWidth, picture.iHeight);
++  m_processInfo->SetVideoDAR(static_cast<float>(picture.iWidth) / picture.iHeight);
++  m_processInfo->SetVideoDecoderName("wayland", true);
++  m_processInfo->SetVideoPixelFormat("drm_prime");
++  m_processInfo->SetVideoFps(m_fps);
++  m_processInfo->SetVideoInterlaced(false);
++  m_processInfo->SetVideoDeintMethod("none");
++
++  if (!m_renderManager.Configure(picture, m_fps, 0, RENDER_BUFFERS))
++  {
++    CLog::Log(LOGERROR, "CWebPlayer::{}: no renderer for the client's {}x{} buffers", __FUNCTION__,
++              picture.iWidth, picture.iHeight);
++    m_stop = true;
++    return false;
++  }
++
++  m_configured = true;
++  m_renderManager.ShowVideo(true);
++  if (m_options.fullscreen)
++    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SWITCHTOFULLSCREEN);
++  m_callback.OnAVStarted(*m_item);
++  return true;
++}
++
++void CWebPlayer::StopFromClient()
++{
++  if (!m_playing.exchange(false))
++    return;
++
++  m_callback.OnPlayBackEnded();
++}
++
++void CWebPlayer::GetDebugInfo(std::string& audio, std::string& video, std::string& general)
++{
++  audio.clear();
++  video = "web client frames through the Wayland host";
++  general.clear();
++}
++
++void CWebPlayer::UpdateClockSync(bool enabled)
++{
++  m_processInfo->SetRenderClockSync(enabled);
++}
++
++void CWebPlayer::UpdateRenderInfo(CRenderInfo& info)
++{
++  m_processInfo->UpdateRenderInfo(info);
++}
++
++void CWebPlayer::UpdateRenderBuffers(int queued, int discard, int free)
++{
++  m_processInfo->UpdateRenderBuffers(queued, discard, free);
++}
++
++void CWebPlayer::UpdateGuiRender(bool gui)
++{
++  m_processInfo->SetGuiRender(gui);
++}
++
++void CWebPlayer::UpdateVideoRender(bool video)
++{
++  m_processInfo->SetVideoRender(video);
++}
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/WebPlayer.h
+@@ -0,0 +1,121 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "WebClientManager.h"
++#include "cores/IPlayer.h"
++#include "cores/VideoPlayer/DVDClock.h"
++#include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
++#include "guilib/DispResource.h"
++
++#include <atomic>
++#include <memory>
++
++class CFileItem;
++class CProcessInfo;
++
++namespace KODI
++{
++namespace WEB
++{
++
++class CWebVideoBufferPool;
++
++/*!
++ * \brief Plays a web page: the view the client manager provides for the
++ * item's profile loads the URL, and the frames the client commits go
++ * through Kodi's video renderers, so the GUI composes over them like over
++ * any other video.
++ */
++class CWebPlayer : public IPlayer,
++                   public IRenderLoop,
++                   public IRenderMsg,
++                   public IWebViewObserver
++{
++public:
++  explicit CWebPlayer(IPlayerCallback& callback);
++  ~CWebPlayer() override;
++
++  // implementation of IPlayer
++  bool OpenFile(const CFileItem& file, const CPlayerOptions& options) override;
++  bool CloseFile(bool reopen = false) override;
++  bool IsPlaying() const override { return m_playing; }
++  bool CanPause() const override { return false; }
++  void Pause() override {}
++  bool HasVideo() const override { return true; }
++  bool HasAudio() const override { return false; }
++  bool CanSeek() const override { return false; }
++  void Seek(bool bPlus = true, bool bLargeStep = false, bool bChapterOverride = false) override {}
++  void SetSpeed(float speed) override {}
++  void Render(bool clear, uint32_t alpha = 255, bool gui = true) override;
++  void FlushRenderer() override;
++  void SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch) override;
++  float GetRenderAspectRatio() const override;
++  void TriggerUpdateResolution() override;
++  bool IsRenderingVideo() const override;
++  void GetRects(CRect& source, CRect& dest, CRect& view) const override;
++  unsigned int GetOrientation() const override;
++  bool Supports(ERENDERFEATURE feature) const override;
++  bool Supports(ESCALINGMETHOD method) const override;
++  CVideoSettings GetVideoSettings() const override;
++  void SetVideoSettings(CVideoSettings& settings) override;
++
++  // implementation of IRenderLoop
++  void FrameMove() override;
++
++  // implementation of IWebViewObserver
++  void OnWebViewAvailable(const std::string& profile,
++                          WAYLANDHOST::CWaylandSurface& surface) override;
++  void OnWebViewUnavailable(const std::string& profile, const std::string& message) override;
++  void OnWebViewGone(const std::string& profile) override;
++  void OnWebViewFrame(WAYLANDHOST::CWaylandSurface& surface,
++                      std::shared_ptr<WAYLANDHOST::CWaylandBuffer> buffer) override;
++  void OnWebViewUnmapped(WAYLANDHOST::CWaylandSurface& surface) override;
++  void OnWebViewUrl(const std::string& profile, const std::string& url) override;
++  void OnWebViewTitle(const std::string& profile, const std::string& title) override;
++  void OnWebViewProgress(const std::string& profile, uint32_t percent) override;
++  void OnWebViewNavigationState(const std::string& profile,
++                                bool canGoBack,
++                                bool canGoForward) override;
++  void OnWebViewError(const std::string& profile,
++                      uint32_t code,
++                      const std::string& message) override;
++
++protected:
++  // implementation of IRenderMsg
++  void VideoParamsChange() override {}
++  void GetDebugInfo(std::string& audio, std::string& video, std::string& general) override;
++  void UpdateClockSync(bool enabled) override;
++  void UpdateRenderInfo(CRenderInfo& info) override;
++  void UpdateRenderBuffers(int queued, int discard, int free) override;
++  void UpdateGuiRender(bool gui) override;
++  void UpdateVideoRender(bool video) override;
++
++private:
++  bool ConfigureRenderer(const VideoPicture& picture);
++  void StopFromClient();
++
++  std::unique_ptr<CProcessInfo> m_processInfo;
++  CDVDClock m_clock;
++  CRenderManager m_renderManager;
++  std::shared_ptr<CWebClientManager> m_manager;
++  std::string m_profile;
++  std::string m_url;
++  std::atomic<WAYLANDHOST::CWaylandSurface*> m_surface{nullptr};
++  std::shared_ptr<CWebVideoBufferPool> m_pool;
++  std::unique_ptr<CFileItem> m_item;
++  CPlayerOptions m_options;
++  std::atomic<bool> m_playing{false};
++  volatile std::atomic_bool m_stop{false};
++  bool m_configured{false};
++  float m_fps{0.0f};
++};
++
++} // namespace WEB
++} // namespace KODI
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/WebPlayerDefs.h
+@@ -0,0 +1,26 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++namespace KODI
++{
++namespace WEB
++{
++
++//! \brief Name under which the web player is registered with the player factory
++constexpr const char* PLAYER_NAME = "WebPlayer";
++
++//! \brief Item property naming the web profile a page opens in, or "default"
++constexpr const char* PROPERTY_PROFILE = "web.profile";
++
++//! \brief The profile of plain browsing
++constexpr const char* DEFAULT_PROFILE = "default";
++
++} // namespace WEB
++} // namespace KODI
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/WebVideoBuffer.cpp
+@@ -0,0 +1,112 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "WebVideoBuffer.h"
++
++#include "platform/linux/waylandhost/WaylandBuffer.h"
++
++#include <mutex>
++
++using namespace KODI::WEB;
++using KODI::WAYLANDHOST::CWaylandBuffer;
++
++CWebVideoBuffer::CWebVideoBuffer(int id) : CVideoBufferDRMPRIME(id)
++{
++}
++
++CWebVideoBuffer::~CWebVideoBuffer()
++{
++  ClearBuffer();
++}
++
++void CWebVideoBuffer::SetBuffer(std::shared_ptr<CWaylandBuffer> buffer)
++{
++  ClearBuffer();
++  m_buffer = std::move(buffer);
++
++  m_descriptor = {};
++  AVDRMLayerDescriptor& layer = m_descriptor.layers[0];
++  m_descriptor.nb_layers = 1;
++  layer.format = m_buffer->GetFormat();
++  layer.nb_planes = static_cast<int>(m_buffer->GetPlaneCount());
++
++  for (unsigned int i = 0; i < m_buffer->GetPlaneCount(); ++i)
++  {
++    const auto& plane = m_buffer->GetPlane(i);
++    int object = 0;
++    while (object < m_descriptor.nb_objects && m_descriptor.objects[object].fd != plane.fd)
++      ++object;
++    if (object == m_descriptor.nb_objects)
++    {
++      m_descriptor.objects[object].fd = plane.fd;
++      m_descriptor.objects[object].format_modifier = m_buffer->GetModifier();
++      ++m_descriptor.nb_objects;
++    }
++    layer.planes[i].object_index = object;
++    layer.planes[i].offset = plane.offset;
++    layer.planes[i].pitch = plane.stride;
++  }
++}
++
++void CWebVideoBuffer::ClearBuffer()
++{
++  if (!m_buffer)
++    return;
++
++  m_buffer->Unlock();
++  m_buffer.reset();
++  m_descriptor = {};
++}
++
++uint32_t CWebVideoBuffer::GetWidth() const
++{
++  return m_buffer ? m_buffer->GetWidth() : 0;
++}
++
++uint32_t CWebVideoBuffer::GetHeight() const
++{
++  return m_buffer ? m_buffer->GetHeight() : 0;
++}
++
++AVDRMFrameDescriptor* CWebVideoBuffer::GetDescriptor() const
++{
++  return const_cast<AVDRMFrameDescriptor*>(&m_descriptor);
++}
++
++CWebVideoBufferPool::~CWebVideoBufferPool()
++{
++  for (CWebVideoBuffer* buffer : m_all)
++    delete buffer;
++}
++
++CVideoBuffer* CWebVideoBufferPool::Get()
++{
++  std::unique_lock lock(m_critSection);
++
++  CWebVideoBuffer* buffer;
++  if (!m_free.empty())
++  {
++    buffer = m_all[m_free.front()];
++    m_free.pop_front();
++  }
++  else
++  {
++    buffer = new CWebVideoBuffer(static_cast<int>(m_all.size()));
++    m_all.push_back(buffer);
++  }
++
++  buffer->Acquire(GetPtr());
++  return buffer;
++}
++
++void CWebVideoBufferPool::Return(int id)
++{
++  std::unique_lock lock(m_critSection);
++  m_all[id]->ClearBuffer();
++  m_free.push_back(id);
++}
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/WebVideoBuffer.h
+@@ -0,0 +1,68 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "cores/VideoPlayer/Buffers/VideoBufferDRMPRIME.h"
++#include "threads/CriticalSection.h"
++
++#include <deque>
++#include <memory>
++#include <vector>
++
++namespace KODI
++{
++namespace WAYLANDHOST
++{
++class CWaylandBuffer;
++}
++
++namespace WEB
++{
++
++/*!
++ * \brief A Wayland client's dmabuf presented to the video renderers as a
++ * DRM PRIME picture. The wl_buffer stays locked for the client until the
++ * renderers return it to the pool.
++ */
++class CWebVideoBuffer : public CVideoBufferDRMPRIME
++{
++public:
++  explicit CWebVideoBuffer(int id);
++  ~CWebVideoBuffer() override;
++
++  void SetBuffer(std::shared_ptr<WAYLANDHOST::CWaylandBuffer> buffer);
++  void ClearBuffer();
++
++  // implementation of CVideoBufferDRMPRIME
++  uint32_t GetWidth() const override;
++  uint32_t GetHeight() const override;
++  AVDRMFrameDescriptor* GetDescriptor() const override;
++
++private:
++  std::shared_ptr<WAYLANDHOST::CWaylandBuffer> m_buffer;
++  AVDRMFrameDescriptor m_descriptor{};
++};
++
++class CWebVideoBufferPool : public IVideoBufferPool
++{
++public:
++  ~CWebVideoBufferPool() override;
++
++  // implementation of IVideoBufferPool
++  CVideoBuffer* Get() override;
++  void Return(int id) override;
++
++private:
++  CCriticalSection m_critSection;
++  std::vector<CWebVideoBuffer*> m_all;
++  std::deque<int> m_free;
++};
++
++} // namespace WEB
++} // namespace KODI
+--- a/xbmc/cores/playercorefactory/PlayerCoreConfig.cpp
++++ b/xbmc/cores/playercorefactory/PlayerCoreConfig.cpp
+@@ -19,6 +19,9 @@
+ #ifdef TARGET_WEBOS
+ #include "VideoPlayerWebOS.h"
+ #endif
++#if defined(HAVE_WAYLAND_SERVER)
++#include "cores/WebPlayer/WebPlayer.h"
++#endif
+ #include "utils/StringUtils.h"
+ #include "utils/XBMCTinyXML.h"
+ #include "utils/log.h"
+@@ -67,6 +70,12 @@ std::shared_ptr<IPlayer> CPlayerCoreConf
+   {
+     player = std::make_shared<CExternalPlayer>(callback);
+   }
++#if defined(HAVE_WAYLAND_SERVER)
++  else if (m_type.compare("web") == 0)
++  {
++    player = std::make_shared<KODI::WEB::CWebPlayer>(callback);
++  }
++#endif
+ 
+ #if defined(HAS_UPNP)
+   else if (m_type.compare("remote") == 0)
+--- a/xbmc/cores/playercorefactory/PlayerCoreFactory.cpp
++++ b/xbmc/cores/playercorefactory/PlayerCoreFactory.cpp
+@@ -15,6 +15,7 @@
+ #include "URL.h"
+ #include "cores/IPlayerCallback.h"
+ #include "cores/VideoPlayer/Interface/InputStreamConstants.h"
++#include "cores/WebPlayer/WebPlayerDefs.h"
+ #include "dialogs/GUIDialogContextMenu.h"
+ #include "music/MusicFileItemClassify.h"
+ #include "profiles/ProfileManager.h"
+@@ -381,6 +382,12 @@ bool CPlayerCoreFactory::LoadConfigurati
+     auto retroPlayer = std::make_unique<CPlayerCoreConfig>("RetroPlayer", "game", nullptr);
+     retroPlayer->m_bPlaysGame = true;
+     m_vecPlayerConfigs.emplace_back(std::move(retroPlayer));
++
++#if defined(HAVE_WAYLAND_SERVER)
++    auto webPlayer = std::make_unique<CPlayerCoreConfig>(KODI::WEB::PLAYER_NAME, "web", nullptr);
++    webPlayer->m_bPlaysVideo = true;
++    m_vecPlayerConfigs.emplace_back(std::move(webPlayer));
++#endif
+   }
+ 
+   if (StringUtils::CompareNoCase(pConfig->Value(), "playercorefactory") != 0)
+--- a/xbmc/settings/SettingConditions.cpp
++++ b/xbmc/settings/SettingConditions.cpp
+@@ -397,6 +397,9 @@ void CSettingConditions::Initialize()
+ #ifdef HAVE_LIBVDPAU
+   m_simpleConditions.emplace("have_libvdpau");
+ #endif
++#ifdef HAVE_WAYLAND_SERVER
++  m_simpleConditions.emplace("have_wayland_server");
++#endif
+ #ifdef TARGET_ANDROID
+   m_simpleConditions.emplace("has_mediacodec");
+ #endif
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -338,6 +338,9 @@ public:
+   static constexpr auto SETTING_WEATHER_CURRENTLOCATION = "weather.currentlocation";
+   static constexpr auto SETTING_WEATHER_ADDON = "weather.addon";
+   static constexpr auto SETTING_WEATHER_ADDONSETTINGS = "weather.addonsettings";
++  static constexpr auto SETTING_WEB_ENABLED = "web.enabled";
++  static constexpr auto SETTING_WEB_PRELOAD = "web.preload";
++  static constexpr auto SETTING_WEB_CLIENTCOMMAND = "web.clientcommand";
+   static constexpr auto SETTING_SERVICES_DEVICENAME = "services.devicename";
+   static constexpr auto SETTING_SERVICES_DEVICEUUID = "services.deviceuuid";
+   static constexpr auto SETTING_SERVICES_UPNP = "services.upnp";

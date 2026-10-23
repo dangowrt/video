@@ -1,0 +1,147 @@
+From 31bd3f3fc858c376325bc028f2ab834fb75c5ebd Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 8 Oct 2026 22:39:06 +0100
+Subject: [PATCH] addons: add web apps as an add-on type
+
+A web app is a page shown through Kodi's web view with its own
+identity and content. kodi.webapp declares it in addon.xml: a start
+URL, one or more user agents by id, user scripts and content filters
+as paths in the add-on. The add-on browser lists the type, the info
+dialog can run it, and RunAddon opens the start URL through the web
+player with the add-on's id as the page's profile, or switches to the
+web window when the player already shows that profile, so returning
+to a running web app keeps its page.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../resources/strings.po                      |  8 +++++-
+ xbmc/addons/AddonBuilder.cpp                  |  1 +
+ xbmc/addons/addoninfo/AddonInfo.cpp           |  3 +-
+ xbmc/addons/addoninfo/AddonType.h             |  1 +
+ xbmc/addons/gui/GUIDialogAddonInfo.cpp        |  2 +-
+ xbmc/cores/WebPlayer/WebPlayerDefs.h          |  2 +-
+ xbmc/interfaces/builtins/AddonBuiltins.cpp    | 28 +++++++++++++++++++
+ 7 files changed, 41 insertions(+), 4 deletions(-)
+
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25705,7 +25705,13 @@ msgctxt "#40240"
+ msgid "Keep the web client running from start-up so that pages open at once. Turn off to start it on first use and save memory."
+ msgstr ""
+ 
+-#empty strings from id 40241 to 40399
++#. Add-on type: a web application shown through Kodi's web view
++#: xbmc/addons/addoninfo/AddonInfo.cpp
++msgctxt "#40241"
++msgid "Web apps"
++msgstr ""
++
++#empty strings from id 40242 to 40399
+ 
+ # Video versions
+ 
+--- a/xbmc/addons/AddonBuilder.cpp
++++ b/xbmc/addons/AddonBuilder.cpp
+@@ -85,6 +85,7 @@ AddonPtr CAddonBuilder::Generate(const A
+     case AddonType::SCRIPT_MODULE:
+     case AddonType::SUBTITLE_MODULE:
+     case AddonType::SCRIPT_WEATHER:
++    case AddonType::WEBAPP:
+       return std::make_shared<CAddon>(info, type);
+     case AddonType::WEB_INTERFACE:
+       return std::make_shared<CWebinterface>(info);
+--- a/xbmc/addons/addoninfo/AddonInfo.cpp
++++ b/xbmc/addons/addoninfo/AddonInfo.cpp
+@@ -39,7 +39,7 @@ struct TypeMapping
+ };
+ 
+ // clang-format off
+-static constexpr const std::array<TypeMapping, 42> types =
++static constexpr const std::array<TypeMapping, 43> types =
+   {{
+    {"unknown",                           "", AddonType::UNKNOWN,                 0, AddonInstanceSupport::SUPPORT_NONE,      "" },
+    {"xbmc.metadata.scraper.albums",      "", AddonType::SCRAPER_ALBUMS,      24016, AddonInstanceSupport::SUPPORT_NONE,      "DefaultAddonAlbumInfo.png" },
+@@ -83,6 +83,7 @@ static constexpr const std::array<TypeMa
+    {"kodi.inputstream",                  "", AddonType::INPUTSTREAM,         24048, AddonInstanceSupport::SUPPORT_MANDATORY, "DefaultAddonInputstream.png" },
+    {"kodi.vfs",                          "", AddonType::VFS,                 39013, AddonInstanceSupport::SUPPORT_MANDATORY, "DefaultAddonVfs.png" },
+    {"kodi.imagedecoder",                 "", AddonType::IMAGEDECODER,        39015, AddonInstanceSupport::SUPPORT_MANDATORY, "DefaultAddonImageDecoder.png" },
++   {"kodi.webapp",                       "", AddonType::WEBAPP,              40241, AddonInstanceSupport::SUPPORT_NONE,      "DefaultAddonWebSkin.png" },
+   }};
+ // clang-format on
+ 
+--- a/xbmc/addons/addoninfo/AddonType.h
++++ b/xbmc/addons/addoninfo/AddonType.h
+@@ -56,6 +56,7 @@ enum class AddonType
+   SCRIPT_MODULE,
+   GAME_CONTROLLER,
+   VIDEOCODEC,
++  WEBAPP,
+ 
+   /**
+     * @brief virtual addon types
+--- a/xbmc/addons/gui/GUIDialogAddonInfo.cpp
++++ b/xbmc/addons/gui/GUIDialogAddonInfo.cpp
+@@ -537,7 +537,7 @@ bool CGUIDialogAddonInfo::CanRun() const
+ {
+   if (m_localAddon)
+   {
+-    if (m_localAddon->Type() == AddonType::SCRIPT)
++    if (m_localAddon->Type() == AddonType::SCRIPT || m_localAddon->Type() == AddonType::WEBAPP)
+       return true;
+ 
+     if (GAME::CGameUtils::IsStandaloneGame(m_localAddon))
+--- a/xbmc/cores/WebPlayer/WebPlayerDefs.h
++++ b/xbmc/cores/WebPlayer/WebPlayerDefs.h
+@@ -16,7 +16,7 @@ namespace WEB
+ //! \brief Name under which the web player is registered with the player factory
+ constexpr const char* PLAYER_NAME = "WebPlayer";
+ 
+-//! \brief Item property naming the web profile a page opens in, or "default"
++//! \brief Item property naming the web profile a page opens in; a web add-on's id or "default"
+ constexpr const char* PROPERTY_PROFILE = "web.profile";
+ 
+ //! \brief The profile of plain browsing
+--- a/xbmc/interfaces/builtins/AddonBuiltins.cpp
++++ b/xbmc/interfaces/builtins/AddonBuiltins.cpp
+@@ -22,6 +22,9 @@
+ #include "addons/gui/GUIDialogAddonSettings.h"
+ #include "addons/gui/GUIWindowAddonBrowser.h"
+ #include "application/Application.h"
++#include "application/ApplicationComponents.h"
++#include "application/ApplicationPlayer.h"
++#include "cores/WebPlayer/WebPlayerDefs.h"
+ #include "filesystem/PluginDirectory.h"
+ #include "games/tags/GameInfoTag.h"
+ #include "guilib/GUIComponent.h"
+@@ -180,6 +183,31 @@ static int RunAddon(const std::vector<st
+       // quotes.
+       RunScript(params);
+     }
++    else if (CServiceBroker::GetAddonMgr().GetAddon(addonid, addon, AddonType::WEBAPP,
++                                                    OnlyEnabled::CHOICE_YES))
++    {
++      const auto webapp = std::dynamic_pointer_cast<CAddon>(addon);
++      const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
++      // a web app already shown comes back as it was, playing or not
++      if (params.size() < 2 && appPlayer->IsWebPlaying() &&
++          g_application.CurrentFileItem().GetProperty(KODI::WEB::PROPERTY_PROFILE).asString() ==
++              addonid)
++      {
++        CServiceBroker::GetGUI()->GetWindowManager().SwitchToFullScreen();
++        return 0;
++      }
++
++      const std::string url =
++          params.size() >= 2 ? params[1]
++                             : webapp->Type(AddonType::WEBAPP)->GetValue("@starturl").asString();
++      CFileItem item(url, false);
++      item.SetProperty(KODI::WEB::PROPERTY_PROFILE, addonid);
++      if (!g_application.PlayMedia(item, KODI::WEB::PLAYER_NAME, PLAYLIST::Id::TYPE_NONE))
++      {
++        CLog::Log(LOGERROR, "RunAddon could not open {}", addonid);
++        return false;
++      }
++    }
+     else if (CServiceBroker::GetAddonMgr().GetAddon(addonid, addon, AddonType::GAMEDLL,
+                                                     OnlyEnabled::CHOICE_YES))
+     {

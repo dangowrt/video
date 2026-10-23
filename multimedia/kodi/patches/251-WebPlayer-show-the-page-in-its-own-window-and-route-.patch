@@ -1,0 +1,814 @@
+From fca359317996e0ecc6ca065f22aa8e2e59a2fa25 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 9 Oct 2026 11:30:21 +0100
+Subject: [PATCH] WebPlayer: show the page in its own window and route input to
+ it
+
+The fullscreen video window's keymap turns every key into a playback
+action and leaves nothing for the page. Add WINDOW_FULLSCREEN_WEB, a
+window that draws the player like the video window does and knows that
+the pointer belongs to the page, and make the application treat it like
+the other fullscreen players when switching to fullscreen, cleaning up
+after playback, reloading the skin and notifying the player of actions.
+Its keymap section claims only the keys Kodi keeps: Escape and Menu
+open the OSD, Home opens Kodi's home screen and leaves the page running.
+
+While that window is active the player forwards every other key to the
+client with its scan code, except a key bound globally to a Kodi
+command or to the volume that types no character, and releases keys
+still held when Kodi takes the input back. Pointer positions go to the
+client once per change, as an air mouse lying still keeps reporting the
+same one, buttons are forwarded and the wheel becomes axis events; Kodi
+keeps drawing its pointer, so motion is passed on to the GUI as well.
+The view is active only while the web window is the active window, so
+the client knows when nobody sees the page.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../resources/strings.po                      |   7 +-
+ system/keymaps/keyboard.xml                   |   7 +
+ xbmc/application/Application.cpp              |  16 +-
+ xbmc/application/ApplicationPlayer.cpp        |  11 ++
+ xbmc/application/ApplicationPlayer.h          |   1 +
+ xbmc/application/ApplicationSkinHandling.cpp  |  10 +
+ xbmc/cores/WebPlayer/CMakeLists.txt           |   6 +-
+ .../WebPlayer/GUIWindowFullScreenWeb.cpp      | 184 ++++++++++++++++++
+ xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.h |  51 +++++
+ xbmc/cores/WebPlayer/WebPlayer.cpp            | 165 ++++++++++++++++
+ xbmc/cores/WebPlayer/WebPlayer.h              |  25 ++-
+ xbmc/guilib/GUIWindow.cpp                     |   2 +-
+ xbmc/guilib/GUIWindowManager.cpp              |  11 ++
+ xbmc/guilib/WindowIDs.h                       |   1 +
+ xbmc/input/InputManager.cpp                   |   3 +-
+ xbmc/input/WindowTranslator.cpp               |   1 +
+ 16 files changed, 487 insertions(+), 14 deletions(-)
+ create mode 100644 xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.cpp
+ create mode 100644 xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.h
+
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -6363,7 +6363,12 @@ msgctxt "#12906"
+ msgid "Fullscreen game"
+ msgstr ""
+ 
+-#empty strings from id 12907 to 12998
++#: xbmc/guilib/WindowIDs.h
++msgctxt "#12907"
++msgid "Fullscreen web"
++msgstr ""
++
++#empty strings from id 12908 to 12998
+ 
+ #: xbmc/guilib/WindowIDs.h
+ msgctxt "#12999"
+--- a/system/keymaps/keyboard.xml
++++ b/system/keymaps/keyboard.xml
+@@ -479,6 +479,13 @@
+       <escape>OSD</escape>
+     </keyboard>
+   </FullscreenGame>
++  <FullscreenWeb>
++    <keyboard>
++      <escape>OSD</escape>
++      <menu>OSD</menu>
++      <home>ActivateWindow(Home)</home>
++    </keyboard>
++  </FullscreenWeb>
+   <GameOSD>
+     <keyboard>
+       <m>OSD</m>
+--- a/xbmc/application/Application.cpp
++++ b/xbmc/application/Application.cpp
+@@ -1252,6 +1252,8 @@ bool CApplication::OnAction(const CActio
+     bNotifyPlayer = true;
+   else if (CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_GAME)
+     bNotifyPlayer = true;
++  else if (CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_WEB)
++    bNotifyPlayer = true;
+   else if (CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_VISUALISATION && bIsPlayingPVRChannel)
+     bNotifyPlayer = true;
+   else if (CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_DIALOG_VIDEO_OSD ||
+@@ -2179,8 +2181,9 @@ void CApplication::PlaybackCleanup()
+ 
+   if (!appPlayer->IsPlayingVideo())
+   {
+-    if(CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_VIDEO ||
+-       CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_GAME)
++    if (CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_VIDEO ||
++        CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_GAME ||
++        CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_WEB)
+     {
+       CServiceBroker::GetGUI()->GetWindowManager().PreviousWindow();
+     }
+@@ -2260,10 +2263,9 @@ void CApplication::StopPlaying()
+       const int iWin = gui->GetWindowManager().GetActiveWindow();
+ 
+       // turn off visualisation window when stopping
+-      if ((iWin == WINDOW_VISUALISATION ||
+-           iWin == WINDOW_FULLSCREEN_VIDEO ||
+-           iWin == WINDOW_FULLSCREEN_GAME) &&
+-           !m_bStop)
++      if ((iWin == WINDOW_VISUALISATION || iWin == WINDOW_FULLSCREEN_VIDEO ||
++           iWin == WINDOW_FULLSCREEN_GAME || iWin == WINDOW_FULLSCREEN_WEB) &&
++          !m_bStop)
+         gui->GetWindowManager().PreviousWindow();
+ 
+       g_partyModeManager.Disable();
+@@ -2458,7 +2460,7 @@ void CApplication::ProcessSlow()
+   int currentWindow = CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow();
+   if (VIDEO::IsVideo(CurrentFileItem()) || CurrentFileItem().IsPicture() ||
+       currentWindow == WINDOW_FULLSCREEN_VIDEO || currentWindow == WINDOW_FULLSCREEN_GAME ||
+-      currentWindow == WINDOW_SLIDESHOW)
++      currentWindow == WINDOW_FULLSCREEN_WEB || currentWindow == WINDOW_SLIDESHOW)
+   {
+     CServiceBroker::GetJobManager()->PauseJobs();
+   }
+--- a/xbmc/application/ApplicationPlayer.cpp
++++ b/xbmc/application/ApplicationPlayer.cpp
+@@ -1033,6 +1033,17 @@ bool CApplicationPlayer::IsRemotePlaying
+   return false;
+ }
+ 
++bool CApplicationPlayer::IsWebPlaying() const
++{
++  const std::shared_ptr<const IPlayer> player = GetInternal();
++  if (player)
++  {
++    if (player->IsPlaying() && player->m_type == "web")
++      return true;
++  }
++  return false;
++}
++
+ std::string CApplicationPlayer::GetName() const
+ {
+   const std::shared_ptr<const IPlayer> player = GetInternal();
+--- a/xbmc/application/ApplicationPlayer.h
++++ b/xbmc/application/ApplicationPlayer.h
+@@ -69,6 +69,7 @@ public:
+   bool Supports(ERENDERFEATURE feature) const;
+   bool IsExternalPlaying() const;
+   bool IsRemotePlaying() const;
++  bool IsWebPlaying() const;
+ 
+   /*!
+    * \brief Get the name of the player in use
+--- a/xbmc/application/ApplicationSkinHandling.cpp
++++ b/xbmc/application/ApplicationSkinHandling.cpp
+@@ -82,6 +82,7 @@ bool CApplicationSkinHandling::LoadSkin(
+     NONE,
+     VIDEO,
+     GAME,
++    WEB,
+   } previousRenderingState = RENDERING_STATE::NONE;
+ 
+   auto& components = CServiceBroker::GetAppComponents();
+@@ -103,6 +104,12 @@ bool CApplicationSkinHandling::LoadSkin(
+       CServiceBroker::GetGUI()->GetWindowManager().ActivateWindow(WINDOW_HOME);
+       previousRenderingState = RENDERING_STATE::GAME;
+     }
++    else if (CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() ==
++             WINDOW_FULLSCREEN_WEB)
++    {
++      CServiceBroker::GetGUI()->GetWindowManager().ActivateWindow(WINDOW_HOME);
++      previousRenderingState = RENDERING_STATE::WEB;
++    }
+   }
+ 
+   std::unique_lock lock(CServiceBroker::GetWinSystem()->GetGfxContext());
+@@ -228,6 +235,9 @@ bool CApplicationSkinHandling::LoadSkin(
+       case RENDERING_STATE::GAME:
+         CServiceBroker::GetGUI()->GetWindowManager().ActivateWindow(WINDOW_FULLSCREEN_GAME);
+         break;
++      case RENDERING_STATE::WEB:
++        CServiceBroker::GetGUI()->GetWindowManager().ActivateWindow(WINDOW_FULLSCREEN_WEB);
++        break;
+       default:
+         break;
+     }
+--- a/xbmc/cores/WebPlayer/CMakeLists.txt
++++ b/xbmc/cores/WebPlayer/CMakeLists.txt
+@@ -1,9 +1,11 @@
+ if(TARGET ${APP_NAME_LC}::WaylandServer)
+-  set(SOURCES WebClientManager.cpp
++  set(SOURCES GUIWindowFullScreenWeb.cpp
++              WebClientManager.cpp
+               WebPlayer.cpp
+               WebVideoBuffer.cpp)
+ 
+-  set(HEADERS WebClientManager.h
++  set(HEADERS GUIWindowFullScreenWeb.h
++              WebClientManager.h
+               WebPlayer.h
+               WebPlayerDefs.h
+               WebVideoBuffer.h)
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.cpp
+@@ -0,0 +1,184 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "GUIWindowFullScreenWeb.h"
++
++#include "ServiceBroker.h"
++#include "application/ApplicationComponents.h"
++#include "application/ApplicationPlayer.h"
++#include "guilib/GUIComponent.h"
++#include "guilib/GUIDialog.h"
++#include "guilib/GUIWindowManager.h"
++#include "guilib/WindowIDs.h"
++#include "input/actions/Action.h"
++#include "input/actions/ActionIDs.h"
++#include "settings/AdvancedSettings.h"
++#include "settings/SettingsComponent.h"
++#include "windowing/GraphicContext.h"
++#include "windowing/WinSystem.h"
++
++using namespace KODI::WEB;
++
++CGUIWindowFullScreenWeb::CGUIWindowFullScreenWeb()
++  : CGUIWindow(WINDOW_FULLSCREEN_WEB, "VideoFullScreen.xml")
++{
++  m_controlStats = new GUICONTROLSTATS;
++  m_loadType = KEEP_IN_MEMORY;
++}
++
++CGUIWindowFullScreenWeb::~CGUIWindowFullScreenWeb()
++{
++  delete m_controlStats;
++}
++
++void CGUIWindowFullScreenWeb::Process(unsigned int currentTime, CDirtyRegionList& dirtyregion)
++{
++  const auto& components = CServiceBroker::GetAppComponents();
++  const auto appPlayer = components.GetComponent<CApplicationPlayer>();
++  // the page is drawn by the render pass unless it has a plane of its own
++  if (!appPlayer->IsRenderingVideoLayer())
++    MarkDirtyRegion();
++
++  m_controlStats->Reset();
++
++  CGUIWindow::Process(currentTime, dirtyregion);
++
++  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
++  m_renderRegion.SetRect(0, 0, static_cast<float>(gfx.GetWidth()),
++                         static_cast<float>(gfx.GetHeight()));
++}
++
++void CGUIWindowFullScreenWeb::Render()
++{
++  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
++  if (gfx.GetRenderOrder() != RENDER_ORDER_FRONT_TO_BACK)
++  {
++    gfx.SetRenderingResolution(gfx.GetVideoResolution(), false);
++    auto& components = CServiceBroker::GetAppComponents();
++    const auto appPlayer = components.GetComponent<CApplicationPlayer>();
++    const bool clear =
++        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiGeometryClear;
++    appPlayer->Render(clear, 255);
++    gfx.SetRenderingResolution(m_coordsRes, m_needsScaling);
++  }
++  CGUIWindow::Render();
++}
++
++void CGUIWindowFullScreenWeb::RenderEx()
++{
++  CGUIWindow::RenderEx();
++  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
++  gfx.SetRenderingResolution(gfx.GetVideoResolution(), false);
++  auto& components = CServiceBroker::GetAppComponents();
++  const auto appPlayer = components.GetComponent<CApplicationPlayer>();
++  appPlayer->Render(false, 255, false);
++  gfx.SetRenderingResolution(m_coordsRes, m_needsScaling);
++}
++
++bool CGUIWindowFullScreenWeb::OnAction(const CAction& action)
++{
++  switch (action.GetID())
++  {
++    case ACTION_SHOW_OSD:
++    case ACTION_TRIGGER_OSD:
++      ToggleOSD();
++      return true;
++    case ACTION_SHOW_GUI:
++      CServiceBroker::GetGUI()->GetWindowManager().PreviousWindow();
++      return true;
++    default:
++      break;
++  }
++
++  // the pointer belongs to the page while this window is up
++  if (action.IsMouse())
++    return true;
++
++  return CGUIWindow::OnAction(action);
++}
++
++bool CGUIWindowFullScreenWeb::OnMessage(CGUIMessage& message)
++{
++  switch (message.GetMessage())
++  {
++    case GUI_MSG_WINDOW_INIT:
++    {
++      const auto& components = CServiceBroker::GetAppComponents();
++      const auto appPlayer = components.GetComponent<CApplicationPlayer>();
++      if (!appPlayer->IsWebPlaying())
++      {
++        CServiceBroker::GetGUI()->GetWindowManager().PreviousWindow();
++        return true;
++      }
++      break;
++    }
++    case GUI_MSG_SETFOCUS:
++    case GUI_MSG_LOSTFOCUS:
++    {
++      if (message.GetSenderId() != WINDOW_FULLSCREEN_WEB)
++        return true;
++      break;
++    }
++    default:
++      break;
++  }
++
++  return CGUIWindow::OnMessage(message);
++}
++
++void CGUIWindowFullScreenWeb::ClearBackground()
++{
++  const auto& components = CServiceBroker::GetAppComponents();
++  const auto appPlayer = components.GetComponent<CApplicationPlayer>();
++  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
++  if (appPlayer->IsRenderingVideoLayer())
++    gfx.Clear(0);
++  else if (!CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiGeometryClear)
++    gfx.Clear(0xff000000);
++  else
++    gfx.Clear();
++}
++
++bool CGUIWindowFullScreenWeb::HasVisibleControls()
++{
++  return m_controlStats->nCountVisible > 0;
++}
++
++void CGUIWindowFullScreenWeb::OnWindowLoaded()
++{
++  CGUIWindow::OnWindowLoaded();
++  // the page covers the screen, nothing behind it needs clearing
++  m_clearBackground = 0;
++}
++
++void CGUIWindowFullScreenWeb::OnInitWindow()
++{
++  CServiceBroker::GetWinSystem()->GetGfxContext().SetFullScreenVideo(true);
++  CGUIWindow::OnInitWindow();
++}
++
++void CGUIWindowFullScreenWeb::OnDeinitWindow(int nextWindowID)
++{
++  CServiceBroker::GetGUI()->GetWindowManager().CloseInternalModalDialogs(true);
++  CGUIWindow::OnDeinitWindow(nextWindowID);
++  CServiceBroker::GetWinSystem()->GetGfxContext().SetFullScreenVideo(false);
++}
++
++void CGUIWindowFullScreenWeb::ToggleOSD()
++{
++  CGUIDialog* osd = CServiceBroker::GetGUI()->GetWindowManager().GetDialog(WINDOW_DIALOG_VIDEO_OSD);
++  if (!osd)
++    return;
++
++  if (osd->IsDialogRunning())
++    osd->Close();
++  else
++    osd->Open();
++
++  MarkDirtyRegion();
++}
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.h
+@@ -0,0 +1,51 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "guilib/GUIWindow.h"
++
++namespace KODI
++{
++namespace WEB
++{
++
++/*!
++ * \brief The window shown while the web player is active: the page is the
++ * video layer, Kodi's OSD and dialogs sit on top, and the keys and pointer
++ * events the keymap does not claim go to the web client.
++ */
++class CGUIWindowFullScreenWeb : public CGUIWindow
++{
++public:
++  CGUIWindowFullScreenWeb();
++  ~CGUIWindowFullScreenWeb() override;
++
++  // implementation of CGUIControl via CGUIWindow
++  void Process(unsigned int currentTime, CDirtyRegionList& dirtyregion) override;
++  void Render() override;
++  void RenderEx() override;
++  bool OnAction(const CAction& action) override;
++  bool OnMessage(CGUIMessage& message) override;
++
++  // implementation of CGUIWindow
++  void ClearBackground() override;
++  bool HasVisibleControls() override;
++  void OnWindowLoaded() override;
++  void OnDeinitWindow(int nextWindowID) override;
++
++protected:
++  // implementation of CGUIWindow
++  void OnInitWindow() override;
++
++private:
++  void ToggleOSD();
++};
++
++} // namespace WEB
++} // namespace KODI
+--- a/xbmc/cores/WebPlayer/WebPlayer.cpp
++++ b/xbmc/cores/WebPlayer/WebPlayer.cpp
+@@ -16,6 +16,14 @@
+ #include "cores/DataCacheCore.h"
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
+ #include "cores/VideoPlayer/Process/ProcessInfo.h"
++#include "guilib/GUIComponent.h"
++#include "guilib/GUIWindowManager.h"
++#include "guilib/WindowIDs.h"
++#include "input/InputManager.h"
++#include "input/actions/Action.h"
++#include "input/actions/ActionIDs.h"
++#include "input/keyboard/Key.h"
++#include "input/keyboard/XBMC_keyboard.h"
+ #include "messaging/ApplicationMessenger.h"
+ #include "utils/log.h"
+ #include "windowing/GraphicContext.h"
+@@ -24,6 +32,8 @@
+ #include "platform/linux/waylandhost/WaylandBuffer.h"
+ #include "platform/linux/waylandhost/WaylandSurface.h"
+ 
++#include <linux/input-event-codes.h>
++
+ using namespace KODI::WEB;
+ using namespace KODI::WAYLANDHOST;
+ 
+@@ -32,6 +42,30 @@ namespace
+ 
+ constexpr int RENDER_BUFFERS = 3;
+ 
++// The web window's keymap section claims keys for Kodi outright. Of the
++// others, a key bound globally to a Kodi command or to the volume stays
++// with Kodi as well, unless it types a character into the page.
++bool IsKodiKey(const XBMC_keysym& keysym, const CKey& key)
++{
++  CInputManager& input = CServiceBroker::GetInputManager();
++  if (input.GetAction(WINDOW_FULLSCREEN_WEB, key, false).GetID() != ACTION_NONE)
++    return true;
++
++  if (keysym.unicode >= 0x20 && keysym.unicode != 0x7f)
++    return false;
++
++  switch (input.GetAction(WINDOW_FULLSCREEN_WEB, key, true).GetID())
++  {
++    case ACTION_BUILT_IN_FUNCTION:
++    case ACTION_VOLUME_UP:
++    case ACTION_VOLUME_DOWN:
++    case ACTION_MUTE:
++      return true;
++    default:
++      return false;
++  }
++}
++
+ } // unnamed namespace
+ 
+ CWebPlayer::CWebPlayer(IPlayerCallback& callback)
+@@ -60,6 +94,7 @@ bool CWebPlayer::OpenFile(const CFileIte
+   m_options = options;
+   m_stop = false;
+   m_configured = false;
++  m_shown = false;
+   m_surface = nullptr;
+   m_url = file.GetDynPath();
+   m_profile = file.GetProperty(PROPERTY_PROFILE).asString(DEFAULT_PROFILE);
+@@ -84,6 +119,8 @@ bool CWebPlayer::OpenFile(const CFileIte
+   }
+ 
+   CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
++  CServiceBroker::GetInputManager().RegisterKeyboardEventHandler(this);
++  CServiceBroker::GetInputManager().RegisterMouseDriverHandler(this);
+   m_playing = true;
+   m_callback.OnPlayBackStarted(*m_item);
+   return true;
+@@ -105,6 +142,10 @@ bool CWebPlayer::CloseFile(bool reopen)
+   m_surface = nullptr;
+   m_manager.reset();
+ 
++  CServiceBroker::GetInputManager().UnregisterKeyboardEventHandler(this);
++  CServiceBroker::GetInputManager().UnregisterMouseDriverHandler(this);
++  m_inputActive = false;
++  m_pressedKeys.clear();
+   CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
+   m_renderManager.UnInit();
+   m_pool.reset();
+@@ -189,6 +230,130 @@ void CWebPlayer::SetVideoSettings(CVideo
+ void CWebPlayer::FrameMove()
+ {
+   m_renderManager.FrameMove();
++  UpdateInputRouting();
++  UpdateVisibility();
++}
++
++void CWebPlayer::UpdateVisibility()
++{
++  const bool shown =
++      m_configured && m_manager &&
++      CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_WEB;
++  if (shown == m_shown)
++    return;
++
++  m_shown = shown;
++  m_manager->SetActive(m_profile, shown);
++}
++
++void CWebPlayer::UpdateInputRouting()
++{
++  const bool active = m_configured && m_manager &&
++                      CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindowOrDialog() ==
++                          WINDOW_FULLSCREEN_WEB;
++  if (active == m_inputActive)
++    return;
++
++  m_inputActive = active;
++  m_pointerX = -1;
++  m_pointerY = -1;
++  if (active)
++    return;
++
++  // a key still held when Kodi takes the input back must not stay down
++  // for the client
++  for (uint32_t scancode : m_pressedKeys)
++    m_manager->GetHost()->KeyboardKey(scancode, false);
++  m_pressedKeys.clear();
++}
++
++bool CWebPlayer::OnKeyboardEvent(const XBMC_keysym& keysym, const CKey& key, bool pressed)
++{
++  if (!m_inputActive || IsKodiKey(keysym, key))
++    return false;
++
++  if (pressed)
++    m_pressedKeys.insert(keysym.scancode);
++  else
++    m_pressedKeys.erase(keysym.scancode);
++  m_manager->GetHost()->KeyboardKey(keysym.scancode, pressed);
++  return true;
++}
++
++bool CWebPlayer::OnPosition(int x, int y)
++{
++  if (!m_inputActive)
++    return false;
++
++  // an air mouse lying still keeps reporting the same position
++  if (x == m_pointerX && y == m_pointerY)
++    return false;
++  m_pointerX = x;
++  m_pointerY = y;
++
++  m_manager->GetHost()->PointerMotion(x, y);
++  // Kodi keeps drawing the pointer, so the event goes on to the GUI
++  return false;
++}
++
++bool CWebPlayer::OnButtonPress(MOUSE::BUTTON_ID button)
++{
++  if (!m_inputActive)
++    return false;
++
++  switch (button)
++  {
++    case MOUSE::BUTTON_ID::LEFT:
++      m_manager->GetHost()->PointerButton(BTN_LEFT, true);
++      return true;
++    case MOUSE::BUTTON_ID::RIGHT:
++      m_manager->GetHost()->PointerButton(BTN_RIGHT, true);
++      return true;
++    case MOUSE::BUTTON_ID::MIDDLE:
++      m_manager->GetHost()->PointerButton(BTN_MIDDLE, true);
++      return true;
++    case MOUSE::BUTTON_ID::BUTTON4:
++      m_manager->GetHost()->PointerButton(BTN_SIDE, true);
++      return true;
++    case MOUSE::BUTTON_ID::BUTTON5:
++      m_manager->GetHost()->PointerButton(BTN_EXTRA, true);
++      return true;
++    case MOUSE::BUTTON_ID::WHEEL_UP:
++      m_manager->GetHost()->PointerAxis(-120);
++      return true;
++    case MOUSE::BUTTON_ID::WHEEL_DOWN:
++      m_manager->GetHost()->PointerAxis(120);
++      return true;
++    default:
++      return false;
++  }
++}
++
++void CWebPlayer::OnButtonRelease(MOUSE::BUTTON_ID button)
++{
++  if (!m_inputActive)
++    return;
++
++  switch (button)
++  {
++    case MOUSE::BUTTON_ID::LEFT:
++      m_manager->GetHost()->PointerButton(BTN_LEFT, false);
++      break;
++    case MOUSE::BUTTON_ID::RIGHT:
++      m_manager->GetHost()->PointerButton(BTN_RIGHT, false);
++      break;
++    case MOUSE::BUTTON_ID::MIDDLE:
++      m_manager->GetHost()->PointerButton(BTN_MIDDLE, false);
++      break;
++    case MOUSE::BUTTON_ID::BUTTON4:
++      m_manager->GetHost()->PointerButton(BTN_SIDE, false);
++      break;
++    case MOUSE::BUTTON_ID::BUTTON5:
++      m_manager->GetHost()->PointerButton(BTN_EXTRA, false);
++      break;
++    default:
++      break;
++  }
+ }
+ 
+ void CWebPlayer::OnWebViewAvailable(const std::string& profile, CWaylandSurface& surface)
+--- a/xbmc/cores/WebPlayer/WebPlayer.h
++++ b/xbmc/cores/WebPlayer/WebPlayer.h
+@@ -13,9 +13,12 @@
+ #include "cores/VideoPlayer/DVDClock.h"
+ #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
+ #include "guilib/DispResource.h"
++#include "input/keyboard/interfaces/IKeyboardEventHandler.h"
++#include "input/mouse/interfaces/IMouseDriverHandler.h"
+ 
+ #include <atomic>
+ #include <memory>
++#include <set>
+ 
+ class CFileItem;
+ class CProcessInfo;
+@@ -31,12 +34,15 @@ class CWebVideoBufferPool;
+  * \brief Plays a web page: the view the client manager provides for the
+  * item's profile loads the URL, and the frames the client commits go
+  * through Kodi's video renderers, so the GUI composes over them like over
+- * any other video.
++ * any other video. While the web window is up, keys the keymap does not
++ * claim and the pointer go to the client.
+  */
+ class CWebPlayer : public IPlayer,
+                    public IRenderLoop,
+                    public IRenderMsg,
+-                   public IWebViewObserver
++                   public IWebViewObserver,
++                   public KEYBOARD::IKeyboardEventHandler,
++                   public MOUSE::IMouseDriverHandler
+ {
+ public:
+   explicit CWebPlayer(IPlayerCallback& callback);
+@@ -87,6 +93,14 @@ public:
+                       uint32_t code,
+                       const std::string& message) override;
+ 
++  // implementation of IKeyboardEventHandler
++  bool OnKeyboardEvent(const XBMC_keysym& keysym, const CKey& key, bool pressed) override;
++
++  // implementation of IMouseDriverHandler
++  bool OnPosition(int x, int y) override;
++  bool OnButtonPress(MOUSE::BUTTON_ID button) override;
++  void OnButtonRelease(MOUSE::BUTTON_ID button) override;
++
+ protected:
+   // implementation of IRenderMsg
+   void VideoParamsChange() override {}
+@@ -99,6 +113,8 @@ protected:
+ 
+ private:
+   bool ConfigureRenderer(const VideoPicture& picture);
++  void UpdateInputRouting();
++  void UpdateVisibility();
+   void StopFromClient();
+ 
+   std::unique_ptr<CProcessInfo> m_processInfo;
+@@ -115,6 +131,11 @@ private:
+   volatile std::atomic_bool m_stop{false};
+   bool m_configured{false};
+   float m_fps{0.0f};
++  bool m_inputActive{false};
++  bool m_shown{false};
++  std::set<uint32_t> m_pressedKeys;
++  int m_pointerX{-1};
++  int m_pointerY{-1};
+ };
+ 
+ } // namespace WEB
+--- a/xbmc/guilib/GUIWindow.cpp
++++ b/xbmc/guilib/GUIWindow.cpp
+@@ -384,7 +384,7 @@ void CGUIWindow::Close_Internal(bool for
+     return;
+ 
+   forceClose |= (nextWindowID == WINDOW_FULLSCREEN_VIDEO ||
+-                 nextWindowID == WINDOW_FULLSCREEN_GAME);
++                 nextWindowID == WINDOW_FULLSCREEN_GAME || nextWindowID == WINDOW_FULLSCREEN_WEB);
+ 
+   if (!forceClose && HasAnimation(ANIM_TYPE_WINDOW_CLOSE))
+   {
+--- a/xbmc/guilib/GUIWindowManager.cpp
++++ b/xbmc/guilib/GUIWindowManager.cpp
+@@ -146,6 +146,9 @@
+ 
+ /* Game related include files */
+ #include "cores/RetroPlayer/guiwindows/GameWindowFullScreen.h"
++#if defined(HAVE_WAYLAND_SERVER)
++#include "cores/WebPlayer/GUIWindowFullScreenWeb.h"
++#endif
+ #include "games/agents/windows/GUIAgentWindow.h"
+ #include "games/cheats/dialogs/DialogGameCheats.h"
+ #include "games/controllers/windows/GUIControllerWindow.h"
+@@ -365,6 +368,9 @@ void CGUIWindowManager::CreateWindows()
+   Add(new GAME::CDialogGameIndicators);
+   Add(new GAME::CDialogGameCheats);
+   Add(new RETRO::CGameWindowFullScreen);
++#if defined(HAVE_WAYLAND_SERVER)
++  Add(new WEB::CGUIWindowFullScreenWeb);
++#endif
+ }
+ 
+ bool CGUIWindowManager::DestroyWindows()
+@@ -497,6 +503,7 @@ bool CGUIWindowManager::DestroyWindows()
+     DestroyWindow(WINDOW_DIALOG_GAME_ACHIEVEMENTS);
+     DestroyWindow(WINDOW_DIALOG_GAME_CHEATS);
+     DestroyWindow(WINDOW_FULLSCREEN_GAME);
++    DestroyWindow(WINDOW_FULLSCREEN_WEB);
+ 
+     Remove(WINDOW_SETTINGS_SERVICE);
+     Remove(WINDOW_SETTINGS_MYPVR);
+@@ -1038,6 +1045,10 @@ bool CGUIWindowManager::SwitchToFullScre
+   if (activeWindowID != WINDOW_FULLSCREEN_GAME && appPlayer->IsPlayingGame())
+     windowID = WINDOW_FULLSCREEN_GAME;
+ 
++  // See if we're showing a web page
++  else if (appPlayer->IsWebPlaying())
++    windowID = WINDOW_FULLSCREEN_WEB;
++
+   // See if we're playing a video
+   else if (activeWindowID != WINDOW_FULLSCREEN_VIDEO && appPlayer->IsPlayingVideo())
+     windowID = WINDOW_FULLSCREEN_VIDEO;
+--- a/xbmc/guilib/WindowIDs.h
++++ b/xbmc/guilib/WindowIDs.h
+@@ -199,6 +199,7 @@
+ #define WINDOW_VIDEO_TIME_SEEK            12905 // virtual window for time seeking during fullscreen video
+ 
+ #define WINDOW_FULLSCREEN_GAME            12906
++#define WINDOW_FULLSCREEN_WEB             12907
+ 
+ #define WINDOW_SPLASH                     12997 // splash window
+ #define WINDOW_START                      12998 // first window to load
+--- a/xbmc/input/InputManager.cpp
++++ b/xbmc/input/InputManager.cpp
+@@ -637,7 +637,8 @@ bool CInputManager::HandleKey(const CKey
+     return true;
+   }
+ 
+-  if (iWin != WINDOW_FULLSCREEN_VIDEO && iWin != WINDOW_FULLSCREEN_GAME)
++  if (iWin != WINDOW_FULLSCREEN_VIDEO && iWin != WINDOW_FULLSCREEN_GAME &&
++      iWin != WINDOW_FULLSCREEN_WEB)
+   {
+     // current active window isnt the fullscreen window
+     // just use corresponding section from keymap.xml
+--- a/xbmc/input/WindowTranslator.cpp
++++ b/xbmc/input/WindowTranslator.cpp
+@@ -147,6 +147,7 @@ const CWindowTranslator::WindowMapByName
+     {"fullscreenradioinput", WINDOW_FULLSCREEN_RADIO_INPUT},
+ 
+     {"fullscreengame", WINDOW_FULLSCREEN_GAME},
++    {"fullscreenweb", WINDOW_FULLSCREEN_WEB},
+     {"visualisation", WINDOW_VISUALISATION},
+     {"slideshow", WINDOW_SLIDESHOW},
+     {"weather", WINDOW_WEATHER},

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<settings version="1">
+  <section id="player">
+    <category id="videoplayer">
+      <group id="3">
+        <setting id="videoplayer.useprimedecoder" type="boolean">
+          <default>true</default>
+        </setting>
+      </group>
+    </category>
+  </section>
+  <section id="system">
+    <category id="input">
+      <group id="2">
+        <setting id="input.pointerwakesscreen" type="boolean">
+          <default>false</default>
+        </setting>
+      </group>
+    </category>
+    <category id="powermanagement">
+      <group id="1">
+        <setting id="powermanagement.displaysoff" type="integer">
+          <default>15</default>
+        </setting>
+        <setting id="powermanagement.wakemanualdpms" type="boolean">
+          <default>true</default>
+        </setting>
+      </group>
+    </category>
+  </section>
+  <section id="interface">
+    <category id="regional">
+      <group id="2">
+        <setting id="locale.temperatureunit" type="string">
+          <default>C</default>
+        </setting>
+      </group>
+    </category>
+  </section>
+</settings>

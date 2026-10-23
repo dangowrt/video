@@ -1,0 +1,4 @@
+#!/bin/sh
+export HOME="${HOME:-/var/lib/kodi}"
+mkdir -p "$HOME"
+exec cage -d -- /usr/bin/kodi --windowing=wayland "$@"

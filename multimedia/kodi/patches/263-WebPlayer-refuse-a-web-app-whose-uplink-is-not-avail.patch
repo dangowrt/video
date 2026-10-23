@@ -1,0 +1,91 @@
+From b026e8af339f94feeaa206776151cbd5cd65d000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 22 Oct 2026 09:05:17 +0100
+Subject: [PATCH] WebPlayer: refuse a web app whose uplink is not available
+
+A web app bound to an uplink that has no local address, a tunnel that
+is down or an interface without a lease, would only fail connection by
+connection inside the page. Resolve the uplink when the app is opened,
+as the add-on uplinks are resolved for every request, and refuse to
+open it with an error notification when nothing matches.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../resources/strings.po                      |  8 +++++-
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 27 +++++++++++++++++++
+ 2 files changed, 34 insertions(+), 1 deletion(-)
+
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25764,7 +25764,13 @@ msgctxt "#40246"
+ msgid "Reload"
+ msgstr ""
+ 
+-#empty strings from id 40247 to 40399
++#empty strings from id 40247 to 40398
++
++#. Notification text when a web app's uplink has no local address
++#: xbmc/cores/WebPlayer/WebClientManager.cpp
++msgctxt "#40399"
++msgid "The uplink {0:s} is not available."
++msgstr ""
+ 
+ # Video versions
+ 
+--- a/xbmc/cores/WebPlayer/WebClientManager.cpp
++++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
+@@ -16,6 +16,7 @@
+ #include "addons/AddonManager.h"
+ #include "addons/addoninfo/AddonType.h"
+ #include "application/ApplicationComponents.h"
++#include "dialogs/GUIDialogKaiToast.h"
+ #include "filesystem/Directory.h"
+ #include "filesystem/File.h"
+ #include "filesystem/SpecialProtocol.h"
+@@ -24,6 +25,9 @@
+ #include "guilib/WindowIDs.h"
+ #include "jobs/JobManager.h"
+ #include "kodi-web-audio.h"
++#include "network/UplinkAddress.h"
++#include "resources/LocalizeStrings.h"
++#include "resources/ResourcesComponent.h"
+ #include "settings/Settings.h"
+ #include "settings/SettingsComponent.h"
+ #include "utils/StringUtils.h"
+@@ -94,6 +98,24 @@ std::string FirstRenderNode()
+   return path;
+ }
+ 
++void NotifyUplinkMissing(const std::string& profile, const std::string& uplink)
++{
++  CLog::Log(LOGERROR, "CWebClientManager::{}: the uplink \"{}\" of {} does not resolve",
++            __FUNCTION__, uplink, profile);
++
++  ADDON::AddonPtr addon;
++  const std::string name =
++      CServiceBroker::GetAddonMgr().GetAddon(profile, addon, ADDON::OnlyEnabled::CHOICE_YES)
++          ? addon->Name()
++          : profile;
++  const auto& localizeStrings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
++  // "Error opening {0:s}"
++  // "The uplink {0:s} is not available."
++  CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Error,
++                                        StringUtils::Format(localizeStrings.Get(13329), name),
++                                        StringUtils::Format(localizeStrings.Get(40399), uplink));
++}
++
+ } // unnamed namespace
+ 
+ CWebClientManager::~CWebClientManager()
+@@ -205,6 +227,11 @@ bool CWebClientManager::RequestView(cons
+     return false;
+ 
+   const std::string uplink = UplinkOf(profile);
++  if (!uplink.empty() && KODI::NETWORK::ResolveUplinkAddress(uplink).empty())
++  {
++    NotifyUplinkMissing(profile, uplink);
++    return false;
++  }
+ 
+   std::unique_lock lock(m_lock);
+   m_observer = &observer;

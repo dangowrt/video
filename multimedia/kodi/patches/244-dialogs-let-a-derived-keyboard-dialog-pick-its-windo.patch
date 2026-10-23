@@ -1,0 +1,60 @@
+From f9666b9f2a1a036b7b79ee1fc185535e8ed637a5 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 9 Oct 2026 00:12:43 +0100
+Subject: [PATCH] dialogs: let a derived keyboard dialog pick its window
+
+CGUIDialogKeyboardGeneric hard-wires its window id and layout file in
+the constructor and looks itself up by the keyboard window id when it
+is shown, so a dialog that wants the same keys and layouts under another
+window, with another skin layout, cannot derive from it.
+
+Add a protected constructor taking the window id and layout file, and
+look the dialog up by its own id when showing it.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/dialogs/GUIDialogKeyboardGeneric.cpp | 14 ++++++++++----
+ xbmc/dialogs/GUIDialogKeyboardGeneric.h   |  2 ++
+ 2 files changed, 12 insertions(+), 4 deletions(-)
+
+--- a/xbmc/dialogs/GUIDialogKeyboardGeneric.cpp
++++ b/xbmc/dialogs/GUIDialogKeyboardGeneric.cpp
+@@ -123,9 +123,14 @@ private:
+ };
+ 
+ CGUIDialogKeyboardGeneric::CGUIDialogKeyboardGeneric()
+-: CGUIDialog(WINDOW_DIALOG_KEYBOARD, "DialogKeyboard.xml")
+-, CGUIKeyboard()
+-, m_pCharCallback(NULL)
++  : CGUIDialogKeyboardGeneric(WINDOW_DIALOG_KEYBOARD, "DialogKeyboard.xml")
++{
++}
++
++CGUIDialogKeyboardGeneric::CGUIDialogKeyboardGeneric(int id, const std::string& xmlFile)
++  : CGUIDialog(id, xmlFile),
++    CGUIKeyboard(),
++    m_pCharCallback(NULL)
+ {
+   m_bIsConfirmed = false;
+   m_bShift = false;
+@@ -704,7 +709,8 @@ void CGUIDialogKeyboardGeneric::Cancel()
+ 
+ bool CGUIDialogKeyboardGeneric::ShowAndGetInput(char_callback_t pCallback, const std::string &initialString, std::string &typedString, const std::string &heading, bool bHiddenInput)
+ {
+-  CGUIDialogKeyboardGeneric *pKeyboard = CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogKeyboardGeneric>(WINDOW_DIALOG_KEYBOARD);
++  CGUIDialogKeyboardGeneric* pKeyboard =
++      CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogKeyboardGeneric>(GetID());
+ 
+   if (!pKeyboard)
+     return false;
+--- a/xbmc/dialogs/GUIDialogKeyboardGeneric.h
++++ b/xbmc/dialogs/GUIDialogKeyboardGeneric.h
+@@ -45,6 +45,8 @@ class CGUIDialogKeyboardGeneric : public
+     bool IsInputHidden() const { return m_hiddenInput; }
+ 
+   protected:
++    CGUIDialogKeyboardGeneric(int id, const std::string& xmlFile);
++
+     void OnWindowLoaded() override;
+     void OnInitWindow() override;
+     bool OnAction(const CAction &action) override;

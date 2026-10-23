@@ -1,0 +1,78 @@
+From d4e80741276eca10cafcaced3d20faadbb97b681 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 8 Oct 2026 14:12:25 +0100
+Subject: [PATCH] [DllLoader] Build the stdio emulation on musl
+
+The fpos_t and off64_t handling in the stdio emulation assumes glibc:
+it reaches into glibc's fpos_t through __pos and expects glibc to
+define __off_t and off64_t. On any other C library, take the paths
+TARGET_WASM already uses, which go through musl's fpos_t member
+__lldata, and define the offset type aliases as on the BSDs.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/cores/DllLoader/exports/emu_msvcrt.cpp | 8 ++++----
+ xbmc/cores/DllLoader/exports/emu_msvcrt.h   | 2 +-
+ xbmc/cores/DllLoader/exports/wrapper.c      | 2 +-
+ 3 files changed, 6 insertions(+), 6 deletions(-)
+
+--- a/xbmc/cores/DllLoader/exports/emu_msvcrt.cpp
++++ b/xbmc/cores/DllLoader/exports/emu_msvcrt.cpp
+@@ -1499,7 +1499,7 @@ extern "C"
+ #if !defined(TARGET_POSIX) || defined(TARGET_DARWIN) || defined(TARGET_FREEBSD) || \
+     defined(TARGET_ANDROID)
+     *pos = (fpos_t)tmpPos;
+-#elif defined(TARGET_WASM)
++#elif defined(TARGET_WASM) || !defined(__GLIBC__)
+     *pos = tmpPos;
+ #else
+     pos->__pos = (off_t)tmpPos.__pos;
+@@ -1515,7 +1515,7 @@ extern "C"
+ #if !defined(TARGET_POSIX) || defined(TARGET_DARWIN) || defined(TARGET_FREEBSD) || \
+     defined(TARGET_ANDROID)
+       *pos = pFile->GetPosition();
+-#elif defined(TARGET_WASM)
++#elif defined(TARGET_WASM) || !defined(__GLIBC__)
+       pos->__lldata = static_cast<long long>(pFile->GetPosition());
+ #else
+       pos->__pos = pFile->GetPosition();
+@@ -1534,7 +1534,7 @@ extern "C"
+ #if !defined(TARGET_POSIX) || defined(TARGET_DARWIN) || defined(TARGET_FREEBSD) || \
+     defined(TARGET_ANDROID)
+       if (dll_lseeki64(fd, *pos, SEEK_SET) >= 0)
+-#elif defined(TARGET_WASM)
++#elif defined(TARGET_WASM) || !defined(__GLIBC__)
+       if (dll_lseeki64(fd, static_cast<__off64_t>(pos->__lldata), SEEK_SET) >= 0)
+ #else
+       if (dll_lseeki64(fd, (__off64_t)pos->__pos, SEEK_SET) >= 0)
+@@ -1560,7 +1560,7 @@ extern "C"
+ #if !defined(TARGET_POSIX) || defined(TARGET_DARWIN) || defined(TARGET_FREEBSD) || \
+     defined(TARGET_ANDROID)
+       tmpPos= *pos;
+-#elif defined(TARGET_WASM)
++#elif defined(TARGET_WASM) || !defined(__GLIBC__)
+       tmpPos = *pos;
+ #else
+       tmpPos.__pos = (off64_t)(pos->__pos);
+--- a/xbmc/cores/DllLoader/exports/emu_msvcrt.h
++++ b/xbmc/cores/DllLoader/exports/emu_msvcrt.h
+@@ -18,7 +18,7 @@
+ #endif
+ 
+ #if defined(TARGET_DARWIN) || defined(TARGET_FREEBSD) || defined(TARGET_ANDROID) || \
+-    defined(TARGET_WASM)
++    defined(TARGET_WASM) || !defined(__GLIBC__)
+ typedef off_t __off_t;
+ typedef int64_t off64_t;
+ typedef off64_t __off64_t;
+--- a/xbmc/cores/DllLoader/exports/wrapper.c
++++ b/xbmc/cores/DllLoader/exports/wrapper.c
+@@ -24,7 +24,7 @@
+ #include <dlfcn.h>
+ 
+ #if defined(TARGET_DARWIN) || defined(TARGET_FREEBSD) || defined(TARGET_ANDROID) || \
+-    defined(TARGET_WASM)
++    defined(TARGET_WASM) || !defined(__GLIBC__)
+ typedef off_t     __off_t;
+ typedef int64_t   off64_t;
+ typedef off64_t   __off64_t;
