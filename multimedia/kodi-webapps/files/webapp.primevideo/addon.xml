@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="webapp.primevideo" name="Prime Video" version="1.0.0" provider-name="Daniel Golle">
+  <extension point="kodi.webapp" starturl="https://www.primevideo.com/">
+    <useragent>@USER_AGENT@</useragent>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Prime Video inside Kodi</summary>
+    <description lang="en_GB">Opens Prime Video in Kodi's web view, as Chrome on Linux sees the desktop site.</description>
+    <platform>all</platform>
+    <license>GPL-2.0-or-later</license>
+  </extension>
+</addon>

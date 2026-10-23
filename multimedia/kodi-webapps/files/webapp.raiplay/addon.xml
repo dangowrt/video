@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="webapp.raiplay" name="RaiPlay" version="1.0.0" provider-name="Daniel Golle">
+  <extension point="kodi.webapp" starturl="https://www.raiplay.it/">
+    <useragent>@USER_AGENT@</useragent>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">RaiPlay inside Kodi</summary>
+    <description lang="en_GB">Opens RaiPlay, the streaming service of the Italian broadcaster Rai in Kodi's web view, as Chrome on Linux sees the desktop site.</description>
+    <platform>all</platform>
+    <license>GPL-2.0-or-later</license>
+  </extension>
+</addon>
