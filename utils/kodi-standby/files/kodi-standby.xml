@@ -1,0 +1,10 @@
+<!-- The remote's secondary power button reports KEY_SLEEP, which Kodi
+     names "sleep". ToggleDPMS blanks the display; any later key press
+     restores it, and kodi-standbyd powers the box down and up with it. -->
+<keymap>
+  <global>
+    <keyboard>
+      <sleep>ToggleDPMS</sleep>
+    </keyboard>
+  </global>
+</keymap>
