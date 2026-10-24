@@ -1,0 +1,156 @@
+From 4427283d825678e2f2ec37a1551edb0e51030b2c Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 24 Oct 2026 23:13:03 +0100
+Subject: [PATCH 2/2] Pin the remaining requests of a provider to its uplink
+
+Three requests of a provider with an uplink still left over the
+default route: the status check of a cached playlist or EPG file,
+the web page a web stream's URL is extracted from, and UDP and RTP
+streams. Stamp the uplink on the status check and on UDP and RTP
+stream URLs, except the udpxy relay URLs multicast streams are
+rewritten to, and hand the stream URL's uplink options to the page
+fetch.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ src/iptvsimple/data/Channel.cpp               |  6 +++--
+ src/iptvsimple/utilities/FileUtils.cpp        |  2 +-
+ src/iptvsimple/utilities/StreamUtils.cpp      |  4 +--
+ .../utilities/WebStreamExtractor.cpp          |  5 ++--
+ src/iptvsimple/utilities/WebStreamExtractor.h |  3 ++-
+ src/iptvsimple/utilities/WebUtils.cpp         | 27 ++++++++++++++++++-
+ src/iptvsimple/utilities/WebUtils.h           |  2 ++
+ 7 files changed, 40 insertions(+), 9 deletions(-)
+
+--- a/src/iptvsimple/data/Channel.cpp
++++ b/src/iptvsimple/data/Channel.cpp
+@@ -198,8 +198,6 @@ void Channel::SetStreamURL(const std::st
+ 
+     TryToAddPropertyAsHeader("http-user-agent", "user-agent");
+     TryToAddPropertyAsHeader("http-referrer", "referer"); // spelling differences are correct
+-
+-    m_streamURL = WebUtils::AddUplinkToUrl(m_streamURL, m_settings->GetUplinkAddress());
+   }
+ 
+   if (m_settings->TransformMulticastStreamUrls() &&
+@@ -210,6 +208,10 @@ void Channel::SetStreamURL(const std::st
+     m_streamURL = "http://" + m_settings->GetUdpxyHost() + ":" + std::to_string(m_settings->GetUdpxyPort()) + typePath + url.substr(UDP_MULTICAST_PREFIX.length());
+     Logger::Log(LEVEL_DEBUG, "%s - Transformed multicast stream URL to local relay url: %s", __FUNCTION__, m_streamURL.c_str());
+   }
++  else
++  {
++    m_streamURL = WebUtils::AddUplinkToUrl(m_streamURL, m_settings->GetUplinkAddress());
++  }
+ 
+   if (!m_settings->GetDefaultInputstream().empty() && GetProperty(PVR_STREAM_PROPERTY_INPUTSTREAM).empty())
+     AddProperty(PVR_STREAM_PROPERTY_INPUTSTREAM, m_settings->GetDefaultInputstream());
+--- a/src/iptvsimple/utilities/FileUtils.cpp
++++ b/src/iptvsimple/utilities/FileUtils.cpp
+@@ -184,7 +184,7 @@ int FileUtils::GetCachedFileContents(std
+     kodi::vfs::FileStatus statOrig;
+ 
+     kodi::vfs::StatFile(cachedPath, statCached);
+-    kodi::vfs::StatFile(filePath, statOrig);
++    kodi::vfs::StatFile(WebUtils::AddUplinkToUrl(filePath, settings->GetUplinkAddress()), statOrig);
+ 
+     needReload = statCached.GetModificationTime() < statOrig.GetModificationTime() || statOrig.GetModificationTime() == 0;
+   }
+--- a/src/iptvsimple/utilities/StreamUtils.cpp
++++ b/src/iptvsimple/utilities/StreamUtils.cpp
+@@ -561,8 +561,8 @@ std::string StreamUtils::WebStreamExtrac
+       tempUrl = tempUrl.substr(0, pos);
+     }
+ 
+-    std::string extractedUrl =
+-        WebStreamExtractor::ExtractStreamUrl(tempUrl, webPattern, webHeaders, false);
++    std::string extractedUrl = WebStreamExtractor::ExtractStreamUrl(
++        tempUrl, webPattern, webHeaders, false, WebUtils::UplinkOptions(mediaHeaders));
+     Logger::Log(LEVEL_DEBUG,
+                 "%s - Extracted URL: '%s', webPattern: '%s', webHeaders: '%s', webUrl: '%s'",
+                 __FUNCTION__, extractedUrl.c_str(), webPattern.c_str(), webHeaders.c_str(),
+--- a/src/iptvsimple/utilities/WebStreamExtractor.cpp
++++ b/src/iptvsimple/utilities/WebStreamExtractor.cpp
+@@ -5,7 +5,8 @@ using namespace iptvsimple::utilities;
+ std::string WebStreamExtractor::ExtractStreamUrl(const std::string& webUrl,
+                                                  const std::string& webPattern,
+                                                  const std::string& webHeaders,
+-                                                 bool isMediaEntry)
++                                                 bool isMediaEntry,
++                                                 const std::string& uplinkOptions)
+ {
+   try
+   {
+@@ -16,7 +17,7 @@ std::string WebStreamExtractor::ExtractS
+     }
+ 
+     std::string content;
+-    CUrl curl{webUrl};
++    CUrl curl{uplinkOptions.empty() ? webUrl : webUrl + "|" + uplinkOptions};
+     if (!webHeaders.empty())
+     {
+       std::map<std::string, std::string> headersMap = WebUtils::ConvertStringToHeaders(webHeaders);
+--- a/src/iptvsimple/utilities/WebStreamExtractor.h
++++ b/src/iptvsimple/utilities/WebStreamExtractor.h
+@@ -19,7 +19,8 @@ public:
+   static std::string ExtractStreamUrl(const std::string& line,
+                                       const std::string& webPattern,
+                                       const std::string& webHeaders,
+-                                      bool isMediaEntry);
++                                      bool isMediaEntry,
++                                      const std::string& uplinkOptions = {});
+ 
+ private:
+   static std::string ExtractByPattern(const std::string& content,
+--- a/src/iptvsimple/utilities/WebUtils.cpp
++++ b/src/iptvsimple/utilities/WebUtils.cpp
+@@ -295,12 +295,37 @@ std::pair<std::string, std::string> WebU
+   return {"local_addr", address};
+ }
+ 
++bool WebUtils::IsUplinkUrl(const std::string& url)
++{
++  return IsHttpUrl(url) || StringUtils::StartsWith(url, "udp://") ||
++         StringUtils::StartsWith(url, "rtp://");
++}
++
+ std::string WebUtils::AddUplinkToUrl(const std::string& url, const std::string& spec)
+ {
+-  if (spec.empty() || !IsHttpUrl(url))
++  if (spec.empty() || !IsUplinkUrl(url))
+     return url;
+ 
+   const auto option = UplinkOption(spec);
+   return StreamUtils::AddHeaderToStreamUrl(url, option.first, option.second);
+ }
+ 
++std::string WebUtils::UplinkOptions(const std::string& protocolOptions)
++{
++  const std::string trimmed =
++      StringUtils::StartsWith(protocolOptions, "|") ? protocolOptions.substr(1) : protocolOptions;
++
++  std::string options;
++  for (const auto& option : StringUtils::Split(trimmed, "&"))
++  {
++    if (!StringUtils::StartsWith(option, "local_addr=") &&
++        !StringUtils::StartsWith(option, "local_dev="))
++      continue;
++
++    if (!options.empty())
++      options += "&";
++    options += option;
++  }
++
++  return options;
++}
+--- a/src/iptvsimple/utilities/WebUtils.h
++++ b/src/iptvsimple/utilities/WebUtils.h
+@@ -38,7 +38,9 @@ namespace iptvsimple
+       static std::map<std::string, std::string> ConvertStringToHeaders(const std::string& input);
+       static std::string ResolveLocalAddress(const std::string& spec);
+       static std::pair<std::string, std::string> UplinkOption(const std::string& spec);
++      static bool IsUplinkUrl(const std::string& url);
+       static std::string AddUplinkToUrl(const std::string& url, const std::string& spec);
++      static std::string UplinkOptions(const std::string& protocolOptions);
+     };
+   } // namespace utilities
+ } // namespace iptvsimple

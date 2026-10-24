@@ -1,0 +1,147 @@
+From 8644314fc1836a184fcf789792fe157fedda782c Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 24 Oct 2026 23:13:03 +0100
+Subject: [PATCH 1/2] Bind an interface uplink to its device
+
+An interface uplink was turned into the first IPv4 address the
+interface held when a request was made, so IPv6 never used the
+uplink and a renewed lease or a changed address broke the binding
+of later requests. A spec that resolved to no address left the
+request unpinned. Pass an interface on as local_dev, which Kodi,
+inputstream.ffmpegdirect and FFmpeg bind with SO_BINDTODEVICE, keep
+local_addr for addresses and prefixes, and name the unavailable
+uplink as the device when nothing matches, so the request fails.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ src/iptvsimple/data/Channel.cpp          |  2 +-
+ src/iptvsimple/utilities/FileUtils.cpp   |  4 +--
+ src/iptvsimple/utilities/StreamUtils.cpp |  5 ++--
+ src/iptvsimple/utilities/WebUtils.cpp    | 37 +++++++++++++++++-------
+ src/iptvsimple/utilities/WebUtils.h      |  4 ++-
+ 5 files changed, 36 insertions(+), 16 deletions(-)
+
+--- a/src/iptvsimple/data/Channel.cpp
++++ b/src/iptvsimple/data/Channel.cpp
+@@ -199,7 +199,7 @@ void Channel::SetStreamURL(const std::st
+     TryToAddPropertyAsHeader("http-user-agent", "user-agent");
+     TryToAddPropertyAsHeader("http-referrer", "referer"); // spelling differences are correct
+ 
+-    m_streamURL = WebUtils::AddLocalAddressToUrl(m_streamURL, m_settings->GetUplinkAddress());
++    m_streamURL = WebUtils::AddUplinkToUrl(m_streamURL, m_settings->GetUplinkAddress());
+   }
+ 
+   if (m_settings->TransformMulticastStreamUrls() &&
+--- a/src/iptvsimple/utilities/FileUtils.cpp
++++ b/src/iptvsimple/utilities/FileUtils.cpp
+@@ -195,8 +195,8 @@ int FileUtils::GetCachedFileContents(std
+ 
+   if (needReload)
+   {
+-    FileUtils::GetFileContents(
+-        WebUtils::AddLocalAddressToUrl(filePath, settings->GetUplinkAddress()), contents);
++    FileUtils::GetFileContents(WebUtils::AddUplinkToUrl(filePath, settings->GetUplinkAddress()),
++                               contents);
+ 
+     // write to cache
+     if (useCache && contents.length() > 0)
+--- a/src/iptvsimple/utilities/StreamUtils.cpp
++++ b/src/iptvsimple/utilities/StreamUtils.cpp
+@@ -34,11 +34,12 @@ bool SplitUrlProtocolOpts(const std::str
+       url = streamURL.substr(0, found);
+       std::string protocolOptions = streamURL.substr(found + 1, streamURL.length());
+ 
+-      // local_addr is for ffmpeg, not a header: it travels as a property
++      // local_addr and local_dev are for ffmpeg, not headers: the uplink travels as a property
+       std::string kept;
+       for (const auto& option : kodi::tools::StringUtils::Split(protocolOptions, "&"))
+       {
+-        if (kodi::tools::StringUtils::StartsWith(option, "local_addr="))
++        if (kodi::tools::StringUtils::StartsWith(option, "local_addr=") ||
++            kodi::tools::StringUtils::StartsWith(option, "local_dev="))
+           continue;
+         if (!kept.empty())
+           kept += "&";
+--- a/src/iptvsimple/utilities/WebUtils.cpp
++++ b/src/iptvsimple/utilities/WebUtils.cpp
+@@ -171,9 +171,8 @@ bool WebUtils::Check(const std::string&
+ 
+   if (!uplinkSpec.empty() && IsHttpUrl(strURL))
+   {
+-    const std::string address = ResolveLocalAddress(uplinkSpec);
+-    if (!address.empty())
+-      fileHandle.CURLAddOption(ADDON_CURL_OPTION_PROTOCOL, "local_addr", address);
++    const auto option = UplinkOption(uplinkSpec);
++    fileHandle.CURLAddOption(ADDON_CURL_OPTION_PROTOCOL, option.first, option.second);
+   }
+ 
+   if (!fileHandle.CURLOpen(ADDON_READ_NO_CACHE))
+@@ -222,8 +221,9 @@ std::string WebUtils::ResolveLocalAddres
+ 
+   if (slash == std::string::npos)
+   {
+-    in_addr literal = {};
+-    if (inet_pton(AF_INET, spec.c_str(), &literal) == 1)
++    in6_addr literal = {};
++    if (inet_pton(AF_INET, spec.c_str(), &literal) == 1 ||
++        inet_pton(AF_INET6, spec.c_str(), &literal) == 1)
+       return spec;
+   }
+   else
+@@ -276,14 +276,31 @@ std::string WebUtils::ResolveLocalAddres
+ #endif
+ }
+ 
+-std::string WebUtils::AddLocalAddressToUrl(const std::string& url, const std::string& spec)
++std::pair<std::string, std::string> WebUtils::UplinkOption(const std::string& spec)
+ {
+-  if (spec.empty() || !IsHttpUrl(url))
+-    return url;
++  const std::string key = spec.substr(0, spec.find(';'));
+ 
+-  const std::string address = ResolveLocalAddress(spec);
++#if !(defined(WIN32) || defined(_WIN32) || defined(__WIN32__))
++  in6_addr literal = {};
++  if (key.find('/') == std::string::npos && inet_pton(AF_INET, key.c_str(), &literal) != 1 &&
++      inet_pton(AF_INET6, key.c_str(), &literal) != 1)
++    return {"local_dev", key};
++#endif
++
++  // no device carries the name of an unavailable uplink, so binding to it fails the request
++  const std::string address = ResolveLocalAddress(key);
+   if (address.empty())
++    return {"local_dev", key};
++
++  return {"local_addr", address};
++}
++
++std::string WebUtils::AddUplinkToUrl(const std::string& url, const std::string& spec)
++{
++  if (spec.empty() || !IsHttpUrl(url))
+     return url;
+ 
+-  return StreamUtils::AddHeaderToStreamUrl(url, "local_addr", address);
++  const auto option = UplinkOption(spec);
++  return StreamUtils::AddHeaderToStreamUrl(url, option.first, option.second);
+ }
++
+--- a/src/iptvsimple/utilities/WebUtils.h
++++ b/src/iptvsimple/utilities/WebUtils.h
+@@ -9,6 +9,7 @@
+ 
+ #include <map>
+ #include <string>
++#include <utility>
+ 
+ namespace iptvsimple
+ {
+@@ -36,7 +37,8 @@ namespace iptvsimple
+                         const std::string& uplinkSpec = {});
+       static std::map<std::string, std::string> ConvertStringToHeaders(const std::string& input);
+       static std::string ResolveLocalAddress(const std::string& spec);
+-      static std::string AddLocalAddressToUrl(const std::string& url, const std::string& spec);
++      static std::pair<std::string, std::string> UplinkOption(const std::string& spec);
++      static std::string AddUplinkToUrl(const std::string& url, const std::string& spec);
+     };
+   } // namespace utilities
+ } // namespace iptvsimple
