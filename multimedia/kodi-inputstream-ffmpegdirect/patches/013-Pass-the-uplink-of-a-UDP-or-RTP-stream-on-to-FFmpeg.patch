@@ -1,0 +1,32 @@
+From 2efdc5c1bfe7a706b73811144e40fbf12b86604d Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 24 Oct 2026 23:13:40 +0100
+Subject: [PATCH 2/2] Pass the uplink of a UDP or RTP stream on to FFmpeg
+
+local_addr and local_dev reached FFmpeg only for HTTP streams, so a
+UDP or RTP stream left through whatever interface the route to it
+named. Hand them to FFmpeg's UDP and RTP protocols, which call them
+localaddr and local_dev.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ src/stream/FFmpegStream.cpp | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+--- a/src/stream/FFmpegStream.cpp
++++ b/src/stream/FFmpegStream.cpp
+@@ -2395,6 +2395,14 @@ AVDictionary* FFmpegStream::GetFFMpegOpt
+         av_dict_set(&options, "cookies", cookies.c_str(), 0);
+     }
+   }
++  else if (url.IsProtocol("udp") || url.IsProtocol("rtp"))
++  {
++    std::string value;
++    if (url.GetProtocolOption("local_dev", value))
++      av_dict_set(&options, "local_dev", value.c_str(), 0);
++    else if (url.GetProtocolOption("local_addr", value))
++      av_dict_set(&options, "localaddr", value.c_str(), 0);
++  }
+ 
+   const std::string host = m_httpProxy.GetProxyHost();
+   if (!host.empty())
