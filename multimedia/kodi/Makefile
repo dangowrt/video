@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kodi
 PKG_VERSION:=22.0_rc1
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 # Tag 22.0rc1-Piers (version.txt: 22.0 RC1); pinned by commit so the
 # tarball name stays stable should the tag ever move.
@@ -87,7 +87,7 @@ define Package/kodi
 	+spdlog +libtinyxml +libtinyxml2 +libfstrcmp +libexiv2 \
 	+libpcre2 +giflib +libjpeg-turbo +libpng +liblzo \
 	+zlib +libbz2 +libopenssl +libpython3 +python3 +libuuid \
-	+libstdcpp +libatomic $(ICONV_DEPENDS)
+	+libstdcpp +libatomic +libuplinkdns $(ICONV_DEPENDS)
   USERID:=kodi=446:kodi=446:video=40,render=43,audio=29,input=41
 endef
 
@@ -233,6 +233,7 @@ CMAKE_OPTIONS += \
 	-DENABLE_SNDIO=OFF \
 	-DENABLE_UDEV=ON \
 	-DENABLE_UDFREAD=OFF \
+	-DENABLE_UPLINKDNS=ON \
 	-DENABLE_UPNP=$(if $(CONFIG_KODI_UPNP),ON,OFF) \
 	-DENABLE_VAAPI=$(if $(findstring x86_64,$(ARCH)),ON,OFF) \
 	-DENABLE_WAYLANDSERVER=ON \

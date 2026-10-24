@@ -1,0 +1,107 @@
+From 0f65f86cbbfed3acb8da41b72af645e5b7e151a3 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 24 Oct 2026 20:34:36 +0100
+Subject: [PATCH 3/8] WebPlayer: resolve a web app's names through its uplink
+
+The web client's network process binds each web app's connections to
+the app's uplink but resolves every name through the system resolver.
+Start the client with uplinkdns preloaded and the web apps' uplink
+specifications in UPLINKDNS_UPLINKS, so each lookup runs through the
+uplink of the session that makes it, and hand the client only the
+uplink's key, which is all its binding needs.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/cores/WebPlayer/WebClientManager.cpp | 39 +++++++++++++++++++++--
+ 1 file changed, 36 insertions(+), 3 deletions(-)
+
+--- a/xbmc/cores/WebPlayer/WebClientManager.cpp
++++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
+@@ -49,6 +49,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdlib>
+ #include <limits>
+ #include <mutex>
+ #include <utility>
+@@ -59,6 +60,10 @@
+ #include <unistd.h>
+ #include <xf86drm.h>
+ 
++#if defined(HAS_UPLINKDNS)
++#include <uplinkdns.h>
++#endif
++
+ using namespace KODI::WEB;
+ using namespace KODI::WAYLANDHOST;
+ 
+@@ -111,6 +116,33 @@ std::string CdmDirectory()
+   return path.empty() ? path : CSpecialProtocol::TranslatePath(path);
+ }
+ 
++void AddUplinkEnvironment(std::map<std::string, std::string>& env)
++{
++#if defined(HAS_UPLINKDNS)
++  ADDON::VECADDONS addons;
++  CServiceBroker::GetAddonMgr().GetAddons(addons, ADDON::AddonType::WEBAPP);
++
++  std::string uplinks;
++  for (const auto& addon : addons)
++  {
++    const std::string uplink = addon->GetSetting("uplinkaddress");
++    if (!uplink.empty())
++      uplinks += (uplinks.empty() ? "" : " ") + uplink;
++  }
++
++  // the client's network process resolves each session's names through the uplink it binds to
++  if (uplinks.empty())
++    return;
++
++  std::string preload = UPLINKDNS_SONAME;
++  if (const char* inherited = std::getenv("LD_PRELOAD"); inherited && *inherited)
++    preload = std::string(inherited) + " " + preload;
++
++  env.emplace("LD_PRELOAD", preload);
++  env.emplace("UPLINKDNS_UPLINKS", uplinks);
++#endif
++}
++
+ void NotifyUplinkMissing(const std::string& profile, const std::string& uplink)
+ {
+   CLog::Log(LOGERROR, "CWebClientManager::{}: the uplink \"{}\" of {} does not resolve",
+@@ -228,6 +260,7 @@ void CWebClientManager::Spawn()
+   // pages decrypt with the CDM that inputstream.adaptive installed
+   if (const std::string cdm = CdmDirectory(); !cdm.empty())
+     env.emplace("KODI_WEB_CDM_DIR", cdm);
++  AddUplinkEnvironment(env);
+   m_host->SpawnClient({command}, std::move(env));
+ }
+ 
+@@ -282,7 +315,7 @@ bool CWebClientManager::RequestView(cons
+   switch (m_state)
+   {
+     case State::READY:
+-      m_host->WebWantView(profile, uplink);
++      m_host->WebWantView(profile, KODI::NETWORK::UplinkKey(uplink));
+       break;
+     case State::STARTING:
+       m_wantPending = true;
+@@ -416,7 +449,7 @@ void CWebClientManager::OnWebClientReady
+   const std::string uplink = m_uplinks[profile];
+   lock.unlock();
+   if (want)
+-    m_host->WebWantView(profile, uplink);
++    m_host->WebWantView(profile, KODI::NETWORK::UplinkKey(uplink));
+ }
+ 
+ std::string CWebClientManager::UplinkOf(const std::string& profile) const
+@@ -626,7 +659,7 @@ void CWebClientManager::OnWebViewDestroy
+   const std::string uplink = m_uplinks[profile];
+   lock.unlock();
+   if (replaced && observer)
+-    m_host->WebWantView(profile, uplink);
++    m_host->WebWantView(profile, KODI::NETWORK::UplinkKey(uplink));
+   else if (observer)
+     observer->OnWebViewGone(profile);
+ }

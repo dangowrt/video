@@ -1,0 +1,44 @@
+From eec3beabd28a011a6fcc9309695682bfafa136b1 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 24 Oct 2026 23:03:06 +0100
+Subject: [PATCH 7/8] PythonInvoker: pin datagrams sent without connect() to
+ the uplink
+
+The uplink bootstrap binds a socket to the add-on's uplink when it
+connects, but a datagram socket that sends with sendto() or
+sendmsg() and an address never connects, so its packets and their
+lookups left over the default route. Bind such a socket the same way
+before its first send to an address.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/interfaces/python/PythonInvoker.cpp | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+--- a/xbmc/interfaces/python/PythonInvoker.cpp
++++ b/xbmc/interfaces/python/PythonInvoker.cpp
+@@ -127,10 +127,24 @@ def _kodi_connect_ex(sock, address, _con
+         return error.errno
+     return _connect_ex(sock, address)
+ 
++def _kodi_sendto(sock, data, *args, _sendto=_socket.socket.sendto):
++    if args:
++        _kodi_bind_uplink(sock, args[-1])
++    return _sendto(sock, data, *args)
++
++def _kodi_sendmsg(sock, buffers, ancdata=(), flags=0, address=None,
++                  _sendmsg=_socket.socket.sendmsg):
++    if address is None:
++        return _sendmsg(sock, buffers, ancdata, flags)
++    _kodi_bind_uplink(sock, address)
++    return _sendmsg(sock, buffers, ancdata, flags, address)
++
+ if not getattr(_socket.socket.connect, "_kodi_uplink", False):
+     _kodi_connect._kodi_uplink = True
+     _socket.socket.connect = _kodi_connect
+     _socket.socket.connect_ex = _kodi_connect_ex
++    _socket.socket.sendto = _kodi_sendto
++    _socket.socket.sendmsg = _kodi_sendmsg
+ )PY";
+ } // unnamed namespace
+ 

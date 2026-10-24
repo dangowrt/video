@@ -1,0 +1,80 @@
+From 7382ee5fddcfa8a7cbe32a442ad79cf57080519a Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 24 Oct 2026 20:34:37 +0100
+Subject: [PATCH 4/8] VideoPlayer: bind a stream to its uplink's device
+
+FFmpeg gets an interface uplink as the IPv4 address the interface holds
+when the stream opens, which a lease or prefix change during playback
+takes away. Pass a device uplink as local_dev, which FFmpeg binds with
+SO_BINDTODEVICE, and an address uplink as local_addr; an addon's
+resolved stream carries the same option, so inputstream addons that
+hand URL options to FFmpeg bind the same way. An unavailable uplink is
+passed as a device of its own name, so the stream fails to connect.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../DVDDemuxers/DVDDemuxFFmpeg.cpp            | 19 +++++++++----------
+ xbmc/filesystem/CurlFile.cpp                  |  2 +-
+ xbmc/filesystem/PluginDirectory.cpp           |  9 +++++----
+ 3 files changed, 15 insertions(+), 15 deletions(-)
+
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -856,17 +856,16 @@ AVDictionary* CDVDDemuxFFmpeg::GetFFMpeg
+                   it->first, value);
+         av_dict_set(&options, name.c_str(), value.c_str(), 0);
+       }
+-      else if (name == "local_addr" || name == "local-address")
++      else if (name == "local_addr" || name == "local-address" || name == "local_dev")
+       {
+-        const std::string address = KODI::NETWORK::ResolveUplinkAddress(value);
+-        if (!address.empty())
+-        {
+-          CLog::Log(LOGDEBUG,
+-                    "CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput() adding ffmpeg option "
+-                    "'local_addr: {}'",
+-                    address);
+-          av_dict_set(&options, "local_addr", address.c_str(), 0);
+-        }
++        const KODI::NETWORK::UplinkBinding uplink = KODI::NETWORK::RequireUplink(value);
++        const char* option = uplink.address.empty() ? "local_dev" : "local_addr";
++        const std::string& target = uplink.address.empty() ? uplink.device : uplink.address;
++
++        CLog::Log(LOGDEBUG,
++                  "CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput() adding ffmpeg option '{}: {}'",
++                  option, target);
++        av_dict_set(&options, option, target.c_str(), 0);
+       }
+       // map some standard http headers to the ffmpeg related options
+       else if (name == "user-agent")
+--- a/xbmc/filesystem/CurlFile.cpp
++++ b/xbmc/filesystem/CurlFile.cpp
+@@ -965,7 +965,7 @@ void CCurlFile::ParseAndCorrectUrl(CURL
+           SetAcceptCharset(value);
+         else if (name == "sslcipherlist")
+           m_cipherlist = value;
+-        else if (name == "local_addr" || name == "local-address")
++        else if (name == "local_addr" || name == "local-address" || name == "local_dev")
+           m_uplinkAddress = value;
+         else if (name == "connection-timeout")
+           m_connecttimeout = strtol(value.c_str(), NULL, 10);
+--- a/xbmc/filesystem/PluginDirectory.cpp
++++ b/xbmc/filesystem/PluginDirectory.cpp
+@@ -66,12 +66,13 @@ void ApplyAddonUplink(const std::string&
+   if (!URIUtils::IsHTTP(path))
+     return;
+ 
+-  const std::string address = KODI::NETWORK::ResolveUplinkAddress(spec);
+-  if (address.empty())
+-    return;
++  const KODI::NETWORK::UplinkBinding uplink = KODI::NETWORK::RequireUplink(spec);
+ 
+   CURL url(path);
+-  url.SetProtocolOption("local_addr", address);
++  if (uplink.address.empty())
++    url.SetProtocolOption("local_dev", uplink.device);
++  else
++    url.SetProtocolOption("local_addr", uplink.address);
+   item.SetPath(url.Get());
+ 
+   const std::string inputstream = item.GetProperty("inputstream").asString();

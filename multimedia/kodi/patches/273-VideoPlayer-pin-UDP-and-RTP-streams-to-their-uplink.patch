@@ -1,0 +1,95 @@
+From 455d7cf1d4aeb58365a2fc262cbf8f6de8995864 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 24 Oct 2026 23:09:50 +0100
+Subject: [PATCH 8/8] VideoPlayer: pin UDP and RTP streams to their uplink
+
+A plugin's UDP or RTP stream left through whatever interface the
+route to it named, because the resolved URL only carried an uplink
+for HTTP and the demuxer passed uplink options to FFmpeg only for
+HTTP. Stamp UDP and RTP URLs too and hand their uplink to FFmpeg as
+local_dev or localaddr, and keep the protocol options out of the
+source-specific multicast URL the demuxer builds.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../DVDDemuxers/DVDDemuxFFmpeg.cpp            | 35 +++++++++++++------
+ xbmc/network/UplinkAddress.cpp                |  3 +-
+ 2 files changed, 26 insertions(+), 12 deletions(-)
+
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -329,7 +329,9 @@ bool CDVDDemuxFFmpeg::Open(const std::sh
+     }
+     else if (url.IsProtocol("udp") || url.IsProtocol("rtp"))
+     {
+-      std::string strURL = url.Get();
++      CURL plain(url);
++      plain.SetProtocolOptions("");
++      std::string strURL = plain.Get();
+       CLog::Log(LOGDEBUG, "CDVDDemuxFFmpeg::Open() UDP/RTP Original URL '{}'", strURL);
+       size_t found = strURL.find("://");
+       if (found != std::string::npos)
+@@ -820,6 +822,20 @@ void CDVDDemuxFFmpeg::SetSpeed(int iSpee
+   }
+ }
+ 
++namespace
++{
++void SetUplinkOption(AVDictionary** options, const std::string& spec, const char* addressOption)
++{
++  const KODI::NETWORK::UplinkBinding uplink = KODI::NETWORK::RequireUplink(spec);
++  const char* option = uplink.address.empty() ? "local_dev" : addressOption;
++  const std::string& target = uplink.address.empty() ? uplink.device : uplink.address;
++
++  CLog::Log(LOGDEBUG, "CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput() adding ffmpeg option '{}: {}'",
++            option, target);
++  av_dict_set(options, option, target.c_str(), 0);
++}
++} // unnamed namespace
++
+ AVDictionary* CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput()
+ {
+   const std::shared_ptr<CDVDInputStreamFFmpeg> input =
+@@ -857,16 +873,7 @@ AVDictionary* CDVDDemuxFFmpeg::GetFFMpeg
+         av_dict_set(&options, name.c_str(), value.c_str(), 0);
+       }
+       else if (name == "local_addr" || name == "local-address" || name == "local_dev")
+-      {
+-        const KODI::NETWORK::UplinkBinding uplink = KODI::NETWORK::RequireUplink(value);
+-        const char* option = uplink.address.empty() ? "local_dev" : "local_addr";
+-        const std::string& target = uplink.address.empty() ? uplink.device : uplink.address;
+-
+-        CLog::Log(LOGDEBUG,
+-                  "CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput() adding ffmpeg option '{}: {}'",
+-                  option, target);
+-        av_dict_set(&options, option, target.c_str(), 0);
+-      }
++        SetUplinkOption(&options, value, "local_addr");
+       // map some standard http headers to the ffmpeg related options
+       else if (name == "user-agent")
+       {
+@@ -957,6 +964,12 @@ AVDictionary* CDVDDemuxFFmpeg::GetFFMpeg
+         av_dict_set(&options, "cookies", cookies.c_str(), 0);
+     }
+   }
++  else if (url.IsProtocol("udp") || url.IsProtocol("rtp"))
++  {
++    const std::string uplink = KODI::NETWORK::UplinkOfURL(url);
++    if (!uplink.empty())
++      SetUplinkOption(&options, uplink, "localaddr");
++  }
+ 
+   if (input)
+   {
+--- a/xbmc/network/UplinkAddress.cpp
++++ b/xbmc/network/UplinkAddress.cpp
+@@ -269,7 +269,8 @@ bool IsUplinkURL(const std::string& path
+ {
+   const CURL url(path);
+   return url.IsProtocol("http") || url.IsProtocol("https") || url.IsProtocol("dav") ||
+-         url.IsProtocol("davs") || url.IsProtocol("ftp") || url.IsProtocol("ftps");
++         url.IsProtocol("davs") || url.IsProtocol("ftp") || url.IsProtocol("ftps") ||
++         url.IsProtocol("udp") || url.IsProtocol("rtp");
+ }
+ 
+ std::string UplinkPath(const std::string& path, const std::string& spec)
