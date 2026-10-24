@@ -1,0 +1,199 @@
+From 91549c6bd63bfc1cd01bd7b0619c74fe4dddb061 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 24 Oct 2026 23:00:49 +0100
+Subject: [PATCH 5/8] network: resolve a pinned URL's LAN check through its
+ uplink
+
+URIUtils::IsOnLAN() resolves a URL's host to decide whether it is
+local, and CVideoPlayer asks it for every internet stream before it
+scans for external subtitles. For a stream pinned to an uplink, the
+host's name therefore still went to the system resolver over the
+default route. Pass the uplink a URL carries in its local_dev or
+local_addr option on to CDNSNameCache::Lookup(), which resolves
+through that uplink with uplinkdns and leaves such answers out of its
+cache.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/network/DNSNameCache.cpp  | 26 +++++++++++++++++++-------
+ xbmc/network/DNSNameCache.h    |  6 +++++-
+ xbmc/network/UplinkAddress.cpp |  9 +++++++++
+ xbmc/network/UplinkAddress.h   |  3 +++
+ xbmc/utils/URIUtils.cpp        |  9 ++++++---
+ xbmc/utils/URIUtils.h          |  3 ++-
+ 6 files changed, 44 insertions(+), 12 deletions(-)
+
+--- a/xbmc/network/DNSNameCache.cpp
++++ b/xbmc/network/DNSNameCache.cpp
+@@ -38,10 +38,18 @@
+ 
+ namespace
+ {
+-int SystemLookup(const char* host, const addrinfo* hints, addrinfo** res)
++int HostLookup(const char* host, const std::string& uplink, const addrinfo* hints, addrinfo** res)
+ {
+ #if defined(HAS_UPLINKDNS)
+-  return uplinkdns_getaddrinfo(UPLINKDNS_CTX_SYSTEM, host, nullptr, hints, res);
++  int ctx = UPLINKDNS_CTX_SYSTEM;
++  if (!uplink.empty())
++  {
++    ctx = uplinkdns_uplink_add(uplink.c_str());
++    if (ctx < 0)
++      return EAI_FAIL;
++  }
++
++  return uplinkdns_getaddrinfo(ctx, host, nullptr, hints, res);
+ #else
+   return getaddrinfo(host, nullptr, hints, res);
+ #endif
+@@ -112,7 +120,9 @@ std::string KODI::NETWORK::SelectDNSAddr
+   return fallback;
+ }
+ 
+-bool CDNSNameCache::Lookup(const std::string& strHostName, std::string& strIpAddress)
++bool CDNSNameCache::Lookup(const std::string& strHostName,
++                           std::string& strIpAddress,
++                           const std::string& uplink)
+ {
+   if (strHostName.empty() && strIpAddress.empty())
+     return false;
+@@ -129,8 +139,9 @@ bool CDNSNameCache::Lookup(const std::st
+     return true;
+   }
+ 
+-  // check if there's a custom entry or if it's already cached
+-  if (GetCached(strHostName, strIpAddress))
++  // check if there's a custom entry or if it's already cached; the cache holds the system
++  // resolver's answers, not an uplink's
++  if (uplink.empty() && GetCached(strHostName, strIpAddress))
+     return true;
+ 
+   // perform dns lookup
+@@ -141,14 +152,15 @@ bool CDNSNameCache::Lookup(const std::st
+   hints.ai_socktype = SOCK_STREAM;
+   hints.ai_flags |= AI_CANONNAME;
+ 
+-  if (SystemLookup(strHostName.c_str(), &hints, &res) == 0)
++  if (HostLookup(strHostName.c_str(), uplink, &hints, &res) == 0)
+   {
+     strIpAddress = KODI::NETWORK::SelectDNSAddress(res);
+     freeaddrinfo(res);
+ 
+     if (!strIpAddress.empty())
+     {
+-      Add(strHostName, strIpAddress);
++      if (uplink.empty())
++        Add(strHostName, strIpAddress);
+       return true;
+     }
+   }
+--- a/xbmc/network/DNSNameCache.h
++++ b/xbmc/network/DNSNameCache.h
+@@ -55,10 +55,14 @@ public:
+    *
+    * \param strHostName The hostname to look up
+    * \param[out] strIpAddress Contains the IP for the hostname if the info can be provided, otherwise unchanged
++   * \param uplink The uplink to resolve through, empty for the system resolver. A lookup through an
++   *               uplink bypasses the cache.
+    *
+    * \return true if the IP is cached or the DNS query was successful
+    */
+-  bool Lookup(const std::string& strHostName, std::string& strIpAddress);
++  bool Lookup(const std::string& strHostName,
++              std::string& strIpAddress,
++              const std::string& uplink = {});
+ 
+ private:
+   static constexpr std::chrono::seconds TTL{60};
+--- a/xbmc/network/UplinkAddress.cpp
++++ b/xbmc/network/UplinkAddress.cpp
+@@ -8,6 +8,7 @@
+ 
+ #include "UplinkAddress.h"
+ 
++#include "URL.h"
+ #include "utils/URIUtils.h"
+ #include "utils/log.h"
+ 
+@@ -253,4 +254,12 @@ bool IsDirectDestination(const std::stri
+   return URIUtils::IsHostOnLAN(host, LanCheckMode::ANY_PRIVATE_SUBNET);
+ }
+ 
++std::string UplinkOfURL(const CURL& url)
++{
++  if (url.HasProtocolOption("local_dev"))
++    return url.GetProtocolOption("local_dev");
++
++  return url.GetProtocolOption("local_addr");
++}
++
+ } /* namespace KODI::NETWORK */
+--- a/xbmc/network/UplinkAddress.h
++++ b/xbmc/network/UplinkAddress.h
+@@ -10,6 +10,8 @@
+ 
+ #include <string>
+ 
++class CURL;
++
+ namespace KODI::NETWORK
+ {
+ 
+@@ -27,5 +29,6 @@ UplinkBinding ResolveUplink(const std::s
+ UplinkBinding RequireUplink(const std::string& spec);
+ std::string ResolveUplinkAddress(const std::string& spec);
+ bool IsDirectDestination(const std::string& host);
++std::string UplinkOfURL(const CURL& url);
+ 
+ } /* namespace KODI::NETWORK */
+--- a/xbmc/utils/URIUtils.cpp
++++ b/xbmc/utils/URIUtils.cpp
+@@ -22,6 +22,7 @@
+ #include "filesystem/StackDirectory.h"
+ #include "network/DNSNameCache.h"
+ #include "network/Network.h"
++#include "network/UplinkAddress.h"
+ #if defined(TARGET_WINDOWS)
+ #include "platform/win32/CharsetConverter.h"
+ #endif
+@@ -1044,7 +1045,7 @@ bool URIUtils::IsOnLAN(const std::string
+ 
+   const std::string& host = url.GetHostName();
+ 
+-  return IsHostOnLAN(host, lanCheckMode);
++  return IsHostOnLAN(host, lanCheckMode, KODI::NETWORK::UplinkOfURL(url));
+ }
+ 
+ static bool addr_match(uint32_t addr, const char* target, const char* submask)
+@@ -1054,7 +1055,9 @@ static bool addr_match(uint32_t addr, co
+   return (addr & mask) == (addr2 & mask);
+ }
+ 
+-bool URIUtils::IsHostOnLAN(const std::string& host, LanCheckMode lanCheckMode)
++bool URIUtils::IsHostOnLAN(const std::string& host,
++                           LanCheckMode lanCheckMode,
++                           const std::string& uplink)
+ {
+   if (host.empty())
+     return false;
+@@ -1069,7 +1072,7 @@ bool URIUtils::IsHostOnLAN(const std::st
+   {
+     std::string ip;
+     auto cache = CServiceBroker::GetDNSNameCache();
+-    if (cache && cache->Lookup(host, ip))
++    if (cache && cache->Lookup(host, ip, uplink))
+       address = ntohl(inet_addr(ip.c_str()));
+   }
+ 
+--- a/xbmc/utils/URIUtils.h
++++ b/xbmc/utils/URIUtils.h
+@@ -283,7 +283,8 @@ public:
+   static bool IsOnLAN(const std::string& strFile,
+                       LanCheckMode lanCheckMode = LanCheckMode::ONLY_LOCAL_SUBNET);
+   static bool IsHostOnLAN(const std::string& hostName,
+-                          LanCheckMode lanCheckMode = LanCheckMode::ONLY_LOCAL_SUBNET);
++                          LanCheckMode lanCheckMode = LanCheckMode::ONLY_LOCAL_SUBNET,
++                          const std::string& uplink = {});
+   static bool IsLocalOrLAN(const std::string& path);
+   static bool IsPlugin(const std::string& strFile);
+   static bool IsScript(const std::string& strFile);
