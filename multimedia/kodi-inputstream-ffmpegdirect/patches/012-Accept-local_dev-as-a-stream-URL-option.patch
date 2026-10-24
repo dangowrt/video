@@ -1,0 +1,25 @@
+From a3cfa3874560272c6dbbf9e50aeef3a84838a069 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 24 Oct 2026 20:35:07 +0100
+Subject: [PATCH 1/2] Accept local_dev as a stream URL option
+
+An uplink given as an interface reaches FFmpeg as local_dev, which binds
+the socket to the device and so follows the addresses it holds over a
+long session. Forward it with local_addr and local_port.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ src/stream/FFmpegStream.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/src/stream/FFmpegStream.cpp
++++ b/src/stream/FFmpegStream.cpp
+@@ -2312,7 +2312,7 @@ AVDictionary* FFmpegStream::GetFFMpegOpt
+       if (name == "seekable" || name == "reconnect" || name == "reconnect_at_eof" ||
+           name == "reconnect_streamed" || name == "reconnect_delay_max" ||
+           name == "icy" || name == "icy_metadata_headers" || name == "icy_metadata_packet" || name == "cenc_decryption_key" ||
+-          name == "local_addr" || name == "local_port")
++          name == "local_addr" || name == "local_port" || name == "local_dev")
+       {
+         Log(LOGLEVEL_DEBUG,
+                   "CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput() adding ffmpeg option '%s: %s'",
