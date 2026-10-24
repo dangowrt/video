@@ -1,0 +1,239 @@
+From d8139d952458f5683c2cd4b0b6677023e181ca10 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 24 Oct 2026 20:34:24 +0100
+Subject: [PATCH 2/8] network: resolve an uplink's names through the uplink
+
+A request pinned to an uplink still has its hostname resolved by the
+system resolver over the default route, so content delivery networks
+pick an edge for the wrong uplink. Link uplinkdns when it is found and
+register each addon uplink with it, so that lookups for a socket bound
+to an uplink run through that uplink, against the servers named in the
+specification ("<uplink>;dns=<servers>", or a dns attribute next to
+localaddress in advancedsettings.xml). A Python destination uplinkdns
+stands in for is judged by its name, and CDNSNameCache asks the system
+resolver, because its callers need real addresses.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ CMakeLists.txt                     |  1 +
+ cmake/modules/FindUplinkDNS.cmake  | 29 +++++++++++++++
+ xbmc/network/DNSNameCache.cpp      | 15 +++++++-
+ xbmc/network/UplinkAddress.cpp     | 57 ++++++++++++++++++++++++++++--
+ xbmc/network/UplinkAddress.h       |  2 ++
+ xbmc/settings/AdvancedSettings.cpp |  8 +++++
+ 6 files changed, 109 insertions(+), 3 deletions(-)
+ create mode 100644 cmake/modules/FindUplinkDNS.cmake
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -290,6 +290,7 @@ set(optional_deps Alsa>=1.0.27
+                   Sndio
+                   UDEV
+                   Udfread
++                  UplinkDNS
+                   XSLT
+                   ${PLATFORM_OPTIONAL_DEPS})
+ 
+--- /dev/null
++++ b/cmake/modules/FindUplinkDNS.cmake
+@@ -0,0 +1,29 @@
++#.rst:
++# FindUplinkDNS
++# -------------
++# Finds the uplinkdns library, which resolves a socket's hostnames through
++# the uplink the socket is bound to
++#
++# This will define the following target:
++#
++# ${APP_NAME_LC}::UplinkDNS - The uplinkdns library
++
++if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
++  include(cmake/scripts/common/ModuleHelpers.cmake)
++
++  set(${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC uplinkdns)
++  set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC}_DISABLE_VERSION ON)
++
++  SETUP_BUILD_VARS()
++
++  SETUP_FIND_SPECS()
++
++  SEARCH_EXISTING_PACKAGES()
++
++  if(${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME}_FOUND)
++    add_library(${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} ALIAS PkgConfig::${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME})
++
++    set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_COMPILE_DEFINITIONS HAS_UPLINKDNS)
++    ADD_TARGET_COMPILE_DEFINITION()
++  endif()
++endif()
+--- a/xbmc/network/DNSNameCache.cpp
++++ b/xbmc/network/DNSNameCache.cpp
+@@ -32,8 +32,21 @@
+ #include <sys/socket.h>
+ #endif
+ 
++#if defined(HAS_UPLINKDNS)
++#include <uplinkdns.h>
++#endif
++
+ namespace
+ {
++int SystemLookup(const char* host, const addrinfo* hints, addrinfo** res)
++{
++#if defined(HAS_UPLINKDNS)
++  return uplinkdns_getaddrinfo(UPLINKDNS_CTX_SYSTEM, host, nullptr, hints, res);
++#else
++  return getaddrinfo(host, nullptr, hints, res);
++#endif
++}
++
+ bool IsUnusableIPv4Address(uint32_t address)
+ {
+   address = ntohl(address);
+@@ -128,7 +141,7 @@ bool CDNSNameCache::Lookup(const std::st
+   hints.ai_socktype = SOCK_STREAM;
+   hints.ai_flags |= AI_CANONNAME;
+ 
+-  if (getaddrinfo(strHostName.c_str(), nullptr, &hints, &res) == 0)
++  if (SystemLookup(strHostName.c_str(), &hints, &res) == 0)
+   {
+     strIpAddress = KODI::NETWORK::SelectDNSAddress(res);
+     freeaddrinfo(res);
+--- a/xbmc/network/UplinkAddress.cpp
++++ b/xbmc/network/UplinkAddress.cpp
+@@ -19,10 +19,15 @@
+ #include <arpa/inet.h>
+ #include <ifaddrs.h>
+ #include <net/if.h>
++#include <netdb.h>
+ #include <netinet/in.h>
+ #include <sys/socket.h>
+ #endif
+ 
++#if defined(HAS_UPLINKDNS)
++#include <uplinkdns.h>
++#endif
++
+ namespace KODI::NETWORK
+ {
+ 
+@@ -116,17 +121,61 @@ std::string PrefixAddress(const std::str
+ 
+   return FirstAddress(prefixFamily, {}, &network, static_cast<unsigned int>(bits));
+ }
++
++bool SyntheticName(const std::string& host, std::string& name)
++{
++#if defined(HAS_UPLINKDNS)
++  sockaddr_in6 sin6 = {};
++  sockaddr_in sin = {};
++  char text[NI_MAXHOST] = {};
++  int ret = -1;
++
++  if (inet_pton(AF_INET, host.c_str(), &sin.sin_addr) == 1)
++  {
++    sin.sin_family = AF_INET;
++    ret = uplinkdns_name_get(reinterpret_cast<sockaddr*>(&sin), sizeof(sin), text, sizeof(text));
++  }
++  else if (inet_pton(AF_INET6, host.c_str(), &sin6.sin6_addr) == 1)
++  {
++    sin6.sin6_family = AF_INET6;
++    ret = uplinkdns_name_get(reinterpret_cast<sockaddr*>(&sin6), sizeof(sin6), text, sizeof(text));
++  }
++
++  if (ret != 0)
++    return false;
++
++  name = text;
++  return true;
++#else
++  return false;
++#endif
++}
+ #endif
+ } // unnamed namespace
+ 
++std::string UplinkKey(const std::string& spec)
++{
++  return spec.substr(0, spec.find(';'));
++}
++
++void RegisterUplink(const std::string& spec)
++{
++#if defined(HAS_UPLINKDNS)
++  if (!spec.empty() && uplinkdns_uplink_add(spec.c_str()) < 0)
++    CLog::LogF(LOGERROR, "invalid uplink specification '{}'", spec);
++#endif
++}
++
+ UplinkBinding ResolveUplink(const std::string& spec, int family)
+ {
+   UplinkBinding binding;
+-  const std::string& key = spec;
++  const std::string key = UplinkKey(spec);
+ 
+   if (key.empty())
+     return binding;
+ 
++  RegisterUplink(spec);
++
+ #if !defined(TARGET_POSIX)
+   binding.address = key;
+ #else
+@@ -164,7 +213,7 @@ UplinkBinding RequireUplink(const std::s
+ 
+   // no device carries the key of an unavailable uplink, so binding to it fails the request
+   if (!binding.IsValid())
+-    binding.device = spec;
++    binding.device = UplinkKey(spec);
+ 
+   return binding;
+ }
+@@ -187,6 +236,10 @@ bool IsDirectDestination(const std::stri
+     return true;
+ 
+ #if defined(TARGET_POSIX)
++  std::string name;
++  if (SyntheticName(host, name))
++    return name.find('.') == std::string::npos;
++
+   in6_addr address6 = {};
+   if (inet_pton(AF_INET6, host.c_str(), &address6) == 1)
+     return IN6_IS_ADDR_LOOPBACK(&address6) || IN6_IS_ADDR_LINKLOCAL(&address6) ||
+--- a/xbmc/network/UplinkAddress.h
++++ b/xbmc/network/UplinkAddress.h
+@@ -21,6 +21,8 @@ struct UplinkBinding
+   bool IsValid() const { return !device.empty() || !address.empty(); }
+ };
+ 
++std::string UplinkKey(const std::string& spec);
++void RegisterUplink(const std::string& spec);
+ UplinkBinding ResolveUplink(const std::string& spec, int family);
+ UplinkBinding RequireUplink(const std::string& spec);
+ std::string ResolveUplinkAddress(const std::string& spec);
+--- a/xbmc/settings/AdvancedSettings.cpp
++++ b/xbmc/settings/AdvancedSettings.cpp
+@@ -14,6 +14,7 @@
+ #include "application/AppParams.h"
+ #include "filesystem/SpecialProtocol.h"
+ #include "network/DNSNameCache.h"
++#include "network/UplinkAddress.h"
+ #include "profiles/ProfileManager.h"
+ #include "resources/LocalizeStrings.h"
+ #include "resources/ResourcesComponent.h"
+@@ -976,8 +977,15 @@ void CAdvancedSettings::ParseSettingsFil
+         uplink.addonId = XMLUtils::GetAttribute(pUplink, "id");
+         uplink.localAddress = XMLUtils::GetAttribute(pUplink, "localaddress");
+ 
++        const std::string dns = XMLUtils::GetAttribute(pUplink, "dns");
++        if (!uplink.localAddress.empty() && !dns.empty())
++          uplink.localAddress += ";dns=" + dns;
++
+         if (!uplink.addonId.empty() && !uplink.localAddress.empty())
++        {
++          KODI::NETWORK::RegisterUplink(uplink.localAddress);
+           m_addonUplinks.emplace_back(uplink);
++        }
+         else
+           CLog::Log(LOGWARNING, "Ignoring malformed addon uplink, both id and localaddress are "
+                                 "required");

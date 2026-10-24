@@ -1,0 +1,273 @@
+From 2ada5ace0f9d37324c274e1160f611f26440aa65 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 24 Oct 2026 23:02:32 +0100
+Subject: [PATCH 6/8] network: pin an add-on's VFS requests to its uplink
+
+A Python add-on that fetches with xbmcvfs instead of its own sockets
+reached the network over the default route, whatever uplink
+advancedsettings.xml gives it, and CCurlFile took the uplink options
+of an FTP URL only for HTTP. Stamp the add-on's uplink on the network
+URLs passed to xbmcvfs.File, xbmcvfs.Stat and the module's path
+functions, through the same helper that pins a plugin's resolved URL,
+and read the uplink of FTP URLs as well.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/filesystem/CurlFile.cpp             |  1 +
+ xbmc/filesystem/PluginDirectory.cpp      | 12 ++-----
+ xbmc/interfaces/legacy/File.h            |  7 +++--
+ xbmc/interfaces/legacy/ModuleXbmcvfs.cpp | 40 ++++++++++++++++++------
+ xbmc/interfaces/legacy/Stat.h            |  5 ++-
+ xbmc/network/UplinkAddress.cpp           | 34 ++++++++++++++++++++
+ xbmc/network/UplinkAddress.h             |  3 ++
+ 7 files changed, 79 insertions(+), 23 deletions(-)
+
+--- a/xbmc/filesystem/CurlFile.cpp
++++ b/xbmc/filesystem/CurlFile.cpp
+@@ -903,6 +903,7 @@ void CCurlFile::ParseAndCorrectUrl(CURL
+         m_verifyPeer = false;
+     }
+     m_ftppasvip = url2.HasProtocolOption("pasvip") && url2.GetProtocolOption("pasvip") != "0";
++    m_uplinkAddress = KODI::NETWORK::UplinkOfURL(url2);
+   }
+   else if(url2.IsProtocol("http") ||
+     url2.IsProtocol("https"))
+--- a/xbmc/filesystem/PluginDirectory.cpp
++++ b/xbmc/filesystem/PluginDirectory.cpp
+@@ -62,18 +62,10 @@ void ApplyAddonUplink(const std::string&
+   if (spec.empty())
+     return;
+ 
+-  const std::string path = item.GetPath();
+-  if (!URIUtils::IsHTTP(path))
++  if (!KODI::NETWORK::IsUplinkURL(item.GetPath()))
+     return;
+ 
+-  const KODI::NETWORK::UplinkBinding uplink = KODI::NETWORK::RequireUplink(spec);
+-
+-  CURL url(path);
+-  if (uplink.address.empty())
+-    url.SetProtocolOption("local_dev", uplink.device);
+-  else
+-    url.SetProtocolOption("local_addr", uplink.address);
+-  item.SetPath(url.Get());
++  item.SetPath(KODI::NETWORK::UplinkPath(item.GetPath(), spec));
+ 
+   const std::string inputstream = item.GetProperty("inputstream").asString();
+   if (!inputstream.empty())
+--- a/xbmc/interfaces/legacy/File.h
++++ b/xbmc/interfaces/legacy/File.h
+@@ -13,6 +13,7 @@
+ #include "LanguageHook.h"
+ #include "commons/Buffer.h"
+ #include "filesystem/File.h"
++#include "network/UplinkAddress.h"
+ 
+ #include <algorithm>
+ 
+@@ -61,11 +62,13 @@ namespace XBMCAddon
+     public:
+       inline File(const String& filepath, const char* mode = NULL) : file(new XFILE::CFile())
+       {
++        const std::string path = KODI::NETWORK::AddonUplinkPath(
++            languageHook ? languageHook->GetAddonId() : "", filepath);
+         DelayedCallGuard dg(languageHook);
+         if (mode && strncmp(mode, "w", 1) == 0)
+-          file->OpenForWrite(filepath,true);
++          file->OpenForWrite(path, true);
+         else
+-          file->Open(filepath, XFILE::READ_NO_CACHE);
++          file->Open(path, XFILE::READ_NO_CACHE);
+       }
+ 
+       inline ~File() override { delete file; }
+--- a/xbmc/interfaces/legacy/ModuleXbmcvfs.cpp
++++ b/xbmc/interfaces/legacy/ModuleXbmcvfs.cpp
+@@ -16,9 +16,19 @@
+ #include "filesystem/Directory.h"
+ #include "filesystem/File.h"
+ #include "filesystem/SpecialProtocol.h"
++#include "network/UplinkAddress.h"
+ #include "utils/FileUtils.h"
+ #include "utils/URIUtils.h"
+ 
++namespace
++{
++std::string AddonPath(const std::string& path)
++{
++  XBMCAddon::LanguageHook* hook = XBMCAddon::LanguageHook::GetLanguageHook();
++  return KODI::NETWORK::AddonUplinkPath(hook ? hook->GetAddonId() : "", path);
++}
++} // unnamed namespace
++
+ namespace XBMCAddon
+ {
+ 
+@@ -26,31 +36,37 @@ namespace XBMCAddon
+   {
+     bool copy(const String& strSource, const String& strDestination)
+     {
++      const std::string source = AddonPath(strSource);
++      const std::string destination = AddonPath(strDestination);
+       DelayedCallGuard dg;
+-      return XFILE::CFile::Copy(strSource, strDestination);
++      return XFILE::CFile::Copy(source, destination);
+     }
+ 
+     // delete a file
+     bool deleteFile(const String& strSource)
+     {
++      const std::string source = AddonPath(strSource);
+       DelayedCallGuard dg;
+-      return XFILE::CFile::Delete(strSource);
++      return XFILE::CFile::Delete(source);
+     }
+ 
+     // rename a file
+     bool rename(const String& file, const String& newFile)
+     {
++      const std::string source = AddonPath(file);
++      const std::string destination = AddonPath(newFile);
+       DelayedCallGuard dg;
+-      return XFILE::CFile::Rename(file,newFile);
++      return XFILE::CFile::Rename(source, destination);
+     }
+ 
+     // check for a file or folder existence, mimics Pythons os.path.exists()
+     bool exists(const String& path)
+     {
++      const std::string target = AddonPath(path);
+       DelayedCallGuard dg;
+       if (URIUtils::HasSlashAtEnd(path, true))
+-        return XFILE::CDirectory::Exists(path, false);
+-      return XFILE::CFile::Exists(path, false);
++        return XFILE::CDirectory::Exists(target, false);
++      return XFILE::CFile::Exists(target, false);
+     }
+ 
+     // make legal file name
+@@ -77,33 +93,37 @@ namespace XBMCAddon
+     // make a directory
+     bool mkdir(const String& path)
+     {
++      const std::string target = AddonPath(path);
+       DelayedCallGuard dg;
+-      return XFILE::CDirectory::Create(path);
++      return XFILE::CDirectory::Create(target);
+     }
+ 
+     // make all directories along the path
+     bool mkdirs(const String& path)
+     {
++      const std::string target = AddonPath(path);
+       DelayedCallGuard dg;
+-      return CUtil::CreateDirectoryEx(path);
++      return CUtil::CreateDirectoryEx(target);
+     }
+ 
+     bool rmdir(const String& path, bool force)
+     {
++      const std::string target = AddonPath(path);
+       DelayedCallGuard dg;
+ 
+       if (force)
+-        return CFileUtils::DeleteItem(path);
++        return CFileUtils::DeleteItem(target);
+       else
+-        return XFILE::CDirectory::Remove(path);
++        return XFILE::CDirectory::Remove(target);
+     }
+ 
+     Tuple<std::vector<String>, std::vector<String> > listdir(const String& path)
+     {
++      const std::string target = AddonPath(path);
+       DelayedCallGuard dg;
+       CFileItemList items;
+       std::string strSource;
+-      strSource = path;
++      strSource = target;
+       XFILE::CDirectory::GetDirectory(strSource, items, "", XFILE::DIR_FLAG_NO_FILE_DIRS);
+ 
+       Tuple<std::vector<String>, std::vector<String> > ret;
+--- a/xbmc/interfaces/legacy/Stat.h
++++ b/xbmc/interfaces/legacy/Stat.h
+@@ -11,6 +11,7 @@
+ #include "AddonClass.h"
+ #include "LanguageHook.h"
+ #include "filesystem/File.h"
++#include "network/UplinkAddress.h"
+ 
+ namespace XBMCAddon
+ {
+@@ -48,8 +49,10 @@ namespace XBMCAddon
+     public:
+       Stat(const String& path)
+       {
++        const std::string target =
++            KODI::NETWORK::AddonUplinkPath(languageHook ? languageHook->GetAddonId() : "", path);
+         DelayedCallGuard dg;
+-        XFILE::CFile::Stat(path, &st);
++        XFILE::CFile::Stat(target, &st);
+       }
+ 
+ #ifdef DOXYGEN_SHOULD_USE_THIS
+--- a/xbmc/network/UplinkAddress.cpp
++++ b/xbmc/network/UplinkAddress.cpp
+@@ -8,7 +8,10 @@
+ 
+ #include "UplinkAddress.h"
+ 
++#include "ServiceBroker.h"
+ #include "URL.h"
++#include "settings/AdvancedSettings.h"
++#include "settings/SettingsComponent.h"
+ #include "utils/URIUtils.h"
+ #include "utils/log.h"
+ 
+@@ -262,4 +265,35 @@ std::string UplinkOfURL(const CURL& url)
+   return url.GetProtocolOption("local_addr");
+ }
+ 
++bool IsUplinkURL(const std::string& path)
++{
++  const CURL url(path);
++  return url.IsProtocol("http") || url.IsProtocol("https") || url.IsProtocol("dav") ||
++         url.IsProtocol("davs") || url.IsProtocol("ftp") || url.IsProtocol("ftps");
++}
++
++std::string UplinkPath(const std::string& path, const std::string& spec)
++{
++  if (spec.empty() || !IsUplinkURL(path))
++    return path;
++
++  const UplinkBinding uplink = RequireUplink(spec);
++  CURL url(path);
++  if (uplink.address.empty())
++    url.SetProtocolOption("local_dev", uplink.device);
++  else
++    url.SetProtocolOption("local_addr", uplink.address);
++
++  return url.Get();
++}
++
++std::string AddonUplinkPath(const std::string& addonId, const std::string& path)
++{
++  const auto settings = CServiceBroker::GetSettingsComponent();
++  if (addonId.empty() || !settings || !settings->GetAdvancedSettings())
++    return path;
++
++  return UplinkPath(path, settings->GetAdvancedSettings()->GetAddonUplink(addonId));
++}
++
+ } /* namespace KODI::NETWORK */
+--- a/xbmc/network/UplinkAddress.h
++++ b/xbmc/network/UplinkAddress.h
+@@ -30,5 +30,8 @@ UplinkBinding RequireUplink(const std::s
+ std::string ResolveUplinkAddress(const std::string& spec);
+ bool IsDirectDestination(const std::string& host);
+ std::string UplinkOfURL(const CURL& url);
++bool IsUplinkURL(const std::string& path);
++std::string UplinkPath(const std::string& path, const std::string& spec);
++std::string AddonUplinkPath(const std::string& addonId, const std::string& path);
+ 
+ } /* namespace KODI::NETWORK */
