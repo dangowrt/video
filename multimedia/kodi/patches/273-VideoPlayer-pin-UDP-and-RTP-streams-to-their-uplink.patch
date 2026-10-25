@@ -1,4 +1,4 @@
-From 455d7cf1d4aeb58365a2fc262cbf8f6de8995864 Mon Sep 17 00:00:00 2001
+From 346cb3d89d5f3583855fd6d1eaaae456809271bb Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Sat, 24 Oct 2026 23:09:50 +0100
 Subject: [PATCH 8/8] VideoPlayer: pin UDP and RTP streams to their uplink

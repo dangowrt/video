@@ -1,4 +1,4 @@
-From eec3beabd28a011a6fcc9309695682bfafa136b1 Mon Sep 17 00:00:00 2001
+From 1ed1c602b651de8f9a04179e156f7891fa6a5f35 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Sat, 24 Oct 2026 23:03:06 +0100
 Subject: [PATCH 7/8] PythonInvoker: pin datagrams sent without connect() to

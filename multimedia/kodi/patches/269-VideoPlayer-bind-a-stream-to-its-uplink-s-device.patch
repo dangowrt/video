@@ -1,4 +1,4 @@
-From 7382ee5fddcfa8a7cbe32a442ad79cf57080519a Mon Sep 17 00:00:00 2001
+From 27286d2beded543525a1e229cbf1681072246c96 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Sat, 24 Oct 2026 20:34:37 +0100
 Subject: [PATCH 4/8] VideoPlayer: bind a stream to its uplink's device
