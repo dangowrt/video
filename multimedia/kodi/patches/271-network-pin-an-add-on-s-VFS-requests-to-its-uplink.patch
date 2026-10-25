@@ -1,4 +1,4 @@
-From 2ada5ace0f9d37324c274e1160f611f26440aa65 Mon Sep 17 00:00:00 2001
+From 3616599f035de70f0898af006437986498ebd59d Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Sat, 24 Oct 2026 23:02:32 +0100
 Subject: [PATCH 6/8] network: pin an add-on's VFS requests to its uplink

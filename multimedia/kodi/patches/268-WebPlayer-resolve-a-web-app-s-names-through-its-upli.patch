@@ -1,19 +1,18 @@
-From 0f65f86cbbfed3acb8da41b72af645e5b7e151a3 Mon Sep 17 00:00:00 2001
+From cbf539d728d94d0f5dc2b7bc937364bc40f91d60 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
-Date: Sat, 24 Oct 2026 20:34:36 +0100
+Date: Sun, 25 Oct 2026 01:11:30 +0000
 Subject: [PATCH 3/8] WebPlayer: resolve a web app's names through its uplink
 
 The web client's network process binds each web app's connections to
 the app's uplink but resolves every name through the system resolver.
 Start the client with uplinkdns preloaded and the web apps' uplink
 specifications in UPLINKDNS_UPLINKS, so each lookup runs through the
-uplink of the session that makes it, and hand the client only the
-uplink's key, which is all its binding needs.
+uplink of the session that makes it, from the first request on.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
- xbmc/cores/WebPlayer/WebClientManager.cpp | 39 +++++++++++++++++++++--
- 1 file changed, 36 insertions(+), 3 deletions(-)
+ xbmc/cores/WebPlayer/WebClientManager.cpp | 33 +++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
 
 --- a/xbmc/cores/WebPlayer/WebClientManager.cpp
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
@@ -78,30 +77,3 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_host->SpawnClient({command}, std::move(env));
  }
  
-@@ -282,7 +315,7 @@ bool CWebClientManager::RequestView(cons
-   switch (m_state)
-   {
-     case State::READY:
--      m_host->WebWantView(profile, uplink);
-+      m_host->WebWantView(profile, KODI::NETWORK::UplinkKey(uplink));
-       break;
-     case State::STARTING:
-       m_wantPending = true;
-@@ -416,7 +449,7 @@ void CWebClientManager::OnWebClientReady
-   const std::string uplink = m_uplinks[profile];
-   lock.unlock();
-   if (want)
--    m_host->WebWantView(profile, uplink);
-+    m_host->WebWantView(profile, KODI::NETWORK::UplinkKey(uplink));
- }
- 
- std::string CWebClientManager::UplinkOf(const std::string& profile) const
-@@ -626,7 +659,7 @@ void CWebClientManager::OnWebViewDestroy
-   const std::string uplink = m_uplinks[profile];
-   lock.unlock();
-   if (replaced && observer)
--    m_host->WebWantView(profile, uplink);
-+    m_host->WebWantView(profile, KODI::NETWORK::UplinkKey(uplink));
-   else if (observer)
-     observer->OnWebViewGone(profile);
- }

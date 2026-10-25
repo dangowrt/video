@@ -1,4 +1,4 @@
-From 91549c6bd63bfc1cd01bd7b0619c74fe4dddb061 Mon Sep 17 00:00:00 2001
+From 48babd83b4883b76d7683ca80461f96effb4d20c Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Sat, 24 Oct 2026 23:00:49 +0100
 Subject: [PATCH 5/8] network: resolve a pinned URL's LAN check through its

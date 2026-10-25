@@ -1,4 +1,4 @@
-From d8139d952458f5683c2cd4b0b6677023e181ca10 Mon Sep 17 00:00:00 2001
+From 455a0eccde7dd910d7ac3a9f22914e191e2ffe32 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Sat, 24 Oct 2026 20:34:24 +0100
 Subject: [PATCH 2/8] network: resolve an uplink's names through the uplink
