@@ -1,0 +1,133 @@
+From 92d55d237d143aaee36b3ae1a4500e07bb3fd9ac Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 28 Oct 2026 16:01:03 +0000
+Subject: [PATCH] addons: let a setting choose a web app's start URL
+
+A service may offer the same app in several editions, such as one per
+language, that differ only in the start URL. A web app can now list
+<starturl id="..."> variants next to its start URL; its "starturl"
+setting names the one RunAddon opens, and the start URL stays the
+default. The user agent choice by the "identity" setting uses the same
+lookup. kodi.webapp is 1.1.0, compatible with 1.0.0.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ addons/kodi.webapp/addon.xml               |  2 +-
+ xbmc/cores/WebPlayer/CMakeLists.txt        |  1 +
+ xbmc/cores/WebPlayer/WebApp.h              | 35 ++++++++++++++++++++++
+ xbmc/cores/WebPlayer/WebClientManager.cpp  | 11 +++----
+ xbmc/interfaces/builtins/AddonBuiltins.cpp | 11 +++++--
+ 5 files changed, 49 insertions(+), 11 deletions(-)
+ create mode 100644 xbmc/cores/WebPlayer/WebApp.h
+
+--- a/addons/kodi.webapp/addon.xml
++++ b/addons/kodi.webapp/addon.xml
+@@ -1,5 +1,5 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+-<addon id="kodi.webapp" version="1.0.0" provider-name="Team Kodi">
++<addon id="kodi.webapp" version="1.1.0" provider-name="Team Kodi">
+   <backwards-compatibility abi="1.0.0"/>
+   <requires>
+     <import addon="xbmc.core" version="0.1.0"/>
+--- a/xbmc/cores/WebPlayer/CMakeLists.txt
++++ b/xbmc/cores/WebPlayer/CMakeLists.txt
+@@ -10,6 +10,7 @@ if(TARGET ${APP_NAME_LC}::WaylandServer)
+   set(HEADERS GUIDialogWebKeyboard.h
+               GUIDialogWebOSD.h
+               GUIWindowFullScreenWeb.h
++              WebApp.h
+               WebAudioServer.h
+               WebClientManager.h
+               WebPlayer.h
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/WebApp.h
+@@ -0,0 +1,35 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "addons/addoninfo/AddonType.h"
++#include "utils/Variant.h"
++
++#include <string>
++
++namespace KODI
++{
++namespace WEB
++{
++
++//! \brief The text of the first \p element of a web app's manifest whose id is \p id
++inline std::string WebAppElement(const ADDON::CAddonType& type,
++                                 const std::string& element,
++                                 const std::string& id)
++{
++  for (const auto& [name, values] : type.GetValues())
++  {
++    if (name == element && values.GetValue(element + "@id").asString() == id)
++      return values.GetValue(element).asString();
++  }
++  return {};
++}
++
++} // namespace WEB
++} // namespace KODI
+--- a/xbmc/cores/WebPlayer/WebClientManager.cpp
++++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
+@@ -12,6 +12,7 @@
+ #include "FileItemList.h"
+ #include "GUIDialogWebKeyboard.h"
+ #include "ServiceBroker.h"
++#include "WebApp.h"
+ #include "addons/Addon.h"
+ #include "addons/AddonManager.h"
+ #include "addons/addoninfo/AddonType.h"
+@@ -475,13 +476,9 @@ bool CWebClientManager::ConfigureViewFro
+     return false;
+ 
+   const std::string identity = webapp->GetSetting("identity");
+-  std::string userAgent = identity == "custom" ? webapp->GetSetting("useragent") : "";
+-  for (const auto& [element, values] : type->GetValues())
+-  {
+-    if (element == "useragent" && userAgent.empty() &&
+-        values.GetValue("useragent@id").asString() == identity)
+-      userAgent = values.GetValue("useragent").asString();
+-  }
++  const std::string userAgent = identity == "custom"
++                                    ? webapp->GetSetting("useragent")
++                                    : KODI::WEB::WebAppElement(*type, "useragent", identity);
+   if (!userAgent.empty())
+     m_host->WebViewSetUserAgent(profile, userAgent);
+ 
+--- a/xbmc/interfaces/builtins/AddonBuiltins.cpp
++++ b/xbmc/interfaces/builtins/AddonBuiltins.cpp
+@@ -24,6 +24,7 @@
+ #include "application/Application.h"
+ #include "application/ApplicationComponents.h"
+ #include "application/ApplicationPlayer.h"
++#include "cores/WebPlayer/WebApp.h"
+ #include "cores/WebPlayer/WebPlayerDefs.h"
+ #include "filesystem/PluginDirectory.h"
+ #include "games/tags/GameInfoTag.h"
+@@ -198,9 +199,13 @@ static int RunAddon(const std::vector<st
+         return 0;
+       }
+ 
+-      const std::string url =
+-          params.size() >= 2 ? params[1]
+-                             : webapp->Type(AddonType::WEBAPP)->GetValue("@starturl").asString();
++      const CAddonType* type = webapp->Type(AddonType::WEBAPP);
++      std::string url =
++          params.size() >= 2
++              ? params[1]
++              : KODI::WEB::WebAppElement(*type, "starturl", webapp->GetSetting("starturl"));
++      if (url.empty())
++        url = type->GetValue("@starturl").asString();
+       CFileItem item(url, false);
+       item.SetProperty(KODI::WEB::PROPERTY_PROFILE, addonid);
+       if (!g_application.PlayMedia(item, KODI::WEB::PLAYER_NAME, PLAYLIST::Id::TYPE_NONE))
