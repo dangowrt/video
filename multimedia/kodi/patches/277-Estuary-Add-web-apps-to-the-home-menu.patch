@@ -1,0 +1,113 @@
+From bf90ffe39ccff72972485a04300602c671295f2b Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 28 Oct 2026 13:53:28 +0000
+Subject: [PATCH 277/277] [Estuary] Add web apps to the home menu
+
+Web apps are reachable only through the add-on browser or favourites.
+A "Web apps" main menu entry between Radio and Games opens the
+installed web apps; its home panel shows them most recently used
+first, or, while none is installed, a button into the add-on browser
+listing every repository's web apps, like the Games entry does. The
+skin settings can hide the entry, and the Programs window's "Get more"
+leads to web apps when it lists them.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../resource.language.en_gb/strings.po        |  5 +++
+ addons/skin.estuary/xml/Home.xml              | 38 +++++++++++++++++++
+ addons/skin.estuary/xml/MyPrograms.xml        |  3 +-
+ addons/skin.estuary/xml/SkinSettings.xml      |  6 +++
+ 4 files changed, 51 insertions(+), 1 deletion(-)
+
+--- a/addons/skin.estuary/language/resource.language.en_gb/strings.po
++++ b/addons/skin.estuary/language/resource.language.en_gb/strings.po
+@@ -1004,3 +1004,8 @@ msgstr ""
+ msgctxt "#31615"
+ msgid "Subtitle language"
+ msgstr ""
++
++#: /xml/Home.xml
++msgctxt "#31616"
++msgid "Open streaming services and other web pages inside Kodi. Install web apps from your add-on repositories."
++msgstr ""
+--- a/addons/skin.estuary/xml/Home.xml
++++ b/addons/skin.estuary/xml/Home.xml
+@@ -840,6 +840,36 @@
+ 						</include>
+ 					</control>
+ 				</control>
++				<control type="group" id="22000">
++					<visible>String.IsEqual(Container(9000).ListItem.Property(id),webapps)</visible>
++					<include content="Visible_Right_Delayed">
++						<param name="id" value="webapps"/>
++					</include>
++					<control type="grouplist" id="22001">
++						<include>WidgetGroupListCommon</include>
++						<pagecontrol>22010</pagecontrol>
++						<include content="WidgetListSquare">
++							<param name="content_path" value="addons://sources/webapp/"/>
++							<param name="widget_header" value="$LOCALIZE[40241]"/>
++							<param name="widget_target" value="programs"/>
++							<param name="sortby" value="lastused"/>
++							<param name="sortorder" value="descending"/>
++							<param name="list_id" value="22200"/>
++							<param name="fallback_icon" value="DefaultAddonWebSkin.png"/>
++						</include>
++					</control>
++					<include content="ImageWidget">
++						<param name="text_label" value="$LOCALIZE[31616]" />
++						<param name="button_label" value="$LOCALIZE[31144]" />
++						<param name="button_onclick" value="ActivateWindow(addonbrowser,addons://more/webapp/,return)"/>
++						<param name="button_id" value="22100"/>
++						<param name="visible" value="!Integer.IsGreater(Container(22001).NumItems,0)"/>
++						<param name="button2_onclick" value="Skin.SetBool(HomeMenuNoWebAppsButton)"/>
++					</include>
++					<include content="WidgetScrollbar" condition="Skin.HasSetting(touchmode)">
++						<param name="scrollbar_id" value="22010"/>
++					</include>
++				</control>
+ 				<control type="group" id="17000">
+ 					<visible>String.IsEqual(Container(9000).ListItem.Property(id),games)</visible>
+ 					<include content="Visible_Right_Delayed">
+@@ -1040,6 +1070,14 @@
+ 							<visible>!Skin.HasSetting(HomeMenuNoRadioButton)</visible>
+ 						</item>
+ 						<item>
++							<label>$LOCALIZE[40241]</label>
++							<property name="menu_id">$NUMBER[22000]</property>
++							<onclick>ActivateWindow(Programs,addons://sources/webapp/,return)</onclick>
++							<thumb>DefaultAddonWebSkin.png</thumb>
++							<property name="id">webapps</property>
++							<visible>!Skin.HasSetting(HomeMenuNoWebAppsButton)</visible>
++						</item>
++						<item>
+ 							<label>$LOCALIZE[15016]</label>
+ 							<property name="menu_id">$NUMBER[17000]</property>
+ 							<onclick>ActivateWindow(Games)</onclick>
+--- a/addons/skin.estuary/xml/MyPrograms.xml
++++ b/addons/skin.estuary/xml/MyPrograms.xml
+@@ -47,7 +47,8 @@
+ 						<description>Get more</description>
+ 						<include>MediaMenuItemsCommon</include>
+ 						<label>$LOCALIZE[21452]</label>
+-						<onclick>ActivateWindow(addonbrowser,addons://more/executable/,return)</onclick>
++						<onclick condition="!String.StartsWith(Container.FolderPath,addons://sources/webapp)">ActivateWindow(addonbrowser,addons://more/executable/,return)</onclick>
++						<onclick condition="String.StartsWith(Container.FolderPath,addons://sources/webapp)">ActivateWindow(addonbrowser,addons://more/webapp/,return)</onclick>
+ 						<visible>Container.Content(addons)</visible>
+ 					</control>
+ 				</control>
+--- a/addons/skin.estuary/xml/SkinSettings.xml
++++ b/addons/skin.estuary/xml/SkinSettings.xml
+@@ -266,6 +266,12 @@
+ 					<onclick>ActivateWindow(1101)</onclick>
+ 					<enable>!Skin.HasSetting(HomeMenuNoRadioButton)</enable>
+ 				</control>
++				<control type="radiobutton" id="6191">
++					<label>$LOCALIZE[40241]</label>
++					<include>DefaultSettingButton</include>
++					<selected>!Skin.HasSetting(HomeMenuNoWebAppsButton)</selected>
++					<onclick>Skin.ToggleSetting(HomeMenuNoWebAppsButton)</onclick>
++				</control>
+ 				<control type="radiobutton" id="614">
+ 					<label>$LOCALIZE[24001]</label>
+ 					<include>DefaultSettingButton</include>

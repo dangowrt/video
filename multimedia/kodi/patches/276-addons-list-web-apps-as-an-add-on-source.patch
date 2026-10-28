@@ -1,0 +1,112 @@
+From 4d6dc401d05962fbc662e42836691597d1e49f00 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 28 Oct 2026 13:51:20 +0000
+Subject: [PATCH 276/277] addons: list web apps as an add-on source
+
+Skins build their add-on menus and home widgets from
+addons://sources/<content>/, which knows plugins, scripts and games, so
+an installed web app shows up nowhere but the add-on browser.
+addons://sources/webapp/ lists the enabled web apps as webapp://<id>
+items, which open through RunAddon from a list, a widget or a
+favourite, and addons://more/webapp browses the web apps of every
+repository. RunAddon marks a web app as used, so lists sorted by last
+use put the app opened last first.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/filesystem/AddonsDirectory.cpp        | 16 ++++++++++++++--
+ xbmc/interfaces/builtins/AddonBuiltins.cpp |  1 +
+ xbmc/utils/ExecString.cpp                  |  2 ++
+ xbmc/windows/GUIMediaWindow.cpp            |  9 +++++++++
+ 4 files changed, 26 insertions(+), 2 deletions(-)
+
+--- a/xbmc/filesystem/AddonsDirectory.cpp
++++ b/xbmc/filesystem/AddonsDirectory.cpp
+@@ -787,6 +787,8 @@ bool CAddonsDirectory::GetDirectory(cons
+       return Browse(CURL("addons://all/xbmc.addon." + type), items);
+     else if (type == "game")
+       return Browse(CURL("addons://all/category.gameaddons"), items);
++    else if (type == "webapp")
++      return Browse(CURL("addons://all/kodi.webapp"), items);
+     return false;
+   }
+   else
+@@ -914,6 +916,12 @@ CFileItemPtr CAddonsDirectory::FileItemF
+ 
+ bool CAddonsDirectory::GetScriptsAndPlugins(const std::string &content, VECADDONS &addons)
+ {
++  if (content == "webapp")
++  {
++    CServiceBroker::GetAddonMgr().GetAddons(addons, AddonType::WEBAPP);
++    return true;
++  }
++
+   CPluginSource::Content type = CPluginSource::Translate(content);
+   if (type == CPluginSource::Content::UNKNOWN)
+     return false;
+@@ -981,13 +989,17 @@ bool CAddonsDirectory::GetScriptsAndPlug
+       // Kodi fails to launch games with empty path from home screen
+       path = "game://" + addon->ID();
+     }
++    else if (addon->HasType(AddonType::WEBAPP))
++    {
++      path = "webapp://" + addon->ID();
++    }
+ 
+     items.Add(FileItemFromAddon(addon, path, bIsFolder));
+   }
+ 
+   items.SetContent("addons");
+-  items.SetLabel(
+-      CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(24001)); // Add-ons
++  items.SetLabel(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(
++      content == "webapp" ? 40241 : 24001));
+ 
+   return true;
+ }
+--- a/xbmc/interfaces/builtins/AddonBuiltins.cpp
++++ b/xbmc/interfaces/builtins/AddonBuiltins.cpp
+@@ -187,6 +187,7 @@ static int RunAddon(const std::vector<st
+                                                     OnlyEnabled::CHOICE_YES))
+     {
+       const auto webapp = std::dynamic_pointer_cast<CAddon>(addon);
++      CServiceBroker::GetAddonMgr().UpdateLastUsed(addonid);
+       const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+       // a web app already shown comes back as it was, playing or not
+       if (params.size() < 2 && appPlayer->IsWebPlaying() &&
+--- a/xbmc/utils/ExecString.cpp
++++ b/xbmc/utils/ExecString.cpp
+@@ -124,6 +124,8 @@ bool CExecString::Parse(const CFileItem&
+     else
+       Build("RunAddon", {StringUtils::Paramify(url.GetFileName())});
+   }
++  else if (item.GetURL().IsProtocol("webapp"))
++    Build("RunAddon", {StringUtils::Paramify(item.GetURL().GetHostName())});
+   else if (item.IsAndroidApp() && item.GetPath().size() > 26) // androidapp://sources/apps/<foo>
+     Build("StartAndroidActivity", {StringUtils::Paramify(item.GetPath().substr(26))});
+   else // assume a media file
+--- a/xbmc/windows/GUIMediaWindow.cpp
++++ b/xbmc/windows/GUIMediaWindow.cpp
+@@ -59,6 +59,7 @@
+ #include "settings/Settings.h"
+ #include "settings/SettingsComponent.h"
+ #include "storage/MediaManager.h"
++#include "utils/ExecString.h"
+ #include "utils/FileUtils.h"
+ #include "utils/LabelFormatter.h"
+ #include "utils/SortUtils.h"
+@@ -1078,6 +1079,14 @@ bool CGUIMediaWindow::OnClick(int iItem,
+     }
+   }
+ 
++  if (pItem->GetURL().IsProtocol("webapp"))
++  {
++    const CExecString exec(*pItem, "");
++    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_EXECUTE_BUILT_IN, -1, -1, nullptr,
++                                               exec.GetExecString());
++    return true;
++  }
++
+   if (pItem->IsFolder())
+   {
+     if (pItem->IsShareOrDrive())

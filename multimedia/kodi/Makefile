@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kodi
 PKG_VERSION:=22.0_rc1
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 
 # Tag 22.0rc1-Piers (version.txt: 22.0 RC1); pinned by commit so the
 # tarball name stays stable should the tag ever move.
