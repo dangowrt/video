@@ -1,4 +1,4 @@
-From fca359317996e0ecc6ca065f22aa8e2e59a2fa25 Mon Sep 17 00:00:00 2001
+From 293e500819f0a861a5d4bed854f3a9884f928fd4 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Fri, 9 Oct 2026 11:30:21 +0100
 Subject: [PATCH] WebPlayer: show the page in its own window and route input to
@@ -16,12 +16,13 @@ open the OSD, Home opens Kodi's home screen and leaves the page running.
 While that window is active the player forwards every other key to the
 client with its scan code, except a key bound globally to a Kodi
 command or to the volume that types no character, and releases keys
-still held when Kodi takes the input back. Pointer positions go to the
-client once per change, as an air mouse lying still keeps reporting the
-same one, buttons are forwarded and the wheel becomes axis events; Kodi
-keeps drawing its pointer, so motion is passed on to the GUI as well.
-The view is active only while the web window is the active window, so
-the client knows when nobody sees the page.
+still held when Kodi takes the input back. The colour keys always go to
+the page, as TV pages drive their menus with them. Pointer positions go
+to the client once per change, as an air mouse lying still keeps
+reporting the same one, buttons are forwarded and the wheel becomes
+axis events; Kodi keeps drawing its pointer, so motion is passed on to
+the GUI as well. The view is active only while the web window is the
+active window, so the client knows when nobody sees the page.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
@@ -34,14 +35,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/cores/WebPlayer/CMakeLists.txt           |   6 +-
  .../WebPlayer/GUIWindowFullScreenWeb.cpp      | 184 ++++++++++++++++++
  xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.h |  51 +++++
- xbmc/cores/WebPlayer/WebPlayer.cpp            | 165 ++++++++++++++++
+ xbmc/cores/WebPlayer/WebPlayer.cpp            | 177 +++++++++++++++++
  xbmc/cores/WebPlayer/WebPlayer.h              |  25 ++-
  xbmc/guilib/GUIWindow.cpp                     |   2 +-
  xbmc/guilib/GUIWindowManager.cpp              |  11 ++
  xbmc/guilib/WindowIDs.h                       |   1 +
  xbmc/input/InputManager.cpp                   |   3 +-
  xbmc/input/WindowTranslator.cpp               |   1 +
- 16 files changed, 487 insertions(+), 14 deletions(-)
+ 16 files changed, 499 insertions(+), 14 deletions(-)
  create mode 100644 xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.cpp
  create mode 100644 xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.h
 
@@ -469,13 +470,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  using namespace KODI::WEB;
  using namespace KODI::WAYLANDHOST;
  
-@@ -32,6 +42,30 @@ namespace
+@@ -32,6 +42,42 @@ namespace
  
  constexpr int RENDER_BUFFERS = 3;
  
 +// The web window's keymap section claims keys for Kodi outright. Of the
 +// others, a key bound globally to a Kodi command or to the volume stays
-+// with Kodi as well, unless it types a character into the page.
++// with Kodi as well, unless it types a character into the page or is one of
++// the colour keys, which TV pages use for their own menus.
 +bool IsKodiKey(const XBMC_keysym& keysym, const CKey& key)
 +{
 +  CInputManager& input = CServiceBroker::GetInputManager();
@@ -484,6 +486,17 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +  if (keysym.unicode >= 0x20 && keysym.unicode != 0x7f)
 +    return false;
++
++  switch (keysym.sym)
++  {
++    case XBMCK_RED:
++    case XBMCK_GREEN:
++    case XBMCK_YELLOW:
++    case XBMCK_BLUE:
++      return false;
++    default:
++      break;
++  }
 +
 +  switch (input.GetAction(WINDOW_FULLSCREEN_WEB, key, true).GetID())
 +  {
@@ -500,7 +513,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  } // unnamed namespace
  
  CWebPlayer::CWebPlayer(IPlayerCallback& callback)
-@@ -60,6 +94,7 @@ bool CWebPlayer::OpenFile(const CFileIte
+@@ -60,6 +106,7 @@ bool CWebPlayer::OpenFile(const CFileIte
    m_options = options;
    m_stop = false;
    m_configured = false;
@@ -508,7 +521,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_surface = nullptr;
    m_url = file.GetDynPath();
    m_profile = file.GetProperty(PROPERTY_PROFILE).asString(DEFAULT_PROFILE);
-@@ -84,6 +119,8 @@ bool CWebPlayer::OpenFile(const CFileIte
+@@ -84,6 +131,8 @@ bool CWebPlayer::OpenFile(const CFileIte
    }
  
    CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
@@ -517,7 +530,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_playing = true;
    m_callback.OnPlayBackStarted(*m_item);
    return true;
-@@ -105,6 +142,10 @@ bool CWebPlayer::CloseFile(bool reopen)
+@@ -105,6 +154,10 @@ bool CWebPlayer::CloseFile(bool reopen)
    m_surface = nullptr;
    m_manager.reset();
  
@@ -528,7 +541,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
    m_renderManager.UnInit();
    m_pool.reset();
-@@ -189,6 +230,130 @@ void CWebPlayer::SetVideoSettings(CVideo
+@@ -189,6 +242,130 @@ void CWebPlayer::SetVideoSettings(CVideo
  void CWebPlayer::FrameMove()
  {
    m_renderManager.FrameMove();
