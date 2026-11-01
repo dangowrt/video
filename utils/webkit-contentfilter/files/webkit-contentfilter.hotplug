@@ -9,4 +9,4 @@ esac
 [ -e /var/run/webkit-contentfilter.clock ] && exit 0
 
 touch /var/run/webkit-contentfilter.clock
-/etc/init.d/webkit-contentfilter enabled && /etc/init.d/webkit-contentfilter start
+/etc/init.d/webkit-contentfilter enabled && /etc/init.d/webkit-contentfilter restart
