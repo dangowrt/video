@@ -1,0 +1,180 @@
+From e2a01dc3d586301a8ed39021c7ad708e3c9afec1 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 3 Nov 2026 20:04:28 +0000
+Subject: [PATCH] WebPlayer: fetch filter lists without waiting for the clock
+
+Commit 81d18c82d2 ("WebPlayer: keep the shared content filter lists up
+to date") fetches the lists only once the kernel reports the clock
+synchronised. A system whose NTP client only slews the clock may never
+report that, and the lists are then never fetched. Fetch them as soon
+as Kodi starts and then once a day. A fetch that fails, for instance
+because TLS rejects certificates against a clock that is still wrong,
+is retried when the clock is set, at the next daily refresh, or when a
+web app asks for a list Kodi lacks.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/cores/WebPlayer/WebFilterLists.cpp | 58 +++++++++++++++----------
+ xbmc/cores/WebPlayer/WebFilterLists.h   | 11 ++---
+ 2 files changed, 40 insertions(+), 29 deletions(-)
+
+--- a/xbmc/cores/WebPlayer/WebFilterLists.cpp
++++ b/xbmc/cores/WebPlayer/WebFilterLists.cpp
+@@ -24,6 +24,7 @@
+ 
+ #include "platform/linux/waylandhost/WaylandHost.h"
+ 
++#include <chrono>
+ #include <limits>
+ #include <mutex>
+ #include <vector>
+@@ -31,7 +32,6 @@
+ #include <poll.h>
+ #include <sys/eventfd.h>
+ #include <sys/timerfd.h>
+-#include <sys/timex.h>
+ #include <unistd.h>
+ 
+ using namespace KODI::WEB;
+@@ -139,12 +139,6 @@ void CWebFilterLists::Wake()
+     eventfd_write(m_wakeFd, 1);
+ }
+ 
+-bool CWebFilterLists::IsClockSynchronised()
+-{
+-  struct timex tx = {};
+-  return adjtimex(&tx) != TIME_ERROR;
+-}
+-
+ void CWebFilterLists::ArmClockChange()
+ {
+   struct itimerspec never = {};
+@@ -152,42 +146,58 @@ void CWebFilterLists::ArmClockChange()
+   timerfd_settime(m_clockFd, TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET, &never, nullptr);
+ }
+ 
+-void CWebFilterLists::Process()
++bool CWebFilterLists::Wait(bool retry)
+ {
++  const auto due = std::chrono::steady_clock::now() + std::chrono::milliseconds(REFRESH_MS);
+   struct pollfd fds[2] = {{m_wakeFd, POLLIN, 0}, {m_clockFd, POLLIN, 0}};
+   uint64_t count;
+ 
+   while (!m_bStop)
+   {
+-    const bool synchronised = IsClockSynchronised();
+-    if (synchronised)
+-      FetchAll();
+-    else
+-      CLog::Log(LOGINFO, "CWebFilterLists::{}: waiting for the clock to be synchronised",
+-                __FUNCTION__);
++    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
++        due - std::chrono::steady_clock::now());
++    if (left.count() <= 0)
++      return true;
+ 
+     ArmClockChange();
+-    if (poll(fds, 2, synchronised ? REFRESH_MS : -1) < 0 && errno != EINTR)
+-      break;
++    const int ready = poll(fds, 2, static_cast<int>(left.count()));
++    if (ready < 0 && errno != EINTR)
++      return false;
+ 
+-    eventfd_t wakes;
++    eventfd_t wakes = 0;
+     eventfd_read(m_wakeFd, &wakes);
+-    if (read(m_clockFd, &count, sizeof(count)) < 0 && errno == ECANCELED)
+-      CLog::Log(LOGINFO, "CWebFilterLists::{}: the clock was set", __FUNCTION__);
++    if (wakes)
++      return true;
++    if (read(m_clockFd, &count, sizeof(count)) < 0 && errno == ECANCELED && retry)
++    {
++      CLog::Log(LOGINFO, "CWebFilterLists::{}: the clock was set, retrying", __FUNCTION__);
++      return true;
++    }
+   }
++  return false;
++}
++
++void CWebFilterLists::Process()
++{
++  while (!m_bStop && Wait(!FetchAll()))
++    ;
+ }
+ 
+-void CWebFilterLists::FetchAll()
++bool CWebFilterLists::FetchAll()
+ {
++  bool fetched = true;
++
+   for (const auto& [name, url] : m_lists)
+   {
+     if (m_bStop)
+-      return;
+-    if (!Fetch(name, url))
++      break;
++    fetched &= Fetch(name, url);
++    if (!XFILE::CFile::Exists(m_dir + name + ".txt", false))
+       continue;
+     std::unique_lock lock(m_lock);
+     m_missing.erase(name);
+   }
++  return fetched;
+ }
+ 
+ bool CWebFilterLists::Fetch(const std::string& name, const std::string& url)
+@@ -213,7 +223,7 @@ bool CWebFilterLists::Fetch(const std::s
+   {
+     CLog::Log(LOGWARNING, "CWebFilterLists::{}: {} cannot be fetched from {}", __FUNCTION__, name,
+               url);
+-    return XFILE::CFile::Exists(path, false);
++    return false;
+   }
+ 
+   const int status = HttpStatus(http.GetHttpHeader());
+@@ -237,7 +247,7 @@ bool CWebFilterLists::Fetch(const std::s
+     CLog::Log(LOGWARNING,
+               "CWebFilterLists::{}: {}: HTTP status {}, {} bytes, keeping what is stored",
+               __FUNCTION__, name, status, list.size());
+-    return XFILE::CFile::Exists(path, false);
++    return false;
+   }
+ 
+   if (!WriteFile(path, list) || !WriteFile(metaPath, url + "\n" + etag + "\n" + modified + "\n"))
+--- a/xbmc/cores/WebPlayer/WebFilterLists.h
++++ b/xbmc/cores/WebPlayer/WebFilterLists.h
+@@ -28,7 +28,8 @@ namespace WEB
+ /*!
+  * \brief Keeps the shared content filter lists named in advancedsettings.xml
+  * in the profile and hands them to the web client. The lists are fetched
+- * once the system clock is synchronised, and again once a day.
++ * at start and once a day; a failed fetch is retried early when the system
++ * clock is set.
+  */
+ class CWebFilterLists : private CThread
+ {
+@@ -39,8 +40,8 @@ public:
+   void Start();
+ 
+   /*!
+-   * \brief A web app asks for a list; one Kodi never had is fetched as soon
+-   * as the clock allows; any thread
++   * \brief A web app asks for a list; one Kodi never had is fetched again
++   * at once; any thread
+    */
+   void Want(const std::string& name);
+ 
+@@ -49,11 +50,11 @@ protected:
+ 
+ private:
+   void Publish();
+-  void FetchAll();
++  bool FetchAll();
+   bool Fetch(const std::string& name, const std::string& url);
+   void ArmClockChange();
++  bool Wait(bool retry);
+   void Wake();
+-  static bool IsClockSynchronised();
+ 
+   WAYLANDHOST::CWaylandHost& m_host;
+   std::map<std::string, std::string> m_lists;
