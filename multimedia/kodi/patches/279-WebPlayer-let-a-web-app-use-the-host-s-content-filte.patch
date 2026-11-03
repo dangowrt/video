@@ -19,11 +19,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  .../waylandhost/protocol/kodi-web-v1.xml      | 22 ++++++++++++++-----
  4 files changed, 52 insertions(+), 10 deletions(-)
 
-diff --git a/xbmc/cores/WebPlayer/WebClientManager.cpp b/xbmc/cores/WebPlayer/WebClientManager.cpp
-index 67b5443356..a2538dc4d5 100644
 --- a/xbmc/cores/WebPlayer/WebClientManager.cpp
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -490,10 +490,16 @@ bool CWebClientManager::ConfigureViewFromAddon(const std::string& profile)
+@@ -490,10 +490,16 @@ bool CWebClientManager::ConfigureViewFro
            URIUtils::AddFileToFolder(webapp->Path(), values.GetValue("userscript").asString()),
            true);
      else if (element == "contentfilter")
@@ -44,11 +42,9 @@ index 67b5443356..a2538dc4d5 100644
    }
    return true;
  }
-diff --git a/xbmc/platform/linux/waylandhost/WaylandHost.cpp b/xbmc/platform/linux/waylandhost/WaylandHost.cpp
-index 07b0e22f47..3b5aaacf96 100644
 --- a/xbmc/platform/linux/waylandhost/WaylandHost.cpp
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.cpp
-@@ -50,7 +50,7 @@ constexpr uint32_t XDG_WM_BASE_VERSION = 1;
+@@ -50,7 +50,7 @@ constexpr uint32_t XDG_WM_BASE_VERSION =
  constexpr uint32_t LINUX_DMABUF_VERSION = 4;
  constexpr uint32_t PRESENTATION_VERSION = 1;
  constexpr uint32_t TEXT_INPUT_VERSION = 1;
@@ -57,7 +53,7 @@ index 07b0e22f47..3b5aaacf96 100644
  
  // evdev key codes map to xkb key codes with this offset (xkbcommon convention)
  constexpr uint32_t XKB_KEYCODE_OFFSET = 8;
-@@ -1517,6 +1517,25 @@ void CWaylandHost::WebViewAddContentFilter(std::string profile,
+@@ -1517,6 +1517,25 @@ void CWaylandHost::WebViewAddContentFilt
         { SendWebViewFile(profile, name, fd, size, false); });
  }
  
@@ -83,8 +79,6 @@ index 07b0e22f47..3b5aaacf96 100644
  void CWaylandHost::SendWebViewFile(
      const std::string& profile, const std::string& name, int fd, uint32_t size, bool script)
  {
-diff --git a/xbmc/platform/linux/waylandhost/WaylandHost.h b/xbmc/platform/linux/waylandhost/WaylandHost.h
-index 60dfe869f7..7e5f12201d 100644
 --- a/xbmc/platform/linux/waylandhost/WaylandHost.h
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.h
 @@ -187,6 +187,11 @@ public:
@@ -99,8 +93,6 @@ index 60dfe869f7..7e5f12201d 100644
    struct WebView
    {
      CWaylandHost* host{nullptr};
-diff --git a/xbmc/platform/linux/waylandhost/protocol/kodi-web-v1.xml b/xbmc/platform/linux/waylandhost/protocol/kodi-web-v1.xml
-index ed1daaf360..4f8aa5e6d7 100644
 --- a/xbmc/platform/linux/waylandhost/protocol/kodi-web-v1.xml
 +++ b/xbmc/platform/linux/waylandhost/protocol/kodi-web-v1.xml
 @@ -50,7 +50,7 @@
@@ -157,6 +149,3 @@ index ed1daaf360..4f8aa5e6d7 100644
 +    </event>
    </interface>
  </protocol>
--- 
-2.56.0
-
