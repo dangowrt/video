@@ -20,13 +20,17 @@ installed, a setting lets pages decode video in software, and the media
 state a page reports drives the screensaver and display power rules as
 a video or music would.
 
+The frames are DRM PRIME buffers, which the GBM and Wayland windowing
+show, so the web host runs only there; System.SupportsWebApps tells
+skins whether it does.
+
 Web apps are a new add-on type, kodi.webapp: a manifest names the start
 URL, user agent, user scripts and content filters of the app, whose
 profile is the add-on id. Web apps are listed as an add-on source,
 accept URLs as assets, and may let the user choose among several start
-URLs. A web app mapped to an uplink has its view's connections and name
-lookups bound to that uplink, and is refused while the uplink is not
-available.
+URLs. The web player plays web apps only, which ask for it by name. A
+web app mapped to an uplink has its view's connections and name lookups
+bound to that uplink, and is refused while the uplink is not available.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
@@ -40,13 +44,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  system/addon-manifest.xml                     |   1 +
  system/keymaps/keyboard.xml                   |  12 +
  system/settings/settings.xml                  |  37 +
+ xbmc/GUIInfoManager.cpp                       |  11 +-
  xbmc/addons/AddonBuilder.cpp                  |   1 +
  xbmc/addons/addoninfo/AddonInfo.cpp           |   3 +-
  xbmc/addons/addoninfo/AddonInfoBuilder.cpp    |  21 +-
  xbmc/addons/addoninfo/AddonType.h             |   1 +
  xbmc/addons/gui/GUIDialogAddonInfo.cpp        |   2 +-
  xbmc/application/Application.cpp              |  34 +-
- xbmc/application/ApplicationPlay.cpp          |   5 +-
+ xbmc/application/ApplicationPlay.cpp          |   7 +-
  xbmc/application/ApplicationPlayer.cpp        |  11 +
  xbmc/application/ApplicationPlayer.h          |   1 +
  xbmc/application/ApplicationSkinHandling.cpp  |  10 +
@@ -58,22 +63,24 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  .../WebPlayer/GUIWindowFullScreenWeb.cpp      | 184 ++++
  xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.h |  52 ++
  xbmc/cores/WebPlayer/WebApp.h                 |  35 +
- xbmc/cores/WebPlayer/WebAudioServer.cpp       | 796 +++++++++++++++++
+ xbmc/cores/WebPlayer/WebAudioServer.cpp       | 796 ++++++++++++++++
  xbmc/cores/WebPlayer/WebAudioServer.h         | 136 +++
- xbmc/cores/WebPlayer/WebClientManager.cpp     | 813 ++++++++++++++++++
- xbmc/cores/WebPlayer/WebClientManager.h       | 212 +++++
- xbmc/cores/WebPlayer/WebPlayer.cpp            | 571 ++++++++++++
- xbmc/cores/WebPlayer/WebPlayer.h              | 149 ++++
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 849 ++++++++++++++++++
+ xbmc/cores/WebPlayer/WebClientManager.h       | 213 +++++
+ xbmc/cores/WebPlayer/WebPlayer.cpp            | 573 ++++++++++++
+ xbmc/cores/WebPlayer/WebPlayer.h              | 149 +++
  xbmc/cores/WebPlayer/WebPlayerDefs.h          |  26 +
  xbmc/cores/WebPlayer/WebVideoBuffer.cpp       | 112 +++
  xbmc/cores/WebPlayer/WebVideoBuffer.h         |  68 ++
- xbmc/cores/WebPlayer/kodi-web-audio.h         | 173 ++++
+ xbmc/cores/WebPlayer/kodi-web-audio.h         | 175 ++++
  .../playercorefactory/PlayerCoreConfig.cpp    |   9 +
- .../playercorefactory/PlayerCoreFactory.cpp   |   7 +
+ .../playercorefactory/PlayerCoreFactory.cpp   |  11 +
  xbmc/filesystem/AddonsDirectory.cpp           |  16 +-
  xbmc/guilib/GUIWindow.cpp                     |   2 +-
  xbmc/guilib/GUIWindowManager.cpp              |  17 +
  xbmc/guilib/WindowIDs.h                       |   3 +
+ xbmc/guilib/guiinfo/GUIInfoLabels.h           |   2 +-
+ xbmc/guilib/guiinfo/SystemGUIInfo.cpp         |  13 +
  xbmc/input/InputManager.cpp                   |   3 +-
  xbmc/input/WindowTranslator.cpp               |   4 +
  xbmc/interfaces/builtins/AddonBuiltins.cpp    |  34 +
@@ -81,7 +88,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/settings/Settings.h                      |   4 +
  xbmc/utils/ExecString.cpp                     |   2 +
  xbmc/windows/GUIMediaWindow.cpp               |   9 +
- 51 files changed, 4522 insertions(+), 25 deletions(-)
+ 54 files changed, 4592 insertions(+), 28 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -935,6 +942,40 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    <section id="system" label="13000" help="36349">
      <category id="display" label="14220" help="36603">
        <group id="1" label="16000">
+--- a/xbmc/GUIInfoManager.cpp
++++ b/xbmc/GUIInfoManager.cpp
+@@ -2022,6 +2022,14 @@ constexpr std::array<InfoMap, 10> weathe
+ ///     @skinning_v19 **[New Boolean Condition]** \link  System_SupportsCPUUsage `
+ ///     System.SupportsCPUUsage`\endlink <p>
+ ///   }
++///   \table_row3{   <b>`System.SupportsWebApps`</b>,
++///                  \anchor System_SupportsWebApps
++///                  _boolean_,
++///     @return **True** if web apps can be played here.
++///     <p><hr>
++///     @skinning_v23 **[New Boolean Condition]** \link System_SupportsWebApps `
++///     System.SupportsWebApps`\endlink <p>
++///   }
+ ///   \table_row3{   <b>`System.SupportedHDRTypes`</b>,
+ ///                  \anchor System_SupportedHDRTypes
+ ///                  _string_,
+@@ -2037,7 +2045,7 @@ constexpr std::array<InfoMap, 10> weathe
+ ///     <p>
+ ///   }
+ // clang-format off
+-constexpr std::array<InfoMap, 76> system_labels = {{
++constexpr std::array<InfoMap, 77> system_labels = {{
+     {"hasnetwork",              SYSTEM_ETHERNET_LINK_ACTIVE},
+     {"hasmediadvd",             SYSTEM_MEDIA_DVD},
+     {"hasmediaaudiocd",         SYSTEM_MEDIA_AUDIO_CD},
+@@ -2112,6 +2120,7 @@ constexpr std::array<InfoMap, 76> system
+     {"haspvraddon",             SYSTEM_HAS_PVR_ADDON},
+     {"addonupdatecount",        SYSTEM_ADDON_UPDATE_COUNT},
+     {"supportscpuusage",        SYSTEM_SUPPORTS_CPU_USAGE},
++    {"supportswebapps",         SYSTEM_SUPPORTS_WEB_APPS},
+     {"supportedhdrtypes",       SYSTEM_SUPPORTED_HDR_TYPES},
+     {"isscreensaverinhibited",  SYSTEM_IS_SCREENSAVER_INHIBITED},
+ }};
 --- a/xbmc/addons/AddonBuilder.cpp
 +++ b/xbmc/addons/AddonBuilder.cpp
 @@ -85,6 +85,7 @@ AddonPtr CAddonBuilder::Generate(const A
@@ -1154,7 +1195,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "cores/playercorefactory/PlayerCoreFactory.h"
  #include "filesystem/DirectoryFactory.h"
  #include "filesystem/DiscDirectoryHelper.h"
-@@ -349,7 +350,7 @@ CApplicationPlay::GatherPlaybackDetailsR
+@@ -349,16 +350,16 @@ CApplicationPlay::GatherPlaybackDetailsR
    }
  
    // Ensure the MIME type has been retrieved for http:// and shout:// streams
@@ -1163,8 +1204,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
      m_item.FillInMimeType();
  
    if (VIDEO::IsDiscStub(m_item))
-@@ -358,7 +359,7 @@ CApplicationPlay::GatherPlaybackDetailsR
-   if (PLAYLIST::IsPlayList(m_item) && !m_item.IsGame())
+     return GatherPlaybackDetailsResult::RESULT_SUCCESS; // all done
+ 
+-  if (PLAYLIST::IsPlayList(m_item) && !m_item.IsGame())
++  if (m_player != KODI::WEB::PLAYER_NAME && PLAYLIST::IsPlayList(m_item) && !m_item.IsGame())
      return GatherPlaybackDetailsResult::RESULT_ERROR; // non-game playlists not supported
  
 -  if (!ResolvePath())
@@ -2726,7 +2769,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -0,0 +1,813 @@
+@@ -0,0 +1,849 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2777,6 +2820,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include "platform/linux/input/LibInputSettings.h"
 +#endif
 +
++#if defined(HAVE_WAYLAND)
++#include "windowing/wayland/WinSystemWayland.h"
++#endif
++
 +#include <algorithm>
 +#include <cmath>
 +#include <cstdlib>
@@ -2815,6 +2862,20 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  if (auto* gbm =
 +          dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem()))
 +    return gbm->HasKeyboard();
++#endif
++  return false;
++}
++
++// web frames are DRM PRIME buffers, which only the GBM and Wayland renderers take
++bool WindowingShowsWebFrames()
++{
++#if defined(HAVE_GBM)
++  if (dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem()))
++    return true;
++#endif
++#if defined(HAVE_WAYLAND)
++  if (dynamic_cast<KODI::WINDOWING::WAYLAND::CWinSystemWayland*>(CServiceBroker::GetWinSystem()))
++    return true;
 +#endif
 +  return false;
 +}
@@ -2908,6 +2969,13 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 +  if (!settings->GetBool(CSettings::SETTING_WEB_ENABLED) || m_host)
 +    return;
++
++  if (!WindowingShowsWebFrames())
++  {
++    CLog::Log(LOGINFO, "CWebClientManager::{}: web apps need the GBM or Wayland windowing",
++              __FUNCTION__);
++    return;
++  }
 +
 +  if (!StartHost())
 +    return;
@@ -3125,6 +3193,17 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +{
 +  CLog::Log(LOGINFO, "CWebClientManager::{}: client surface \"{}\" is up", __FUNCTION__,
 +            surface.GetTitle());
++}
++
++void CWebClientManager::OnSurfaceDestroyed(CWaylandSurface& surface)
++{
++  std::unique_lock lock(m_lock);
++  m_surfaces.erase(&surface);
++  for (auto& [profile, viewSurface] : m_views)
++  {
++    if (viewSurface == &surface)
++      viewSurface = nullptr;
++  }
 +}
 +
 +void CWebClientManager::OnSurfaceUnmapped(CWaylandSurface& surface)
@@ -3542,7 +3621,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebClientManager.h
-@@ -0,0 +1,212 @@
+@@ -0,0 +1,213 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -3663,6 +3742,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  // implementation of IWaylandHostObserver
 +  void OnSurfaceMapped(WAYLANDHOST::CWaylandSurface& surface) override;
 +  void OnSurfaceUnmapped(WAYLANDHOST::CWaylandSurface& surface) override;
++  void OnSurfaceDestroyed(WAYLANDHOST::CWaylandSurface& surface) override;
 +  void OnSurfaceFrame(WAYLANDHOST::CWaylandSurface& surface,
 +                      std::shared_ptr<WAYLANDHOST::CWaylandBuffer> buffer) override;
 +  void OnClientExited(pid_t pid, int status) override;
@@ -3757,7 +3837,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebPlayer.cpp
-@@ -0,0 +1,571 @@
+@@ -0,0 +1,573 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -4183,7 +4263,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +void CWebPlayer::OnWebViewProgress(const std::string& profile, uint32_t percent)
 +{
-+  CLog::Log(LOGDEBUG, "CWebPlayer::{}: {}: {}%", __FUNCTION__, profile, percent);
++  CLog::Log(LOGDEBUG, "CWebPlayer::{}: {}: {} percent", __FUNCTION__, profile, percent);
 +}
 +
 +void CWebPlayer::OnWebViewNavigationState(const std::string& profile,
@@ -4279,6 +4359,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    CLog::Log(LOGERROR, "CWebPlayer::{}: no renderer for the client's {}x{} buffers", __FUNCTION__,
 +              picture.iWidth, picture.iHeight);
 +    m_stop = true;
++    if (m_playing.exchange(false))
++      m_callback.OnPlayBackError();
 +    return false;
 +  }
 +
@@ -4698,7 +4780,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/kodi-web-audio.h
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,175 @@
 +/* SPDX-License-Identifier: MIT */
 +/*
 + * kodi-web-audio: the audio of a web page, played by Kodi's audio engine.
@@ -4792,8 +4874,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +/* bit n of a passthrough rate mask stands for entry n of this list */
 +#define KODI_WEB_AUDIO_RATES \
-+  {8000,  11025, 12000, 16000, 22050,  24000,  32000, 44100, \
-+   48000, 64000, 88200, 96000, 128000, 176400, 192000}
++  { \
++    8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000, 128000, \
++        176400, 192000 \
++  }
 +
 +enum kodi_web_audio_position
 +{
@@ -4907,7 +4991,18 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "dialogs/GUIDialogContextMenu.h"
  #include "music/MusicFileItemClassify.h"
  #include "profiles/ProfileManager.h"
-@@ -381,6 +382,12 @@ bool CPlayerCoreFactory::LoadConfigurati
+@@ -89,6 +90,10 @@ void CPlayerCoreFactory::GetPlayers(std:
+ 
+   for (auto& conf : m_vecPlayerConfigs)
+   {
++    // the web player plays web apps only, which ask for it by name
++    if (conf->m_name == KODI::WEB::PLAYER_NAME)
++      continue;
++
+     if (audio == conf->m_bPlaysAudio && video == conf->m_bPlaysVideo)
+     {
+       if (std::ranges::find(players, conf->m_name) != players.end())
+@@ -381,6 +386,12 @@ bool CPlayerCoreFactory::LoadConfigurati
      auto retroPlayer = std::make_unique<CPlayerCoreConfig>("RetroPlayer", "game", nullptr);
      retroPlayer->m_bPlaysGame = true;
      m_vecPlayerConfigs.emplace_back(std::move(retroPlayer));
@@ -5041,6 +5136,46 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
  #define WINDOW_SPLASH                     12997 // splash window
  #define WINDOW_START                      12998 // first window to load
+--- a/xbmc/guilib/guiinfo/GUIInfoLabels.h
++++ b/xbmc/guilib/guiinfo/GUIInfoLabels.h
+@@ -135,7 +135,7 @@ constexpr uint32_t SYSTEM_MEDIA_DVD
+ constexpr uint32_t SYSTEM_DVDREADY                   = 128;
+ constexpr uint32_t SYSTEM_HAS_ALARM                  = 129;
+ constexpr uint32_t SYSTEM_SUPPORTS_CPU_USAGE         = 130;
+-// unused id 131
++constexpr uint32_t SYSTEM_SUPPORTS_WEB_APPS          = 131;
+ constexpr uint32_t SYSTEM_SCREEN_MODE                = 132;
+ constexpr uint32_t SYSTEM_SCREEN_WIDTH               = 133;
+ constexpr uint32_t SYSTEM_SCREEN_HEIGHT              = 134;
+--- a/xbmc/guilib/guiinfo/SystemGUIInfo.cpp
++++ b/xbmc/guilib/guiinfo/SystemGUIInfo.cpp
+@@ -18,6 +18,9 @@
+ #include "application/AppParams.h"
+ #include "application/ApplicationComponents.h"
+ #include "application/ApplicationPowerHandling.h"
++#if defined(HAVE_WAYLAND_SERVER)
++#include "cores/WebPlayer/WebClientManager.h"
++#endif
+ #include "guilib/GUIComponent.h"
+ #include "guilib/GUIWindowManager.h"
+ #include "guilib/guiinfo/GUIInfo.h"
+@@ -680,6 +683,16 @@ bool CSystemGUIInfo::GetBool(bool& value
+     case SYSTEM_SUPPORTS_CPU_USAGE:
+       value = CServiceBroker::GetCPUInfo()->SupportsCPUUsage();
+       return true;
++    case SYSTEM_SUPPORTS_WEB_APPS:
++    {
++      value = false;
++#if defined(HAVE_WAYLAND_SERVER)
++      const auto web =
++          CServiceBroker::GetAppComponents().GetComponent<KODI::WEB::CWebClientManager>();
++      value = web && web->IsEnabled();
++#endif
++      return true;
++    }
+     case SYSTEM_GET_BOOL:
+       value = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(info.GetData3());
+       return true;
 --- a/xbmc/input/InputManager.cpp
 +++ b/xbmc/input/InputManager.cpp
 @@ -637,7 +637,8 @@ bool CInputManager::HandleKey(const CKey

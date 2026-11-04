@@ -9,7 +9,10 @@ spawns its clients with an inherited socket and serves wl_compositor,
 xdg_wm_base, linux-dmabuf, wp_presentation, a seat that forwards
 Kodi's input, and text-input-v3 so that Kodi's keyboard can type into
 a client. Committed client buffers are handed to an observer, which
-shows them through Kodi's renderers.
+shows them through Kodi's renderers, and the observer learns when a
+surface goes away. When the host stops, its clients get SIGTERM and
+their exit is awaited; a client still running 90 s later, for instance
+one blocked on a stale network mount, is killed.
 
 The host also serves kodi_web_v1, a protocol through which Kodi drives
 a web browser it hosts: the browser creates one view per profile, a
@@ -22,15 +25,15 @@ Plus filter syntax, so that one maintained list serves any engine.
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
  .../optional/common/waylandserver.txt         |    1 +
- .../platform/linux/waylandhost/CMakeLists.txt |   37 +
+ .../platform/linux/waylandhost/CMakeLists.txt |   34 +
  .../linux/waylandhost/WaylandBuffer.cpp       |   64 +
  .../linux/waylandhost/WaylandBuffer.h         |   96 +
- .../linux/waylandhost/WaylandHost.cpp         | 2108 +++++++++++++++++
- xbmc/platform/linux/waylandhost/WaylandHost.h |  380 +++
- .../linux/waylandhost/WaylandSurface.cpp      |  215 ++
+ .../linux/waylandhost/WaylandHost.cpp         | 2154 +++++++++++++++++
+ xbmc/platform/linux/waylandhost/WaylandHost.h |  383 +++
+ .../linux/waylandhost/WaylandSurface.cpp      |  216 ++
  .../linux/waylandhost/WaylandSurface.h        |   96 +
  .../waylandhost/protocol/kodi-web-v1.xml      |  393 +++
- 9 files changed, 3390 insertions(+)
+ 9 files changed, 3437 insertions(+)
  create mode 100644 cmake/treedata/optional/common/waylandserver.txt
  create mode 100644 xbmc/platform/linux/waylandhost/CMakeLists.txt
  create mode 100644 xbmc/platform/linux/waylandhost/WaylandBuffer.cpp
@@ -47,12 +50,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +xbmc/platform/linux/waylandhost platform/linux/waylandhost # WAYLANDSERVER
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/CMakeLists.txt
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,34 @@
 +if(TARGET ${APP_NAME_LC}::WaylandServer)
-+  set(PROTOCOLS linux-dmabuf-v1:${WAYLAND_PROTOCOLS_DIR}/stable/linux-dmabuf/linux-dmabuf-v1.xml
-+                presentation-time:${WAYLAND_PROTOCOLS_DIR}/stable/presentation-time/presentation-time.xml
-+                text-input-unstable-v3:${WAYLAND_PROTOCOLS_DIR}/unstable/text-input/text-input-unstable-v3.xml
-+                xdg-shell:${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml
++  set(PROTOCOLS ${WAYLAND_SERVER_PROTOCOLS}
 +                kodi-web-v1:${CMAKE_CURRENT_SOURCE_DIR}/protocol/kodi-web-v1.xml)
 +
 +  set(SOURCES WaylandBuffer.cpp
@@ -253,7 +253,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.cpp
-@@ -0,0 +1,2108 @@
+@@ -0,0 +1,2154 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -270,6 +270,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +#include <algorithm>
 +#include <cerrno>
++#include <chrono>
 +#include <cstring>
 +#include <mutex>
 +#include <signal.h>
@@ -278,6 +279,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include <fcntl.h>
 +#include <kodi-web-v1-server-protocol.h>
 +#include <linux-dmabuf-v1-server-protocol.h>
++#include <poll.h>
 +#include <presentation-time-server-protocol.h>
 +#include <sys/eventfd.h>
 +#include <sys/mman.h>
@@ -309,6 +311,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +constexpr uint32_t WEB_MANAGER_VERSION = 1;
 +// kodi_web_manager_v1: a profile identifier is 1 to 255 bytes
 +constexpr size_t WEB_PROFILE_MAX = 255;
++// a client blocked in teardown, e.g. on a stale network mount, is killed after this
++constexpr std::chrono::seconds CLIENT_EXIT_TIMEOUT{90};
 +
 +// evdev key codes map to xkb key codes with this offset (xkbcommon convention)
 +constexpr uint32_t XKB_KEYCODE_OFFSET = 8;
@@ -439,10 +443,23 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    surface->Commit();
 +}
 +
-+const struct wl_surface_interface SURFACE_IMPL = {
-+    DestroyResource, SurfaceAttach, Ignore, SurfaceFrame, Ignore, Ignore,
-+    SurfaceCommit,   Ignore,        Ignore, Ignore,       Ignore, Ignore,
-+};
++// filled by name: newer protocol headers add requests above the version advertised
++constexpr struct wl_surface_interface SURFACE_IMPL = []
++{
++  struct wl_surface_interface impl{};
++  impl.destroy = DestroyResource;
++  impl.attach = SurfaceAttach;
++  impl.damage = Ignore;
++  impl.frame = SurfaceFrame;
++  impl.set_opaque_region = Ignore;
++  impl.set_input_region = Ignore;
++  impl.commit = SurfaceCommit;
++  impl.set_buffer_transform = Ignore;
++  impl.set_buffer_scale = Ignore;
++  impl.damage_buffer = Ignore;
++  impl.offset = Ignore;
++  return impl;
++}();
 +
 +void SurfaceResourceDestroyed(wl_resource* resource)
 +{
@@ -489,11 +506,13 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  wl_resource_set_implementation(region, &REGION_IMPL, nullptr, nullptr);
 +}
 +
-+const struct wl_compositor_interface COMPOSITOR_IMPL = {
-+    CompositorCreateSurface,
-+    CompositorCreateRegion,
-+    Ignore,
-+};
++constexpr struct wl_compositor_interface COMPOSITOR_IMPL = []
++{
++  struct wl_compositor_interface impl{};
++  impl.create_surface = CompositorCreateSurface;
++  impl.create_region = CompositorCreateRegion;
++  return impl;
++}();
 +
 +// xdg_wm_base
 +
@@ -747,9 +766,15 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  ParamsCreateBuffer(client, resource, bufferId, width, height, format, flags);
 +}
 +
-+const struct zwp_linux_buffer_params_v1_interface PARAMS_IMPL = {
-+    DestroyResource, ParamsAdd, ParamsCreate, ParamsCreateImmed, Ignore,
-+};
++constexpr struct zwp_linux_buffer_params_v1_interface PARAMS_IMPL = []
++{
++  struct zwp_linux_buffer_params_v1_interface impl{};
++  impl.destroy = DestroyResource;
++  impl.add = ParamsAdd;
++  impl.create = ParamsCreate;
++  impl.create_immed = ParamsCreateImmed;
++  return impl;
++}();
 +
 +void ParamsResourceDestroyed(wl_resource* resource)
 +{
@@ -938,19 +963,19 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    input->host->OnTextInputCommit(*input);
 +}
 +
-+const struct zwp_text_input_v3_interface TEXT_INPUT_IMPL = {
-+    DestroyResource,
-+    TextInputEnable,
-+    TextInputDisable,
-+    TextInputSetSurroundingText,
-+    Ignore,
-+    TextInputSetContentType,
-+    TextInputSetCursorRectangle,
-+    TextInputCommit,
-+    Ignore,
-+    Ignore,
-+    Ignore,
-+};
++constexpr struct zwp_text_input_v3_interface TEXT_INPUT_IMPL = []
++{
++  struct zwp_text_input_v3_interface impl{};
++  impl.destroy = DestroyResource;
++  impl.enable = TextInputEnable;
++  impl.disable = TextInputDisable;
++  impl.set_surrounding_text = TextInputSetSurroundingText;
++  impl.set_text_change_cause = Ignore;
++  impl.set_content_type = TextInputSetContentType;
++  impl.set_cursor_rectangle = TextInputSetCursorRectangle;
++  impl.commit = TextInputCommit;
++  return impl;
++}();
 +
 +void TextInputResourceDestroyed(wl_resource* resource)
 +{
@@ -1275,7 +1300,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +bool CWaylandHost::CreateFormatTable()
 +{
-+  struct stat st{};
++  struct stat st
++  {
++  };
 +  if (stat(m_config.renderDevicePath.c_str(), &st) != 0)
 +  {
 +    CLog::Log(LOGERROR, "CWaylandHost::{}: cannot stat render device {}: {}", __FUNCTION__,
@@ -1339,10 +1366,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  {
 +    if (client.exitSource)
 +      wl_event_source_remove(client.exitSource);
++    if (client.pid > 0)
++      ReapClient(client);
 +    if (client.pidfd >= 0)
 +      close(client.pidfd);
-+    if (client.pid > 0)
-+      waitpid(client.pid, nullptr, 0);
 +  }
 +  m_clients.clear();
 +  m_views.clear();
@@ -1481,6 +1508,20 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  const pid_t pid = client.pid;
 +  m_clients.remove_if([&client](const Client& entry) { return &entry == &client; });
 +  m_observer.OnClientExited(pid, status);
++}
++
++void CWaylandHost::ReapClient(const Client& client)
++{
++  struct pollfd exited = {client.pidfd, POLLIN, 0};
++  const int timeout = static_cast<int>(std::chrono::milliseconds(CLIENT_EXIT_TIMEOUT).count());
++
++  if (client.pidfd < 0 || poll(&exited, 1, timeout) <= 0)
++  {
++    CLog::Log(LOGWARNING, "CWaylandHost::{}: client pid {} did not exit, killing it", __FUNCTION__,
++              client.pid);
++    kill(client.pid, SIGKILL);
++  }
++  waitpid(client.pid, nullptr, 0);
 +}
 +
 +void CWaylandHost::DoTerminateClients()
@@ -1989,6 +2030,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  m_observer.OnSurfaceUnmapped(surface);
 +}
 +
++void CWaylandHost::OnSurfaceReleased(CWaylandSurface& surface)
++{
++  m_observer.OnSurfaceDestroyed(surface);
++}
++
 +void CWaylandHost::OnSurfaceFrame(CWaylandSurface& surface, std::shared_ptr<CWaylandBuffer> buffer)
 +{
 +  m_observer.OnSurfaceFrame(surface, std::move(buffer));
@@ -2364,7 +2410,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.h
-@@ -0,0 +1,380 @@
+@@ -0,0 +1,383 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2437,6 +2483,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +  virtual void OnSurfaceMapped(CWaylandSurface& surface) = 0;
 +  virtual void OnSurfaceUnmapped(CWaylandSurface& surface) = 0;
++  virtual void OnSurfaceDestroyed(CWaylandSurface& surface) = 0;
 +
 +  /*!
 +   * \brief The surface shows new content; the buffer is locked for the
@@ -2635,6 +2682,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  void OnSurfaceDestroyed(CWaylandSurface* surface);
 +  void OnSurfaceMapped(CWaylandSurface& surface);
 +  void OnSurfaceUnmapped(CWaylandSurface& surface);
++  void OnSurfaceReleased(CWaylandSurface& surface);
 +  void OnSurfaceFrame(CWaylandSurface& surface, std::shared_ptr<CWaylandBuffer> buffer);
 +  void SendDmabufFeedback(wl_resource* feedback);
 +  void AddKeyboard(wl_client* client, uint32_t version, uint32_t id);
@@ -2664,6 +2712,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  void DoSpawnClient(const std::vector<std::string>& argv,
 +                     const std::map<std::string, std::string>& env);
 +  void DoTerminateClients();
++  static void ReapClient(const Client& client);
 +  void DoKeyboardKey(uint32_t evdevCode, bool pressed);
 +  void DoPointerMotion(int32_t x, int32_t y);
 +  void DoPointerButton(uint32_t evdevButton, bool pressed);
@@ -2747,7 +2796,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/WaylandSurface.cpp
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,216 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2781,6 +2830,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  // forgotten before unmapping: a destroyed surface is sent no leave events
 +  m_host.OnSurfaceDestroyed(this);
 +  Unmap();
++  m_host.OnSurfaceReleased(*this);
 +
 +  if (m_xdgToplevel)
 +    wl_resource_set_user_data(m_xdgToplevel, nullptr);

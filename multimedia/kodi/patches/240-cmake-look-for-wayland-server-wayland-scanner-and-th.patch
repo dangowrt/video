@@ -7,20 +7,22 @@ Subject: [PATCH] cmake: look for wayland-server, wayland-scanner and the
 Hosting Wayland clients needs libwayland-server, the wayland-scanner code
 generator and the wayland-protocols XML files. Add a find module that
 resolves all three into the WaylandServer target and defines
-HAVE_WAYLAND_SERVER for the code that uses it, and offer it as an
+HAVE_WAYLAND_SERVER for the code that uses it once every protocol
+description it serves is installed, taking linux-dmabuf from unstable/
+where wayland-protocols has no stable/ copy yet, and offer it as an
 optional dependency on the GBM and Wayland platforms.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
- cmake/modules/FindWaylandServer.cmake | 59 +++++++++++++++++++++++++++
+ cmake/modules/FindWaylandServer.cmake | 79 +++++++++++++++++++++++++++
  cmake/platform/linux/gbm.cmake        |  2 +-
  cmake/platform/linux/wayland.cmake    |  2 +-
- 3 files changed, 61 insertions(+), 2 deletions(-)
+ 3 files changed, 81 insertions(+), 2 deletions(-)
  create mode 100644 cmake/modules/FindWaylandServer.cmake
 
 --- /dev/null
 +++ b/cmake/modules/FindWaylandServer.cmake
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,79 @@
 +#.rst:
 +# FindWaylandServer
 +# -----------------
@@ -34,7 +36,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +# and the following variables:
 +#
 +#   WAYLAND_SCANNER_EXECUTABLE   - wayland-scanner program
-+#   WAYLAND_PROTOCOLS_DIR        - directory containing the wayland-protocols XML files
++#   WAYLAND_SERVER_PROTOCOLS     - name:xml pairs of the protocols the host serves
 +
 +if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
 +
@@ -61,18 +63,38 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +    pkg_check_modules(PC_WAYLAND_PROTOCOLS wayland-protocols ${SEARCH_QUIET})
 +    if(PC_WAYLAND_PROTOCOLS_FOUND)
-+      pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
++      pkg_get_variable(_protocols_dir wayland-protocols pkgdatadir)
 +    endif()
-+    set(WAYLAND_PROTOCOLS_DIR ${WAYLAND_PROTOCOLS_DIR} CACHE INTERNAL "")
 +
-+    if(WAYLAND_SCANNER_EXECUTABLE AND WAYLAND_PROTOCOLS_DIR)
++    set(_dmabuf_xml ${_protocols_dir}/stable/linux-dmabuf/linux-dmabuf-v1.xml)
++    if(NOT EXISTS ${_dmabuf_xml})
++      # older wayland-protocols carry linux-dmabuf in unstable/ only
++      set(_dmabuf_xml ${_protocols_dir}/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml)
++    endif()
++    set(_protocols linux-dmabuf-v1:${_dmabuf_xml}
++                   presentation-time:${_protocols_dir}/stable/presentation-time/presentation-time.xml
++                   text-input-unstable-v3:${_protocols_dir}/unstable/text-input/text-input-unstable-v3.xml
++                   xdg-shell:${_protocols_dir}/stable/xdg-shell/xdg-shell.xml)
++
++    set(_protocols_found ${PC_WAYLAND_PROTOCOLS_FOUND})
++    foreach(_protocol IN LISTS _protocols)
++      string(REGEX REPLACE "^[^:]*:" "" _xml ${_protocol})
++      if(NOT EXISTS ${_xml})
++        set(_protocols_found FALSE)
++      endif()
++    endforeach()
++    if(_protocols_found)
++      set(WAYLAND_SERVER_PROTOCOLS ${_protocols} CACHE INTERNAL "")
++    endif()
++
++    if(WAYLAND_SCANNER_EXECUTABLE AND _protocols_found)
 +      add_library(${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} ALIAS PkgConfig::${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME})
 +
 +      set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_COMPILE_DEFINITIONS HAVE_WAYLAND_SERVER)
 +
 +      ADD_TARGET_COMPILE_DEFINITION()
 +    elseif(WaylandServer_FIND_REQUIRED)
-+      message(FATAL_ERROR "wayland-scanner or wayland-protocols were not found.")
++      message(FATAL_ERROR "wayland-scanner or the wayland-protocols descriptions were not found.")
 +    endif()
 +  else()
 +    if(WaylandServer_FIND_REQUIRED)

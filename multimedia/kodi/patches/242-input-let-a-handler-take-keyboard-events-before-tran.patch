@@ -15,11 +15,11 @@ someone else.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
- xbmc/input/InputManager.cpp                   | 36 ++++++++++++++-
+ xbmc/input/InputManager.cpp                   | 34 +++++++++++++-
  xbmc/input/InputManager.h                     | 11 +++++
  xbmc/input/keyboard/interfaces/CMakeLists.txt |  1 +
  .../interfaces/IKeyboardEventHandler.h        | 45 +++++++++++++++++++
- 4 files changed, 91 insertions(+), 2 deletions(-)
+ 4 files changed, 90 insertions(+), 1 deletion(-)
  create mode 100644 xbmc/input/keyboard/interfaces/IKeyboardEventHandler.h
 
 --- a/xbmc/input/InputManager.cpp
@@ -32,7 +32,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "input/keymaps/ButtonTranslator.h"
  #include "input/keymaps/KeymapEnvironment.h"
  #include "input/keymaps/joysticks/JoystickMapper.h"
-@@ -370,21 +371,52 @@ bool CInputManager::Process(int windowId
+@@ -370,6 +371,30 @@ bool CInputManager::Process(int windowId
    return true;
  }
  
@@ -63,24 +63,22 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  bool CInputManager::OnEvent(XBMC_Event& newEvent)
  {
    switch (newEvent.type)
-   {
-     case XBMC_KEYDOWN:
+@@ -378,13 +403,20 @@ bool CInputManager::OnEvent(XBMC_Event&
      {
--      m_Keyboard.ProcessKeyDown(newEvent.key.keysym);
+       m_Keyboard.ProcessKeyDown(newEvent.key.keysym);
        CKey key = m_Keyboard.TranslateKey(newEvent.key.keysym);
 +      if (OnKeyboardEvent(newEvent.key.keysym, key, true))
 +        break;
-+      m_Keyboard.ProcessKeyDown(newEvent.key.keysym);
        OnKey(key);
        break;
      }
      case XBMC_KEYUP:
 +    {
+       m_Keyboard.ProcessKeyUp();
+-      OnKeyUp(m_Keyboard.TranslateKey(newEvent.key.keysym));
 +      CKey key = m_Keyboard.TranslateKey(newEvent.key.keysym);
 +      if (OnKeyboardEvent(newEvent.key.keysym, key, false))
 +        break;
-       m_Keyboard.ProcessKeyUp();
--      OnKeyUp(m_Keyboard.TranslateKey(newEvent.key.keysym));
 +      OnKeyUp(key);
        break;
 +    }

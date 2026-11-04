@@ -16,8 +16,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  .../resource.language.en_gb/strings.po        |  5 +++
  addons/skin.estuary/xml/Home.xml              | 38 +++++++++++++++++++
  addons/skin.estuary/xml/MyPrograms.xml        |  3 +-
- addons/skin.estuary/xml/SkinSettings.xml      |  6 +++
- 4 files changed, 51 insertions(+), 1 deletion(-)
+ addons/skin.estuary/xml/SkinSettings.xml      |  7 ++++
+ 4 files changed, 52 insertions(+), 1 deletion(-)
 
 --- a/addons/skin.estuary/language/resource.language.en_gb/strings.po
 +++ b/addons/skin.estuary/language/resource.language.en_gb/strings.po
@@ -78,7 +78,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +							<onclick>ActivateWindow(Programs,addons://sources/webapp/,return)</onclick>
 +							<thumb>DefaultAddonWebSkin.png</thumb>
 +							<property name="id">webapps</property>
-+							<visible>!Skin.HasSetting(HomeMenuNoWebAppsButton)</visible>
++							<visible>System.SupportsWebApps + !Skin.HasSetting(HomeMenuNoWebAppsButton)</visible>
 +						</item>
 +						<item>
  							<label>$LOCALIZE[15016]</label>
@@ -98,7 +98,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  				</control>
 --- a/addons/skin.estuary/xml/SkinSettings.xml
 +++ b/addons/skin.estuary/xml/SkinSettings.xml
-@@ -266,6 +266,12 @@
+@@ -266,6 +266,13 @@
  					<onclick>ActivateWindow(1101)</onclick>
  					<enable>!Skin.HasSetting(HomeMenuNoRadioButton)</enable>
  				</control>
@@ -107,6 +107,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +					<include>DefaultSettingButton</include>
 +					<selected>!Skin.HasSetting(HomeMenuNoWebAppsButton)</selected>
 +					<onclick>Skin.ToggleSetting(HomeMenuNoWebAppsButton)</onclick>
++					<visible>System.SupportsWebApps</visible>
 +				</control>
  				<control type="radiobutton" id="614">
  					<label>$LOCALIZE[24001]</label>
