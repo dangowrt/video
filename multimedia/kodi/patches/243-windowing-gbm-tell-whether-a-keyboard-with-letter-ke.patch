@@ -1,4 +1,4 @@
-From 56560a2fb54b5d7d65310310afacf2cde5a267a8 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Thu, 8 Oct 2026 22:50:07 +0100
 Subject: [PATCH] windowing/gbm: tell whether a keyboard with letter keys is

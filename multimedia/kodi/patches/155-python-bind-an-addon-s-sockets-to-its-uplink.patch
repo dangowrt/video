@@ -1,4 +1,4 @@
-From 5ad9a85a772cd454d02470f9f38ee554c55d345f Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Thu, 17 Sep 2026 18:42:11 +0100
 Subject: [PATCH] python: bind an addon's sockets to its uplink

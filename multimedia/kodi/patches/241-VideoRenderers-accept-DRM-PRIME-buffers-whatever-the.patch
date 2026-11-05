@@ -1,4 +1,4 @@
-From 265fd2b15577eadd81ffca08450552e39f7da8da Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Thu, 8 Oct 2026 19:21:29 +0100
 Subject: [PATCH] VideoRenderers: accept DRM PRIME buffers whatever the decoder

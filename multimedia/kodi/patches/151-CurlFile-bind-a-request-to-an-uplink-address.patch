@@ -1,4 +1,4 @@
-From 74121d43787372a56e85013f941907fde45d72b6 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Thu, 17 Sep 2026 18:41:54 +0100
 Subject: [PATCH] CurlFile: bind a request to an uplink address

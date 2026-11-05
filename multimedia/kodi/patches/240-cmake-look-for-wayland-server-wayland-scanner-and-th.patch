@@ -1,4 +1,4 @@
-From d2a2d1c5accddfa8befda891d5d0b065561197e0 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Thu, 8 Oct 2026 14:49:56 +0100
 Subject: [PATCH] cmake: look for wayland-server, wayland-scanner and the

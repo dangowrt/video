@@ -1,4 +1,4 @@
-From 49370765910b7bf1ee02864210795b79a6df03c5 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Thu, 17 Sep 2026 18:42:03 +0100
 Subject: [PATCH] PluginDirectory: play an addon's stream through its uplink

@@ -1,4 +1,4 @@
-From fb0504e8bbd518d62941ba93b37ee356ee3d3500 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Tue, 8 Sep 2026 18:15:22 +0100
 Subject: [PATCH] cmake: do not hint /bin for pkg-config without NATIVEPREFIX

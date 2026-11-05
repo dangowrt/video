@@ -1,4 +1,4 @@
-From 51d8ee16b4829cbb0ad98f04ca3d1cd8cf3bd0ad Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Thu, 8 Oct 2026 15:01:29 +0100
 Subject: [PATCH] input: let a handler take keyboard events before translation

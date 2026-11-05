@@ -1,4 +1,4 @@
-From ba6bdc58015d431f629ac88e273f99489dde7db0 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Thu, 17 Sep 2026 18:42:03 +0100
 Subject: [PATCH] AdvancedSettings: map addons to uplinks

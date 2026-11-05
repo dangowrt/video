@@ -1,4 +1,4 @@
-From b692af7195ca9ffd27a44c3876df2164b5afd023 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Fri, 25 Sep 2026 13:04:04 +0100
 Subject: [PATCH] FindCrossGUID: look the header up instead of trusting
