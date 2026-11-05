@@ -1,0 +1,294 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 5 Nov 2026 22:06:40 +0000
+Subject: [PATCH] WebPlayer: show the web video where the page punches its hole
+
+A page with an opaque background covers the video plane entirely, so
+its video stays invisible while it plays. The web engine punches a
+transparent hole into such a page where the video element is, and the
+video sink reports that rectangle in a RECT message. The layer bridge
+scales it from page to screen pixels, fits the video into it by its
+display aspect ratio and moves the video plane there, also while no
+new frame arrives. Without a rectangle the renderer places the video.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/cores/WebPlayer/WebLayerBridge.cpp | 78 ++++++++++++++++++++++++-
+ xbmc/cores/WebPlayer/WebLayerBridge.h   | 17 ++++++
+ xbmc/cores/WebPlayer/WebPlayer.cpp      |  7 +++
+ xbmc/cores/WebPlayer/WebPlayer.h        |  1 +
+ xbmc/cores/WebPlayer/WebVideoServer.cpp | 21 +++++++
+ xbmc/cores/WebPlayer/WebVideoServer.h   |  8 +++
+ xbmc/cores/WebPlayer/kodi-web-video.h   | 13 +++++
+ 7 files changed, 144 insertions(+), 1 deletion(-)
+
+--- a/xbmc/cores/WebPlayer/WebLayerBridge.cpp
++++ b/xbmc/cores/WebPlayer/WebLayerBridge.cpp
+@@ -49,24 +49,100 @@ void CWebLayerBridge::ClearPage()
+   m_clear = true;
+ }
+ 
++void CWebLayerBridge::SetVideoRect(const CRect& rect)
++{
++  std::unique_lock lock(m_lock);
++  if (rect == m_videoRect)
++    return;
++  m_videoRect = rect;
++  m_videoRectChanged = true;
++}
++
+ void CWebLayerBridge::Disable()
+ {
+   CVideoLayerBridgeDRMPRIME::Disable();
++  std::unique_lock lock(m_lock);
++  m_videoShown = false;
+   HidePage();
+ }
+ 
+ void CWebLayerBridge::SetVideoPlane(CVideoBufferDRMPRIME* buffer, const CRect& destRect)
+ {
+-  CVideoLayerBridgeDRMPRIME::SetVideoPlane(buffer, destRect);
++  CVideoLayerBridgeDRMPRIME::SetVideoPlane(buffer, FitVideo(buffer->GetPicture(), destRect));
+   ApplyPage();
+ }
+ 
++CRect CWebLayerBridge::FitVideo(const VideoPicture& picture, const CRect& destRect)
++{
++  std::unique_lock lock(m_lock);
++  m_rendererRect = destRect;
++  m_videoAspect = picture.iDisplayHeight ? static_cast<float>(picture.iDisplayWidth) /
++                                               static_cast<float>(picture.iDisplayHeight)
++                                         : 0.0f;
++  m_videoRectChanged = false;
++  m_videoShown = true;
++  return VideoDest();
++}
++
+ void CWebLayerBridge::UpdateVideoPlane()
+ {
+   CVideoLayerBridgeDRMPRIME::UpdateVideoPlane();
++  PlaceVideo();
+   ApplyPage();
+ }
+ 
++// the page's rectangle in screen pixels, fitted to the video's aspect ratio
++CRect CWebLayerBridge::VideoDest() const
++{
++  if (m_videoRect.IsEmpty())
++    return m_rendererRect;
++
++  const RESOLUTION_INFO mode = m_DRM->GetCurrentMode();
++  const float screenWidth = static_cast<float>(mode.iScreenWidth);
++  const float screenHeight = static_cast<float>(mode.iScreenHeight);
++  const float scaleX = m_page ? screenWidth / static_cast<float>(m_page->GetWidth()) : 1.0f;
++  const float scaleY = m_page ? screenHeight / static_cast<float>(m_page->GetHeight()) : 1.0f;
++  CRect dest(m_videoRect.x1 * scaleX, m_videoRect.y1 * scaleY, m_videoRect.x2 * scaleX,
++             m_videoRect.y2 * scaleY);
++
++  if (m_videoAspect <= 0.0f)
++    return dest;
++
++  const float width = dest.Width();
++  const float height = dest.Height();
++  if (width > height * m_videoAspect)
++  {
++    const float fitted = height * m_videoAspect;
++    dest.x1 += (width - fitted) / 2;
++    dest.x2 = dest.x1 + fitted;
++  }
++  else
++  {
++    const float fitted = width / m_videoAspect;
++    dest.y1 += (height - fitted) / 2;
++    dest.y2 = dest.y1 + fitted;
++  }
++  return dest;
++}
++
++void CWebLayerBridge::PlaceVideo()
++{
++  std::unique_lock lock(m_lock);
++  if (!m_videoShown || !m_videoRectChanged)
++    return;
++
++  CDRMPlane* plane = m_DRM->GetVideoPlane();
++  if (!plane)
++    return;
++
++  m_videoRectChanged = false;
++  const CRect dest = VideoDest();
++  m_DRM->AddProperty(plane, "CRTC_X", static_cast<int32_t>(dest.x1) & ~1);
++  m_DRM->AddProperty(plane, "CRTC_Y", static_cast<int32_t>(dest.y1) & ~1);
++  m_DRM->AddProperty(plane, "CRTC_W", (static_cast<uint32_t>(dest.Width()) + 1) & ~1);
++  m_DRM->AddProperty(plane, "CRTC_H", (static_cast<uint32_t>(dest.Height()) + 1) & ~1);
++}
++
+ void CWebLayerBridge::ApplyPage()
+ {
+   std::unique_lock lock(m_lock);
+--- a/xbmc/cores/WebPlayer/WebLayerBridge.h
++++ b/xbmc/cores/WebPlayer/WebLayerBridge.h
+@@ -11,6 +11,9 @@
+ #include "cores/VideoPlayer/Buffers/DmaBufIdentityCache.h"
+ #include "cores/VideoPlayer/VideoRenderers/HwDecRender/VideoLayerBridgeDRMPRIME.h"
+ #include "threads/CriticalSection.h"
++#include "utils/Geometry.h"
++
++struct VideoPicture;
+ 
+ namespace KODI
+ {
+@@ -51,7 +54,16 @@ public:
+    */
+   void ClearPage();
+ 
++  /*!
++   * \brief Show the video at a rectangle of the page, in the page's pixels; an
++   * empty one leaves the placement to the renderer; any thread
++   */
++  void SetVideoRect(const CRect& rect);
++
+ private:
++  CRect FitVideo(const VideoPicture& picture, const CRect& destRect);
++  CRect VideoDest() const;
++  void PlaceVideo();
+   void ApplyPage();
+   void ShowPage();
+   bool StackPage();
+@@ -66,6 +78,11 @@ private:
+   uint32_t m_prevPageFb{0};
+   KODI::WINDOWING::GBM::CDRMPlane* m_plane{nullptr};
+   KODI::WINDOWING::GBM::CDRMPlane* m_stackedOn{nullptr};
++  CRect m_videoRect;
++  CRect m_rendererRect;
++  float m_videoAspect{0.0f};
++  bool m_videoRectChanged{false};
++  bool m_videoShown{false};
+   DRMPRIME::CDmaBufIdentityCache m_fbCache{MAX_FB_CACHE, "web-page-fb"};
+ };
+ 
+--- a/xbmc/cores/WebPlayer/WebPlayer.cpp
++++ b/xbmc/cores/WebPlayer/WebPlayer.cpp
+@@ -653,6 +653,13 @@ void CWebPlayer::OnWebVideoClear()
+   }
+ }
+ 
++void CWebPlayer::OnWebVideoRect(const CRect& rect)
++{
++  std::unique_lock lock(m_frameLock);
++  if (m_bridge)
++    m_bridge->SetVideoRect(rect);
++}
++
+ void CWebPlayer::ShowPicture(VideoPicture& picture)
+ {
+   auto* buffer = static_cast<CVideoBufferDRMPRIME*>(picture.videoBuffer);
+--- a/xbmc/cores/WebPlayer/WebPlayer.h
++++ b/xbmc/cores/WebPlayer/WebPlayer.h
+@@ -105,6 +105,7 @@ public:
+   // implementation of IWebVideoObserver
+   void OnWebVideoFrame(CWebVideoFrame* frame) override;
+   void OnWebVideoClear() override;
++  void OnWebVideoRect(const CRect& rect) override;
+ 
+   // implementation of IKeyboardEventHandler
+   bool OnKeyboardEvent(const XBMC_keysym& keysym, const CKey& key, bool pressed) override;
+--- a/xbmc/cores/WebPlayer/WebVideoServer.cpp
++++ b/xbmc/cores/WebPlayer/WebVideoServer.cpp
+@@ -359,6 +359,20 @@ bool CWebVideoServer::Receive(const std:
+       CloseAll(fds);
+       Clear();
+       return true;
++    case KODI_WEB_VIDEO_RECT:
++    {
++      kodi_web_video_rect rect;
++      CloseAll(fds);
++      if (static_cast<size_t>(len) != sizeof(rect))
++        return false;
++      memcpy(&rect, message, sizeof(rect));
++      if (rect.width < 0 || rect.height < 0)
++        return false;
++      Place(CRect(static_cast<float>(rect.x), static_cast<float>(rect.y),
++                  static_cast<float>(rect.x + rect.width),
++                  static_cast<float>(rect.y + rect.height)));
++      return true;
++    }
+     default:
+       CloseAll(fds);
+       return false;
+@@ -394,3 +408,10 @@ void CWebVideoServer::Clear()
+   if (m_observer)
+     m_observer->OnWebVideoClear();
+ }
++
++void CWebVideoServer::Place(const CRect& rect)
++{
++  std::unique_lock lock(m_observerLock);
++  if (m_observer)
++    m_observer->OnWebVideoRect(rect);
++}
+--- a/xbmc/cores/WebPlayer/WebVideoServer.h
++++ b/xbmc/cores/WebPlayer/WebVideoServer.h
+@@ -11,6 +11,7 @@
+ #include "cores/VideoPlayer/Buffers/VideoBufferDRMPRIME.h"
+ #include "threads/CriticalSection.h"
+ #include "threads/Thread.h"
++#include "utils/Geometry.h"
+ 
+ #include <cstdint>
+ #include <deque>
+@@ -117,6 +118,12 @@ public:
+    * \brief The video shows nothing until its next frame
+    */
+   virtual void OnWebVideoClear() = 0;
++
++  /*!
++   * \brief Where on the view the video shows, in the view's pixels; an empty
++   * rectangle leaves the placement to the renderer
++   */
++  virtual void OnWebVideoRect(const CRect& rect) = 0;
+ };
+ 
+ /*!
+@@ -147,6 +154,7 @@ private:
+                const kodi_web_video_frame& frame,
+                const std::vector<int>& fds);
+   void Clear();
++  void Place(const CRect& rect);
+ 
+   std::string m_path;
+   int m_listenFd{-1};
+--- a/xbmc/cores/WebPlayer/kodi-web-video.h
++++ b/xbmc/cores/WebPlayer/kodi-web-video.h
+@@ -16,6 +16,9 @@
+  *                               (SCM_RIGHTS) per DMA-BUF object
+  *  Kodi -> sink  RELEASE        id of a frame Kodi no longer shows
+  *  sink -> Kodi  CLEAR          the sink shows nothing until its next FRAME
++ *  sink -> Kodi  RECT           where on the view the video is shown, in the
++ *                               view's pixels; an empty one leaves the
++ *                               placement to Kodi
+  *
+  * The sink sends a frame when it is due and keeps it until Kodi releases it,
+  * as Kodi scans the frame out from the memory the sink holds. Kodi releases
+@@ -39,6 +42,7 @@ enum kodi_web_video_type
+   KODI_WEB_VIDEO_FRAME,
+   KODI_WEB_VIDEO_RELEASE,
+   KODI_WEB_VIDEO_CLEAR,
++  KODI_WEB_VIDEO_RECT,
+ };
+ 
+ /* the matrix coefficients, as in ITU-T H.273 */
+@@ -119,4 +123,13 @@ struct kodi_web_video_clear
+   uint32_t type;
+ };
+ 
++struct kodi_web_video_rect
++{
++  uint32_t type;
++  int32_t x;
++  int32_t y;
++  int32_t width;
++  int32_t height;
++};
++
+ #endif
