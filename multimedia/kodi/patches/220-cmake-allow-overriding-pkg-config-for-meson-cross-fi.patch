@@ -1,4 +1,4 @@
-From 7f087ec62981e93a133258cf6544d5a0ad98c3c4 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Mirko Vogt <foss@mirko.in>
 Date: Sat, 5 Sep 2026 21:30:00 +0000
 Subject: [PATCH] cmake: allow overriding pkg-config for meson cross files

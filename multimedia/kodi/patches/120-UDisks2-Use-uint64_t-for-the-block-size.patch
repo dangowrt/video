@@ -1,4 +1,4 @@
-From 2a58f4837750d80e81b305306c843b90a8ee58be Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Thu, 8 Oct 2026 14:12:26 +0100
 Subject: [PATCH] [UDisks2] Use uint64_t for the block size

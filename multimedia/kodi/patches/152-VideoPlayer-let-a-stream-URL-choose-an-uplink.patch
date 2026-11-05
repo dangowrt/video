@@ -1,4 +1,4 @@
-From 8d2631e09144deb48b424f1ccbbf0c9d6e5375c1 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Thu, 17 Sep 2026 18:41:54 +0100
 Subject: [PATCH] VideoPlayer: let a stream URL choose an uplink

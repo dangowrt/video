@@ -1,4 +1,4 @@
-From b90283ff9d1b8ba5598a6f566a0484d858219cfe Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: CvH <namerp@googlemail.com>
 Date: Sun, 21 Nov 2021 15:15:58 +0100
 Subject: [PATCH] don't build internal TexturePacker

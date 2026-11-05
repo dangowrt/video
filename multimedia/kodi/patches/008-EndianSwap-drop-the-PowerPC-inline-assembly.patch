@@ -1,4 +1,4 @@
-From ef08c8c26855a83689e45637e5b41b98a4455e4c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Thu, 8 Oct 2026 14:12:26 +0100
 Subject: [PATCH] EndianSwap: drop the PowerPC inline assembly

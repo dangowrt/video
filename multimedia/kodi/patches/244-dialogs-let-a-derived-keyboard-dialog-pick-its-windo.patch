@@ -1,4 +1,4 @@
-From f9666b9f2a1a036b7b79ee1fc185535e8ed637a5 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Fri, 9 Oct 2026 00:12:43 +0100
 Subject: [PATCH] dialogs: let a derived keyboard dialog pick its window
