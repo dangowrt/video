@@ -23,21 +23,16 @@ kodi_temp_dir() {
 	echo "$dir"
 }
 
-is_mounted() {
-	awk -v target="$1" '$2 == target { found = 1 } END { exit !found }' /proc/mounts
-}
-
 start_service() {
 	local data_dir="$(kodi_data_dir)"
 	local temp_dir="$(kodi_temp_dir)"
-	local volume="$(procd_get_mountpoints "$data_dir")"
 	local i
 
 	# The data directory can live on its own volume, which blockd mounts
 	# well after we are first started. Leave it to the mount trigger
 	# rather than starting on an empty directory in the rootfs.
-	if [ -n "$volume" ] && ! is_mounted "$volume"; then
-		echo "kodi: waiting for $volume" >&2
+	if ! procd_mountpoints_ready "$data_dir"; then
+		echo "kodi: waiting for the volume of $data_dir" >&2
 		return 0
 	fi
 
