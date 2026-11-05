@@ -1,0 +1,217 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 5 Nov 2026 21:00:17 +0000
+Subject: [PATCH] waylandhost: follow the screen's mode
+
+The host gave its clients the size of the GUI once, when the client
+started, so web apps kept a client started at 1080p at 1080p on a 4K
+screen, and ran at a reduced size where the GUI size is limited. The
+host now tells them the screen's mode, and when the display is reset
+for a new mode it sends every output the new mode and every surface a
+configure for the new size. Web apps that lay themselves out for a
+fixed size scale themselves to the view.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 29 ++++++++++--
+ xbmc/cores/WebPlayer/WebClientManager.h       |  6 ++-
+ .../linux/waylandhost/WaylandHost.cpp         | 47 ++++++++++++++++---
+ xbmc/platform/linux/waylandhost/WaylandHost.h | 13 ++++-
+ 4 files changed, 82 insertions(+), 13 deletions(-)
+
+--- a/xbmc/cores/WebPlayer/WebClientManager.cpp
++++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
+@@ -213,6 +213,18 @@ std::set<std::string> FilterListsOfInsta
+   return lists;
+ }
+ 
++// web apps run at the screen's resolution, whatever size the GUI renders at
++WaylandHostConfig OutputMode()
++{
++  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
++  const RESOLUTION_INFO res = gfx.GetResInfo();
++  WaylandHostConfig mode;
++  mode.width = res.iScreenWidth;
++  mode.height = res.iScreenHeight;
++  mode.refreshMilliHz = static_cast<int32_t>(std::lround(gfx.GetFPS() * 1000.0f));
++  return mode;
++}
++
+ } // unnamed namespace
+ 
+ CWebClientManager::~CWebClientManager()
+@@ -245,6 +257,7 @@ void CWebClientManager::Start()
+   m_filterLists->Start(FilterListsOfInstalledWebApps());
+ 
+   CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
++  CServiceBroker::GetWinSystem()->Register(this);
+   if (settings->GetBool(CSettings::SETTING_WEB_PRELOAD))
+     Spawn();
+ }
+@@ -254,6 +267,7 @@ void CWebClientManager::Stop()
+   if (!m_host)
+     return;
+ 
++  CServiceBroker::GetWinSystem()->Unregister(this);
+   CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
+   std::unique_lock lock(m_lock);
+   std::unique_ptr<CWebFilterLists> filterLists = std::move(m_filterLists);
+@@ -294,11 +308,7 @@ void CWebClientManager::StartVideo()
+ 
+ bool CWebClientManager::StartHost()
+ {
+-  WaylandHostConfig config;
+-  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+-  config.width = gfx.GetWidth();
+-  config.height = gfx.GetHeight();
+-  config.refreshMilliHz = static_cast<int32_t>(std::lround(gfx.GetFPS() * 1000.0f));
++  WaylandHostConfig config = OutputMode();
+ 
+ #if defined(HAVE_GBM)
+   if (auto* gbm = dynamic_cast<WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem()))
+@@ -478,6 +488,15 @@ void CWebClientManager::FrameMove()
+     m_host->FrameDone();
+ }
+ 
++void CWebClientManager::OnResetDisplay()
++{
++  if (!m_host)
++    return;
++
++  const WaylandHostConfig mode = OutputMode();
++  m_host->SetOutputMode(mode.width, mode.height, mode.refreshMilliHz);
++}
++
+ IWebViewObserver* CWebClientManager::ObserverOf(const std::string& profile)
+ {
+   return m_observer && m_observedProfile == profile ? m_observer : nullptr;
+--- a/xbmc/cores/WebPlayer/WebClientManager.h
++++ b/xbmc/cores/WebPlayer/WebClientManager.h
+@@ -68,7 +68,8 @@ public:
+  */
+ class CWebClientManager : public IApplicationComponent,
+                           public WAYLANDHOST::IWaylandHostObserver,
+-                          public IRenderLoop
++                          public IRenderLoop,
++                          public IDispResource
+ {
+ public:
+   enum class State
+@@ -122,6 +123,9 @@ public:
+   // implementation of IRenderLoop
+   void FrameMove() override;
+ 
++  // implementation of IDispResource
++  void OnResetDisplay() override;
++
+   // implementation of IWaylandHostObserver
+   void OnSurfaceMapped(WAYLANDHOST::CWaylandSurface& surface) override;
+   void OnSurfaceUnmapped(WAYLANDHOST::CWaylandSurface& surface) override;
+--- a/xbmc/platform/linux/waylandhost/WaylandHost.cpp
++++ b/xbmc/platform/linux/waylandhost/WaylandHost.cpp
+@@ -1291,14 +1291,49 @@ void CWaylandHost::BindOutput(wl_client*
+   if (!resource)
+     return;
+ 
++  wl_resource_set_destructor(resource, OutputDestroyed);
++  host->m_outputs.push_back(resource);
+   wl_output_send_geometry(resource, 0, 0, 0, 0, WL_OUTPUT_SUBPIXEL_UNKNOWN, "Kodi", "Kodi",
+                           WL_OUTPUT_TRANSFORM_NORMAL);
+-  wl_output_send_mode(resource, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
+-                      host->m_config.width, host->m_config.height, host->m_config.refreshMilliHz);
+-  if (wl_resource_get_version(resource) >= WL_OUTPUT_SCALE_SINCE_VERSION)
+-    wl_output_send_scale(resource, 1);
+-  if (wl_resource_get_version(resource) >= WL_OUTPUT_DONE_SINCE_VERSION)
+-    wl_output_send_done(resource);
++  host->SendOutputMode(resource);
++}
++
++void CWaylandHost::OutputDestroyed(wl_resource* resource)
++{
++  static_cast<CWaylandHost*>(wl_resource_get_user_data(resource))->m_outputs.remove(resource);
++}
++
++void CWaylandHost::SendOutputMode(wl_resource* output) const
++{
++  wl_output_send_mode(output, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED, m_config.width,
++                      m_config.height, m_config.refreshMilliHz);
++  if (wl_resource_get_version(output) >= WL_OUTPUT_SCALE_SINCE_VERSION)
++    wl_output_send_scale(output, 1);
++  if (wl_resource_get_version(output) >= WL_OUTPUT_DONE_SINCE_VERSION)
++    wl_output_send_done(output);
++}
++
++void CWaylandHost::SetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz)
++{
++  Post([this, width, height, refreshMilliHz] { DoSetOutputMode(width, height, refreshMilliHz); });
++}
++
++void CWaylandHost::DoSetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz)
++{
++  if (width == m_config.width && height == m_config.height &&
++      refreshMilliHz == m_config.refreshMilliHz)
++    return;
++
++  CLog::Log(LOGINFO, "CWaylandHost::{}: {}x{} at {} mHz", __FUNCTION__, width, height,
++            refreshMilliHz);
++  m_config.width = width;
++  m_config.height = height;
++  m_config.refreshMilliHz = refreshMilliHz;
++  for (wl_resource* output : m_outputs)
++    SendOutputMode(output);
++  for (CWaylandSurface* surface : m_surfaces)
++    surface->SendConfigure(width, height);
++  wl_display_flush_clients(m_display);
+ }
+ 
+ void CWaylandHost::BindSeat(wl_client* client, void* data, uint32_t version, uint32_t id)
+--- a/xbmc/platform/linux/waylandhost/WaylandHost.h
++++ b/xbmc/platform/linux/waylandhost/WaylandHost.h
+@@ -163,6 +163,12 @@ public:
+    */
+   void TerminateClients();
+ 
++  /*!
++   * \brief Tell the clients the output's new mode and resize their surfaces
++   * to it; any thread
++   */
++  void SetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz);
++
+   // input injection; any thread
+   void KeyboardKey(uint32_t evdevCode, bool pressed);
+   void PointerMotion(int32_t x, int32_t y);
+@@ -306,6 +312,8 @@ private:
+   void DoPointerAxis(int32_t value120);
+   void DoPointerScroll(int32_t x, int32_t y, int32_t pixels);
+   void DoFrameDone();
++  void DoSetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz);
++  void SendOutputMode(wl_resource* output) const;
+   void SetKeyboardFocus(CWaylandSurface* surface);
+   void SendKeyboardEnter(CWaylandSurface& surface);
+   void SendKeyboardEnterTo(wl_resource* keyboard, CWaylandSurface& surface);
+@@ -322,6 +330,7 @@ private:
+   // globals
+   static void BindCompositor(wl_client* client, void* data, uint32_t version, uint32_t id);
+   static void BindOutput(wl_client* client, void* data, uint32_t version, uint32_t id);
++  static void OutputDestroyed(wl_resource* resource);
+   static void BindSeat(wl_client* client, void* data, uint32_t version, uint32_t id);
+   static void BindXdgWmBase(wl_client* client, void* data, uint32_t version, uint32_t id);
+   static void BindLinuxDmabuf(wl_client* client, void* data, uint32_t version, uint32_t id);
+@@ -338,7 +347,8 @@ private:
+   void SendContentFilterList(const std::string& name, const std::string& path);
+ 
+   IWaylandHostObserver& m_observer;
+-  const WaylandHostConfig m_config;
++  // changed only on the host thread
++  WaylandHostConfig m_config;
+ 
+   wl_display* m_display{nullptr};
+   wl_event_loop* m_loop{nullptr};
+@@ -355,6 +365,7 @@ private:
+   std::list<WebView> m_views;
+   std::map<std::string, std::string> m_filterLists;
+   std::list<TextInput> m_textInputs;
++  std::list<wl_resource*> m_outputs;
+   std::list<wl_resource*> m_keyboards;
+   std::list<wl_resource*> m_pointers;
+   CWaylandSurface* m_keyboardFocus{nullptr};
