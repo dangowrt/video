@@ -1,0 +1,129 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 5 Nov 2026 21:40:54 +0000
+Subject: [PATCH] WebPlayer: show web pages on display planes whatever video
+ uses
+
+Web pages and their video went to display planes only where the setting
+for DRM PRIME video picked rendering direct to a plane, which costs
+Kodi's own video the features of the GLES renderer. A DRM PRIME buffer
+may now prefer a plane, and the plane renderer takes such a buffer
+whatever that setting says, with the GLES renderer behind it for
+formats no plane shows. The web player's page and video buffers prefer
+a plane, so web pages use planes on any atomic DRM device.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/cores/VideoPlayer/Buffers/VideoBufferDRMPRIME.h  |  6 ++++++
+ .../VideoRenderers/HwDecRender/RendererDRMPRIME.cpp   |  8 +++-----
+ xbmc/cores/WebPlayer/WebClientManager.cpp             | 11 ++++-------
+ xbmc/cores/WebPlayer/WebPlayer.cpp                    |  6 +-----
+ xbmc/cores/WebPlayer/WebVideoBuffer.h                 |  1 +
+ xbmc/cores/WebPlayer/WebVideoServer.h                 |  1 +
+ 6 files changed, 16 insertions(+), 17 deletions(-)
+
+--- a/xbmc/cores/VideoPlayer/Buffers/VideoBufferDRMPRIME.h
++++ b/xbmc/cores/VideoPlayer/Buffers/VideoBufferDRMPRIME.h
+@@ -41,6 +41,12 @@ public:
+   virtual bool AcquireDescriptor() { return true; }
+   virtual void ReleaseDescriptor() {}
+ 
++  /*!
++   * \brief Show the buffer on a display plane wherever one can, whichever
++   * renderer the settings pick for video
++   */
++  virtual bool PrefersPlane() const { return false; }
++
+ protected:
+   explicit CVideoBufferDRMPRIME(int id);
+ 
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.cpp
+@@ -42,12 +42,10 @@ CRendererDRMPRIME::~CRendererDRMPRIME()
+ CBaseRenderer* CRendererDRMPRIME::Create(CVideoBuffer* buffer)
+ {
+   auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+-  if (buffer && settings->GetInt(CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER) == 0)
++  auto buf = dynamic_cast<CVideoBufferDRMPRIME*>(buffer);
++  if (buf && (settings->GetInt(CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER) == 0 ||
++              buf->PrefersPlane()))
+   {
+-    auto buf = dynamic_cast<CVideoBufferDRMPRIME*>(buffer);
+-    if (!buf)
+-      return nullptr;
+-
+     auto winSystem = static_cast<CWinSystemGbm*>(CServiceBroker::GetWinSystem());
+     if (!winSystem)
+       return nullptr;
+--- a/xbmc/cores/WebPlayer/WebClientManager.cpp
++++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
+@@ -44,6 +44,7 @@
+ 
+ #if defined(HAVE_GBM)
+ #include "windowing/gbm/WinSystemGbm.h"
++#include "windowing/gbm/drm/DRMAtomic.h"
+ #include "windowing/gbm/drm/DRMUtils.h"
+ 
+ #include "platform/linux/input/LibInputSettings.h"
+@@ -289,14 +290,10 @@ void CWebClientManager::Stop()
+ 
+ void CWebClientManager::StartVideo()
+ {
+-#if defined(HAVE_GBM)
+-  // the page's video takes a display plane only where Kodi's video does
+-  if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+-          CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER) != 0)
+-    return;
+-
++#if defined(HAVE_GBM) && defined(HAS_GLES)
++  // display planes take part in atomic commits only
+   auto* gbm = dynamic_cast<WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem());
+-  if (!gbm || !gbm->GetDrm())
++  if (!gbm || !std::dynamic_pointer_cast<WINDOWING::GBM::CDRMAtomic>(gbm->GetDrm()))
+     return;
+ 
+   m_video = std::make_unique<CWebVideoServer>();
+--- a/xbmc/cores/WebPlayer/WebPlayer.cpp
++++ b/xbmc/cores/WebPlayer/WebPlayer.cpp
+@@ -26,8 +26,6 @@
+ #include "input/keyboard/XBMC_keyboard.h"
+ #include "kodi-web-video.h"
+ #include "messaging/ApplicationMessenger.h"
+-#include "settings/Settings.h"
+-#include "settings/SettingsComponent.h"
+ #include "utils/log.h"
+ #include "windowing/GraphicContext.h"
+ #include "windowing/WinSystem.h"
+@@ -191,11 +189,9 @@ bool CWebPlayer::OpenFile(const CFileIte
+   }
+ 
+ #if defined(HAVE_GBM) && defined(HAS_GLES)
+-  // where Kodi's video goes direct to a plane, the page's video does as well
+   auto* gbm = dynamic_cast<WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem());
+   auto drm = gbm ? std::dynamic_pointer_cast<WINDOWING::GBM::CDRMAtomic>(gbm->GetDrm()) : nullptr;
+-  if (drm && CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+-                 CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER) == 0)
++  if (drm)
+   {
+     m_bridge = std::make_shared<CWebLayerBridge>(drm);
+     gbm->RegisterVideoLayerBridge(m_bridge);
+--- a/xbmc/cores/WebPlayer/WebVideoBuffer.h
++++ b/xbmc/cores/WebPlayer/WebVideoBuffer.h
+@@ -43,6 +43,7 @@ public:
+   uint32_t GetWidth() const override;
+   uint32_t GetHeight() const override;
+   AVDRMFrameDescriptor* GetDescriptor() const override;
++  bool PrefersPlane() const override { return true; }
+ 
+ private:
+   std::shared_ptr<WAYLANDHOST::CWaylandBuffer> m_buffer;
+--- a/xbmc/cores/WebPlayer/WebVideoServer.h
++++ b/xbmc/cores/WebPlayer/WebVideoServer.h
+@@ -64,6 +64,7 @@ public:
+   uint32_t GetWidth() const override { return m_width; }
+   uint32_t GetHeight() const override { return m_height; }
+   AVDRMFrameDescriptor* GetDescriptor() const override;
++  bool PrefersPlane() const override { return true; }
+ 
+   uint32_t GetParN() const { return m_parN; }
+   uint32_t GetParD() const { return m_parD; }
