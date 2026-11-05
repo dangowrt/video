@@ -5,9 +5,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/dangowrt/kodi-webkit.git
-PKG_SOURCE_DATE:=2026-11-04
-PKG_SOURCE_VERSION:=f0f598a2276c98dc439f7ca24f3e2fbbff5765b2
-PKG_MIRROR_HASH:=62ca5fd8c9f1446623a993575deb7e9caeba540f7bd2f50a100b308280826380
+PKG_SOURCE_DATE:=2026-11-05
+PKG_SOURCE_VERSION:=eb92b0fda6caae90113eeda01cd106a2d5affbe6
+PKG_MIRROR_HASH:=a5c0f4588c2d4feaf42292f11877a6b529f871ddc6151ec8cd8cc83a3e9f6107
 
 PKG_LICENSE:=GPL-2.0-or-later
 PKG_LICENSE_FILES:=LICENSE
@@ -22,16 +22,17 @@ define Package/kodi-webkit
   CATEGORY:=Multimedia
   TITLE:=WPE WebKit client for Kodi web apps
   URL:=https://github.com/dangowrt/kodi-webkit
-  DEPENDS:=+libwpewebkit +libgio-gnutls +libgst1audio +bubblewrap +xdg-dbus-proxy \
-	+USE_MUSL:gcompat
+  DEPENDS:=+libwpewebkit +libgio-gnutls +libgst1audio +libgst1video +libgst1allocators \
+	+bubblewrap +xdg-dbus-proxy +USE_MUSL:gcompat
 endef
 
 define Package/kodi-webkit/description
  kodi-webview, the program Kodi starts to show web app add-ons. It runs
  as a Wayland client of Kodi and drives one WPE WebKit view per web app
  over Kodi's kodi_web_v1 protocol, the compiler that turns Adblock Plus
- filter lists into WebKit content filters, and a GStreamer audio sink
- that plays the pages' audio through Kodi's audio engine.
+ filter lists into WebKit content filters, a GStreamer audio sink that
+ plays the pages' audio through Kodi's audio engine, and a GStreamer
+ video sink that shows the pages' video on Kodi's video plane.
 endef
 
 MAKE_FLAGS += \
@@ -46,6 +47,7 @@ define Package/kodi-webkit/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/kodi-webview-filter $(1)/usr/libexec/
 	$(INSTALL_DIR) $(1)/usr/lib/gstreamer-1.0
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/libgstkodiaudiosink.so $(1)/usr/lib/gstreamer-1.0/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/libgstkodivideosink.so $(1)/usr/lib/gstreamer-1.0/
 endef
 
 $(eval $(call BuildPackage,kodi-webkit))
