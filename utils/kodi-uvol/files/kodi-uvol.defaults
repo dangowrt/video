@@ -1,0 +1,40 @@
+#!/bin/sh
+
+KODI_UVOL_NAME=kodi
+# a busy installation with add-ons, thumbnails and the CDM stays below 1 GiB
+KODI_UVOL_SIZE=$((4 * 1024 * 1024 * 1024))
+
+fstab_covers() {
+	local target
+
+	for target in $(uci -q show fstab | sed -n "s/^fstab\.[^.]*\.target='\(.*\)'$/\1/p"); do
+		case "${1%/}/" in
+		"${target%/}/"*)
+			return 0
+			;;
+		esac
+	done
+	return 1
+}
+
+data_dir="$(uci -q get kodi.main.data_dir)"
+data_dir="${data_dir:-/srv/kodi}"
+
+[ -L "$data_dir" ] && exit 0
+fstab_covers "$data_dir" && exit 0
+[ -d "$data_dir" ] && [ -n "$(ls -A "$data_dir")" ] && exit 0
+
+# no backend yet answers non-zero; stay queued for the next boot
+free="$(uvol free)" || exit 1
+
+uvol status "$KODI_UVOL_NAME" >/dev/null 2>&1
+if [ $? -eq 2 ]; then
+	size="$KODI_UVOL_SIZE"
+	[ "$free" -lt "$size" ] && size="$free"
+	uvol create "$KODI_UVOL_NAME" "$size" rw || exit 1
+fi
+
+rmdir "$data_dir" 2>/dev/null
+mkdir -p "${data_dir%/*}"
+ln -s "/tmp/run/uvol/$KODI_UVOL_NAME" "$data_dir"
+exit 0
