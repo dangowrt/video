@@ -22,10 +22,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
                                    //with ipv6.
    m_curlDisableHTTP2 = false;
 +  m_addonUplinks.clear();
+   m_webFilterLists.clear();
  
  #if defined(TARGET_WINDOWS_DESKTOP)
-   m_minimizeToTray = false;
-@@ -960,6 +961,30 @@ void CAdvancedSettings::ParseSettingsFil
+@@ -962,6 +963,30 @@ void CAdvancedSettings::ParseSettingsFil
      XMLUtils::GetString(pElement, "catrustfile", m_caTrustFile);
      XMLUtils::GetUInt(pElement, "nfstimeout", m_nfsTimeout, 0, 3600);
      XMLUtils::GetInt(pElement, "nfsretries", m_nfsRetries, -1, 30);
@@ -55,8 +55,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    }
    }
  
-   pElement = pRootElement->FirstChildElement("jsonrpc");
-@@ -1348,6 +1373,17 @@ void CAdvancedSettings::Clear()
+   pElement = pRootElement->FirstChildElement("webapps");
+@@ -1368,6 +1393,17 @@ void CAdvancedSettings::Clear()
    m_userAgent.clear();
  }
  
@@ -104,6 +104,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
 +    std::vector<AddonUplink> m_addonUplinks;
 +
-     std::string m_caTrustFile;
+     // shared content filter lists for web apps, name to URL; an empty URL drops a list
+     std::map<std::string, std::string> m_webFilterLists;
  
-     bool m_minimizeToTray; /* win32 only */

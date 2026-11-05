@@ -1,0 +1,293 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 3 Nov 2026 17:06:39 +0000
+Subject: [PATCH] VideoPlayer: prepare to render buffers a Wayland client hands
+ over
+
+Kodi can host Wayland clients and show their surfaces through its
+video renderers. For that, the build looks for wayland-server,
+wayland-scanner and the protocol definitions, taking linux-dmabuf from
+unstable/ where wayland-protocols has no stable/ copy yet; the DRM
+PRIME renderers accept DRM PRIME buffers whatever the decoder setting
+says, as these buffers come from no decoder; and CVideoBufferDMA copes
+with a factory that has no buffer object to export.
+
+A DRM PRIME buffer may prefer a display plane, and the plane renderer
+then takes it whatever the setting for DRM PRIME video picks, with the
+GLES renderer behind it for formats no plane shows. A video layer
+bridge derived from CVideoLayerBridgeDRMPRIME creates framebuffers for
+buffers of its own with the same conversion from a buffer's
+descriptor.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ cmake/modules/FindWaylandServer.cmake         | 79 +++++++++++++++++++
+ cmake/platform/linux/gbm.cmake                |  2 +-
+ cmake/platform/linux/wayland.cmake            |  2 +-
+ .../VideoPlayer/Buffers/VideoBufferDMA.cpp    | 14 +++-
+ .../VideoPlayer/Buffers/VideoBufferDRMPRIME.h |  6 ++
+ .../Buffers/test/TestVideoBufferDMA.cpp       | 36 +++++++++
+ .../HwDecRender/RendererDRMPRIME.cpp          | 11 +--
+ .../HwDecRender/RendererDRMPRIMEGLES.cpp      |  3 -
+ .../HwDecRender/VideoLayerBridgeDRMPRIME.h    |  9 ++-
+ 9 files changed, 143 insertions(+), 19 deletions(-)
+ create mode 100644 cmake/modules/FindWaylandServer.cmake
+
+--- /dev/null
++++ b/cmake/modules/FindWaylandServer.cmake
+@@ -0,0 +1,79 @@
++#.rst:
++# FindWaylandServer
++# -----------------
++# Finds the wayland-server library, the wayland-scanner code generator and
++# the wayland-protocols XML files needed to host Wayland clients
++#
++# This will define the following target:
++#
++#   ${APP_NAME_LC}::WaylandServer   - The wayland-server library
++#
++# and the following variables:
++#
++#   WAYLAND_SCANNER_EXECUTABLE   - wayland-scanner program
++#   WAYLAND_SERVER_PROTOCOLS     - name:xml pairs of the protocols the host serves
++
++if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
++
++  include(cmake/scripts/common/ModuleHelpers.cmake)
++
++  set(${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC wayland-server)
++  set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC}_DISABLE_VERSION ON)
++
++  SETUP_BUILD_VARS()
++
++  SETUP_FIND_SPECS()
++
++  SEARCH_EXISTING_PACKAGES()
++
++  if(${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME}_FOUND)
++    find_package(PkgConfig ${SEARCH_QUIET})
++
++    pkg_check_modules(PC_WAYLAND_SCANNER wayland-scanner ${SEARCH_QUIET})
++    if(PC_WAYLAND_SCANNER_FOUND)
++      pkg_get_variable(PC_WAYLAND_SCANNER_EXECUTABLE wayland-scanner wayland_scanner)
++    endif()
++    find_program(WAYLAND_SCANNER_EXECUTABLE NAMES wayland-scanner
++                                            HINTS ${PC_WAYLAND_SCANNER_EXECUTABLE})
++
++    pkg_check_modules(PC_WAYLAND_PROTOCOLS wayland-protocols ${SEARCH_QUIET})
++    if(PC_WAYLAND_PROTOCOLS_FOUND)
++      pkg_get_variable(_protocols_dir wayland-protocols pkgdatadir)
++    endif()
++
++    set(_dmabuf_xml ${_protocols_dir}/stable/linux-dmabuf/linux-dmabuf-v1.xml)
++    if(NOT EXISTS ${_dmabuf_xml})
++      # older wayland-protocols carry linux-dmabuf in unstable/ only
++      set(_dmabuf_xml ${_protocols_dir}/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml)
++    endif()
++    set(_protocols linux-dmabuf-v1:${_dmabuf_xml}
++                   presentation-time:${_protocols_dir}/stable/presentation-time/presentation-time.xml
++                   text-input-unstable-v3:${_protocols_dir}/unstable/text-input/text-input-unstable-v3.xml
++                   xdg-shell:${_protocols_dir}/stable/xdg-shell/xdg-shell.xml)
++
++    set(_protocols_found ${PC_WAYLAND_PROTOCOLS_FOUND})
++    foreach(_protocol IN LISTS _protocols)
++      string(REGEX REPLACE "^[^:]*:" "" _xml ${_protocol})
++      if(NOT EXISTS ${_xml})
++        set(_protocols_found FALSE)
++      endif()
++    endforeach()
++    if(_protocols_found)
++      set(WAYLAND_SERVER_PROTOCOLS ${_protocols} CACHE INTERNAL "")
++    endif()
++
++    if(WAYLAND_SCANNER_EXECUTABLE AND _protocols_found)
++      add_library(${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} ALIAS PkgConfig::${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME})
++
++      set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_COMPILE_DEFINITIONS HAVE_WAYLAND_SERVER)
++
++      ADD_TARGET_COMPILE_DEFINITION()
++    elseif(WaylandServer_FIND_REQUIRED)
++      message(FATAL_ERROR "wayland-scanner or the wayland-protocols descriptions were not found.")
++    endif()
++  else()
++    if(WaylandServer_FIND_REQUIRED)
++      message(FATAL_ERROR "wayland-server library was not found.")
++    endif()
++  endif()
++endif()
+--- a/cmake/platform/linux/gbm.cmake
++++ b/cmake/platform/linux/gbm.cmake
+@@ -1,5 +1,5 @@
+ list(APPEND PLATFORM_REQUIRED_DEPS GBM LibDRM>=2.4.95 LibInput Xkbcommon UDEV LibDisplayInfo)
+-list(APPEND PLATFORM_OPTIONAL_DEPS VAAPI)
++list(APPEND PLATFORM_OPTIONAL_DEPS VAAPI WaylandServer)
+ 
+ if(APP_RENDER_SYSTEM STREQUAL "gl")
+   list(APPEND PLATFORM_REQUIRED_DEPS OpenGl EGL)
+--- a/cmake/platform/linux/wayland.cmake
++++ b/cmake/platform/linux/wayland.cmake
+@@ -1,5 +1,5 @@
+ list(APPEND PLATFORM_REQUIRED_DEPS WaylandProtocols>=1.7 Waylandpp>=0.2.2 LibDRM>=2.4.95 Xkbcommon>=0.4.1)
+-list(APPEND PLATFORM_OPTIONAL_DEPS VAAPI)
++list(APPEND PLATFORM_OPTIONAL_DEPS VAAPI WaylandServer)
+ 
+ if(APP_RENDER_SYSTEM STREQUAL "gl")
+   list(APPEND PLATFORM_REQUIRED_DEPS OpenGl EGL)
+--- a/xbmc/cores/VideoPlayer/Buffers/VideoBufferDMA.cpp
++++ b/xbmc/cores/VideoPlayer/Buffers/VideoBufferDMA.cpp
+@@ -106,6 +106,13 @@ void CVideoBufferDMA::SetDimensions(int
+ 
+ bool CVideoBufferDMA::Alloc()
+ {
++  if (!m_bo)
++  {
++    CLog::Log(LOGERROR, "CVideoBufferDMA::{} - no buffer object able to allocate by size",
++              __FUNCTION__);
++    return false;
++  }
++
+   if (!m_bo->CreateBufferObject(m_size))
+     return false;
+ 
+@@ -177,8 +184,11 @@ void CVideoBufferDMA::SyncEnd()
+ 
+ void CVideoBufferDMA::Destroy()
+ {
+-  m_bo->ReleaseMemory();
+-  m_bo->DestroyBufferObject();
++  if (m_bo)
++  {
++    m_bo->ReleaseMemory();
++    m_bo->DestroyBufferObject();
++  }
+ 
+   for (auto& offset : m_offsets)
+     offset = 0;
+--- a/xbmc/cores/VideoPlayer/Buffers/VideoBufferDRMPRIME.h
++++ b/xbmc/cores/VideoPlayer/Buffers/VideoBufferDRMPRIME.h
+@@ -41,6 +41,12 @@ public:
+   virtual bool AcquireDescriptor() { return true; }
+   virtual void ReleaseDescriptor() {}
+ 
++  /*!
++   * \brief Show the buffer on a display plane wherever one can, whichever
++   * renderer the settings pick for video
++   */
++  virtual bool PrefersPlane() const { return false; }
++
+ protected:
+   explicit CVideoBufferDRMPRIME(int id);
+ 
+--- a/xbmc/cores/VideoPlayer/Buffers/test/TestVideoBufferDMA.cpp
++++ b/xbmc/cores/VideoPlayer/Buffers/test/TestVideoBufferDMA.cpp
+@@ -51,6 +51,20 @@ private:
+   std::unique_ptr<uint8_t[]> m_memory;
+ };
+ 
++// mirrors CDumbBufferObject and CGBMBufferObject, which only allocate by format
++class FormatOnlyBufferObject : public CBufferObject
++{
++public:
++  bool CreateBufferObject(uint32_t format, uint32_t width, uint32_t height) override
++  {
++    return true;
++  }
++  void DestroyBufferObject() override {}
++  uint8_t* GetMemory() override { return nullptr; }
++  void ReleaseMemory() override {}
++  std::string GetName() const override { return "FormatOnlyBufferObject"; }
++};
++
+ struct CountingStat
+ {
+   std::map<int, uint64_t> inodes;
+@@ -81,6 +95,13 @@ protected:
+   void TearDown() override { CBufferObjectFactory::ClearBufferObjects(); }
+ };
+ 
++class TestVideoBufferDMANoBackend : public ::testing::Test
++{
++protected:
++  void SetUp() override { CBufferObjectFactory::ClearBufferObjects(); }
++  void TearDown() override { CBufferObjectFactory::ClearBufferObjects(); }
++};
++
+ } // namespace
+ 
+ // identity is derived fresh from the descriptor; layout changes must land in it
+@@ -125,3 +146,18 @@ TEST_F(TestVideoBufferDMA, IsValidGateSu
+   buffer->SetDimensions(1920, 1080, strides, offsets);
+   EXPECT_TRUE(buffer->IsValid());
+ }
++
++TEST_F(TestVideoBufferDMANoBackend, AllocFailsWithNothingRegistered)
++{
++  auto buffer = std::make_unique<CVideoBufferDMA>(0, FOURCC_NV12, 2, 1920 * 1080 * 3 / 2);
++  EXPECT_FALSE(buffer->Alloc());
++}
++
++TEST_F(TestVideoBufferDMANoBackend, AllocFailsWhenNoBackendAllocatesBySize)
++{
++  CBufferObjectFactory::RegisterBufferObject(
++      [] { return std::make_unique<FormatOnlyBufferObject>(); });
++
++  auto buffer = std::make_unique<CVideoBufferDMA>(0, FOURCC_NV12, 2, 1920 * 1080 * 3 / 2);
++  EXPECT_FALSE(buffer->Alloc());
++}
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.cpp
+@@ -42,15 +42,10 @@ CRendererDRMPRIME::~CRendererDRMPRIME()
+ CBaseRenderer* CRendererDRMPRIME::Create(CVideoBuffer* buffer)
+ {
+   auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+-  if (!settings->GetBool(CSettings::SETTING_VIDEOPLAYER_USEPRIMEDECODER))
+-    return nullptr;
+-
+-  if (buffer && settings->GetInt(CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER) == 0)
++  auto buf = dynamic_cast<CVideoBufferDRMPRIME*>(buffer);
++  if (buf && (settings->GetInt(CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER) == 0 ||
++              buf->PrefersPlane()))
+   {
+-    auto buf = dynamic_cast<CVideoBufferDRMPRIME*>(buffer);
+-    if (!buf)
+-      return nullptr;
+-
+     auto winSystem = static_cast<CWinSystemGbm*>(CServiceBroker::GetWinSystem());
+     if (!winSystem)
+       return nullptr;
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
+@@ -41,9 +41,6 @@ CBaseRenderer* CRendererDRMPRIMEGLES::Cr
+     return nullptr;
+ 
+   auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+-  if (!settings->GetBool(CSettings::SETTING_VIDEOPLAYER_USEPRIMEDECODER))
+-    return nullptr;
+-
+   if (settings->GetInt(CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER) != 1)
+     return nullptr;
+ 
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/VideoLayerBridgeDRMPRIME.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/VideoLayerBridgeDRMPRIME.h
+@@ -41,16 +41,17 @@ public:
+   virtual void UpdateVideoPlane();
+ 
+ protected:
++  //! \brief Convert the buffer's descriptor to a framebuffer; 0 on failure.
++  uint32_t CreateFramebuffer(CVideoBufferDRMPRIME* buffer);
++
++  static constexpr size_t MAX_FB_CACHE = 32;
++
+   std::shared_ptr<KODI::WINDOWING::GBM::CDRMAtomic> m_DRM;
+ 
+ private:
+   void Acquire(CVideoBufferDRMPRIME* buffer, uint32_t fbId);
+   void Release(CVideoBufferDRMPRIME* buffer);
+   bool PrepareBuffer(CVideoBufferDRMPRIME* buffer);
+-  //! \brief Convert the buffer's descriptor to a framebuffer; 0 on failure.
+-  uint32_t CreateFramebuffer(CVideoBufferDRMPRIME* buffer);
+-
+-  static constexpr size_t MAX_FB_CACHE = 32;
+ 
+   DRMPRIME::CDmaBufIdentityCache m_fbCache{MAX_FB_CACHE, "bridge-fb"};
+   CVideoBufferDRMPRIME* m_buffer = nullptr;
