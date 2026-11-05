@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
-Date: Wed, 4 Nov 2026 12:51:24 +0000
+Date: Tue, 3 Nov 2026 17:07:13 +0000
 Subject: [PATCH] WebPlayer: play web apps through a hosted web browser
 
 Streaming services and broadcasters increasingly offer their catalogue
@@ -16,28 +16,44 @@ in front, keys the keymap leaves to the page and the pointer go to the
 browser; text fields open Kodi's keyboard along the bottom of the
 screen. The browser's audio plays through Kodi's audio engine over a
 socket of its own, pages decrypt with the CDM inputstream.adaptive
-installed, a setting lets pages decode video in software, and the media
-state a page reports drives the screensaver and display power rules as
-a video or music would.
+installed, and the media state a page reports drives the screensaver
+and display power rules as a video or music would.
 
 The frames are DRM PRIME buffers, which the GBM and Wayland windowing
 show, so the web host runs only there; System.SupportsWebApps tells
-skins whether it does.
+skins whether it does. Web apps run at the screen's resolution and
+follow its mode.
+
+On GBM with atomic DRM, the browser's video sinks hand each decoded
+DMA-BUF frame over a second socket, kodi-web-video, when it is due.
+The web player shows those frames on the video plane and the page on a
+plane between the video and the GUI plane, where the page covers the
+video except where it is transparent, so the GPU composes neither the
+video nor the page. Page and video buffers prefer a plane, which keeps
+this independent of the renderer the settings pick for Kodi's own
+video. A page with an opaque background leaves a transparent hole
+where its video element is, and the sink reports that rectangle, so
+the video plane moves there, fitted to the video's aspect ratio. A
+frame goes back to its sink once no plane shows it, and when a page's
+video stops, the page returns to the video plane.
 
 Web apps are a new add-on type, kodi.webapp: a manifest names the start
 URL, user agent, user scripts and content filters of the app, whose
-profile is the add-on id. Web apps are listed as an add-on source,
-accept URLs as assets, and may let the user choose among several start
-URLs. The web player plays web apps only, which ask for it by name. A
-web app mapped to an uplink has its view's connections and name lookups
-bound to that uplink, and is refused while the uplink is not available.
+profile is the add-on id. Web apps are listed as an add-on source and
+in a "Web apps" section of Estuary's home menu, accept URLs as assets,
+and may let the user choose among several start URLs. The web player
+plays web apps only, which ask for it by name.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
  addons/kodi.webapp/addon.xml                  |   7 +
  .../resources/strings.po                      | 111 ++-
+ .../resource.language.en_gb/strings.po        |   5 +
  addons/skin.estuary/xml/DialogWebKeyboard.xml | 525 +++++++++++
  addons/skin.estuary/xml/DialogWebOSD.xml      |  63 ++
+ addons/skin.estuary/xml/Home.xml              |  38 +
+ addons/skin.estuary/xml/MyPrograms.xml        |   3 +-
+ addons/skin.estuary/xml/SkinSettings.xml      |   7 +
  addons/skin.estuary/xml/WebFullScreen.xml     |   4 +
  cmake/installdata/common/addons.txt           |   1 +
  .../optional/common/waylandserver.txt         |   1 +
@@ -55,7 +71,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/application/ApplicationPlayer.cpp        |  11 +
  xbmc/application/ApplicationPlayer.h          |   1 +
  xbmc/application/ApplicationSkinHandling.cpp  |  10 +
- xbmc/cores/WebPlayer/CMakeLists.txt           |  24 +
+ xbmc/cores/WebPlayer/CMakeLists.txt           |  32 +
  xbmc/cores/WebPlayer/GUIDialogWebKeyboard.cpp |  43 +
  xbmc/cores/WebPlayer/GUIDialogWebKeyboard.h   |  35 +
  xbmc/cores/WebPlayer/GUIDialogWebOSD.cpp      | 112 +++
@@ -65,14 +81,19 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/cores/WebPlayer/WebApp.h                 |  35 +
  xbmc/cores/WebPlayer/WebAudioServer.cpp       | 796 ++++++++++++++++
  xbmc/cores/WebPlayer/WebAudioServer.h         | 136 +++
- xbmc/cores/WebPlayer/WebClientManager.cpp     | 849 ++++++++++++++++++
- xbmc/cores/WebPlayer/WebClientManager.h       | 213 +++++
- xbmc/cores/WebPlayer/WebPlayer.cpp            | 573 ++++++++++++
- xbmc/cores/WebPlayer/WebPlayer.h              | 149 +++
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 847 ++++++++++++++++++
+ xbmc/cores/WebPlayer/WebClientManager.h       | 224 +++++
+ xbmc/cores/WebPlayer/WebLayerBridge.cpp       | 236 +++++
+ xbmc/cores/WebPlayer/WebLayerBridge.h         |  90 ++
+ xbmc/cores/WebPlayer/WebPlayer.cpp            | 744 +++++++++++++++
+ xbmc/cores/WebPlayer/WebPlayer.h              | 169 ++++
  xbmc/cores/WebPlayer/WebPlayerDefs.h          |  26 +
  xbmc/cores/WebPlayer/WebVideoBuffer.cpp       | 112 +++
- xbmc/cores/WebPlayer/WebVideoBuffer.h         |  68 ++
+ xbmc/cores/WebPlayer/WebVideoBuffer.h         |  69 ++
+ xbmc/cores/WebPlayer/WebVideoServer.cpp       | 417 +++++++++
+ xbmc/cores/WebPlayer/WebVideoServer.h         | 170 ++++
  xbmc/cores/WebPlayer/kodi-web-audio.h         | 175 ++++
+ xbmc/cores/WebPlayer/kodi-web-video.h         | 135 +++
  .../playercorefactory/PlayerCoreConfig.cpp    |   9 +
  .../playercorefactory/PlayerCoreFactory.cpp   |  11 +
  xbmc/filesystem/AddonsDirectory.cpp           |  16 +-
@@ -88,7 +109,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/settings/Settings.h                      |   4 +
  xbmc/utils/ExecString.cpp                     |   2 +
  xbmc/windows/GUIMediaWindow.cpp               |   9 +
- 54 files changed, 4592 insertions(+), 28 deletions(-)
+ 63 files changed, 5901 insertions(+), 29 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -105,12 +126,17 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  create mode 100644 xbmc/cores/WebPlayer/WebAudioServer.h
  create mode 100644 xbmc/cores/WebPlayer/WebClientManager.cpp
  create mode 100644 xbmc/cores/WebPlayer/WebClientManager.h
+ create mode 100644 xbmc/cores/WebPlayer/WebLayerBridge.cpp
+ create mode 100644 xbmc/cores/WebPlayer/WebLayerBridge.h
  create mode 100644 xbmc/cores/WebPlayer/WebPlayer.cpp
  create mode 100644 xbmc/cores/WebPlayer/WebPlayer.h
  create mode 100644 xbmc/cores/WebPlayer/WebPlayerDefs.h
  create mode 100644 xbmc/cores/WebPlayer/WebVideoBuffer.cpp
  create mode 100644 xbmc/cores/WebPlayer/WebVideoBuffer.h
+ create mode 100644 xbmc/cores/WebPlayer/WebVideoServer.cpp
+ create mode 100644 xbmc/cores/WebPlayer/WebVideoServer.h
  create mode 100644 xbmc/cores/WebPlayer/kodi-web-audio.h
+ create mode 100644 xbmc/cores/WebPlayer/kodi-web-video.h
 
 --- /dev/null
 +++ b/addons/kodi.webapp/addon.xml
@@ -138,117 +164,128 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
  #: xbmc/guilib/WindowIDs.h
  msgctxt "#12999"
-@@ -25663,7 +25668,109 @@ msgctxt "#40230"
+@@ -25624,7 +25629,109 @@ msgctxt "#40230"
  msgid "Turn on to show individual versions in the movies view, turn off to group them"
  msgstr ""
  
 -#empty strings from id 40231 to 40399
++#empty strings from id 40231 to 40232
++
 +#. Settings section for pages shown inside Kodi
 +#: system/settings/settings.xml
-+msgctxt "#40231"
++msgctxt "#40233"
 +msgid "Web"
 +msgstr ""
 +
 +#. Help for the Web settings section
 +#: system/settings/settings.xml
-+msgctxt "#40232"
++msgctxt "#40234"
 +msgid "Settings for the web pages Kodi shows through its web client."
 +msgstr ""
 +
 +#. Help for the Web settings category
 +#: system/settings/settings.xml
-+msgctxt "#40233"
++msgctxt "#40235"
 +msgid "This category contains the settings of the web client Kodi starts to show pages."
 +msgstr ""
 +
 +#. Settings group with the web client's settings
 +#: system/settings/settings.xml
-+msgctxt "#40234"
++msgctxt "#40236"
 +msgid "Web client"
 +msgstr ""
 +
 +#. Name of the setting holding the web client's executable
 +#: system/settings/settings.xml
-+msgctxt "#40235"
++msgctxt "#40237"
 +msgid "Client command"
 +msgstr ""
 +
 +#. Help for setting Client command
 +#: system/settings/settings.xml
-+msgctxt "#40236"
++msgctxt "#40238"
 +msgid "The program Kodi starts as its web client. It connects to Kodi as a Wayland client over an inherited socket and shows the requested page."
 +msgstr ""
 +
 +#. Name of the setting that turns the web client on
 +#: system/settings/settings.xml
-+msgctxt "#40237"
++msgctxt "#40239"
 +msgid "Show web pages"
 +msgstr ""
 +
 +#. Help for setting Show web pages
 +#: system/settings/settings.xml
-+msgctxt "#40238"
++msgctxt "#40240"
 +msgid "Start a web client and show web pages inside Kodi. Turning this off removes every web entry point."
 +msgstr ""
 +
 +#. Name of the setting that starts the web client with Kodi
 +#: system/settings/settings.xml
-+msgctxt "#40239"
++msgctxt "#40241"
 +msgid "Start the web client with Kodi"
 +msgstr ""
 +
 +#. Help for setting Start the web client with Kodi
 +#: system/settings/settings.xml
-+msgctxt "#40240"
++msgctxt "#40242"
 +msgid "Keep the web client running from start-up so that pages open at once. Turn off to start it on first use and save memory."
 +msgstr ""
 +
++
++
 +#. Add-on type: a web application shown through Kodi's web view
 +#: xbmc/addons/addoninfo/AddonInfo.cpp
-+msgctxt "#40241"
++msgctxt "#40243"
 +msgid "Web apps"
 +msgstr ""
 +
++
 +#. Name of the setting that allows software video decoding in web pages
 +#: system/settings/settings.xml
-+msgctxt "#40242"
++msgctxt "#40244"
 +msgid "Software video decoding in web pages"
 +msgstr ""
 +
 +#. Help for setting Software video decoding in web pages
 +#: system/settings/settings.xml
-+msgctxt "#40243"
++msgctxt "#40245"
 +msgid "Let web pages use video codecs this device can only decode in software. Off keeps pages to the codecs the hardware decodes, so a page offering several picks one of those."
 +msgstr ""
 +
++
 +#. Web OSD button going back in the page's history
 +#: addons/skin.estuary/xml/DialogWebOSD.xml
-+msgctxt "#40244"
++msgctxt "#40246"
 +msgid "Back"
 +msgstr ""
 +
 +#. Web OSD button going forward in the page's history
 +#: addons/skin.estuary/xml/DialogWebOSD.xml
-+msgctxt "#40245"
++msgctxt "#40247"
 +msgid "Forward"
 +msgstr ""
 +
 +#. Web OSD button loading the page again
 +#: addons/skin.estuary/xml/DialogWebOSD.xml
-+msgctxt "#40246"
++msgctxt "#40248"
 +msgid "Reload"
 +msgstr ""
 +
-+#empty strings from id 40247 to 40398
-+
-+#. Notification text when a web app's uplink has no local address
-+#: xbmc/cores/WebPlayer/WebClientManager.cpp
-+msgctxt "#40399"
-+msgid "The uplink {0:s} is not available."
-+msgstr ""
++#empty strings from id 40249 to 40399
  
  # Video versions
  
+--- a/addons/skin.estuary/language/resource.language.en_gb/strings.po
++++ b/addons/skin.estuary/language/resource.language.en_gb/strings.po
+@@ -1004,3 +1004,8 @@ msgstr ""
+ msgctxt "#31615"
+ msgid "Subtitle language"
+ msgstr ""
++
++#: /xml/Home.xml
++msgctxt "#31616"
++msgid "Open streaming services and other web pages inside Kodi. Install web apps from your add-on repositories."
++msgstr ""
 --- /dev/null
 +++ b/addons/skin.estuary/xml/DialogWebKeyboard.xml
 @@ -0,0 +1,525 @@
@@ -825,15 +862,15 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +				<itemgap>20</itemgap>
 +				<include content="DefaultDialogButton">
 +					<param name="id" value="11" />
-+					<param name="label" value="$LOCALIZE[40244]" />
++					<param name="label" value="$LOCALIZE[40246]" />
 +				</include>
 +				<include content="DefaultDialogButton">
 +					<param name="id" value="12" />
-+					<param name="label" value="$LOCALIZE[40245]" />
++					<param name="label" value="$LOCALIZE[40247]" />
 +				</include>
 +				<include content="DefaultDialogButton">
 +					<param name="id" value="13" />
-+					<param name="label" value="$LOCALIZE[40246]" />
++					<param name="label" value="$LOCALIZE[40248]" />
 +				</include>
 +				<include content="DefaultDialogButton">
 +					<param name="id" value="14" />
@@ -843,6 +880,88 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +		</control>
 +	</controls>
 +</window>
+--- a/addons/skin.estuary/xml/Home.xml
++++ b/addons/skin.estuary/xml/Home.xml
+@@ -840,6 +840,36 @@
+ 						</include>
+ 					</control>
+ 				</control>
++				<control type="group" id="22000">
++					<visible>String.IsEqual(Container(9000).ListItem.Property(id),webapps)</visible>
++					<include content="Visible_Right_Delayed">
++						<param name="id" value="webapps"/>
++					</include>
++					<control type="grouplist" id="22001">
++						<include>WidgetGroupListCommon</include>
++						<pagecontrol>22010</pagecontrol>
++						<include content="WidgetListSquare">
++							<param name="content_path" value="addons://sources/webapp/"/>
++							<param name="widget_header" value="$LOCALIZE[40243]"/>
++							<param name="widget_target" value="programs"/>
++							<param name="sortby" value="lastused"/>
++							<param name="sortorder" value="descending"/>
++							<param name="list_id" value="22200"/>
++							<param name="fallback_icon" value="DefaultAddonWebSkin.png"/>
++						</include>
++					</control>
++					<include content="ImageWidget">
++						<param name="text_label" value="$LOCALIZE[31616]" />
++						<param name="button_label" value="$LOCALIZE[31144]" />
++						<param name="button_onclick" value="ActivateWindow(addonbrowser,addons://more/webapp/,return)"/>
++						<param name="button_id" value="22100"/>
++						<param name="visible" value="!Integer.IsGreater(Container(22001).NumItems,0)"/>
++						<param name="button2_onclick" value="Skin.SetBool(HomeMenuNoWebAppsButton)"/>
++					</include>
++					<include content="WidgetScrollbar" condition="Skin.HasSetting(touchmode)">
++						<param name="scrollbar_id" value="22010"/>
++					</include>
++				</control>
+ 				<control type="group" id="17000">
+ 					<visible>String.IsEqual(Container(9000).ListItem.Property(id),games)</visible>
+ 					<include content="Visible_Right_Delayed">
+@@ -1040,6 +1070,14 @@
+ 							<visible>!Skin.HasSetting(HomeMenuNoRadioButton)</visible>
+ 						</item>
+ 						<item>
++							<label>$LOCALIZE[40243]</label>
++							<property name="menu_id">$NUMBER[22000]</property>
++							<onclick>ActivateWindow(Programs,addons://sources/webapp/,return)</onclick>
++							<thumb>DefaultAddonWebSkin.png</thumb>
++							<property name="id">webapps</property>
++							<visible>System.SupportsWebApps + !Skin.HasSetting(HomeMenuNoWebAppsButton)</visible>
++						</item>
++						<item>
+ 							<label>$LOCALIZE[15016]</label>
+ 							<property name="menu_id">$NUMBER[17000]</property>
+ 							<onclick>ActivateWindow(Games)</onclick>
+--- a/addons/skin.estuary/xml/MyPrograms.xml
++++ b/addons/skin.estuary/xml/MyPrograms.xml
+@@ -47,7 +47,8 @@
+ 						<description>Get more</description>
+ 						<include>MediaMenuItemsCommon</include>
+ 						<label>$LOCALIZE[21452]</label>
+-						<onclick>ActivateWindow(addonbrowser,addons://more/executable/,return)</onclick>
++						<onclick condition="!String.StartsWith(Container.FolderPath,addons://sources/webapp)">ActivateWindow(addonbrowser,addons://more/executable/,return)</onclick>
++						<onclick condition="String.StartsWith(Container.FolderPath,addons://sources/webapp)">ActivateWindow(addonbrowser,addons://more/webapp/,return)</onclick>
+ 						<visible>Container.Content(addons)</visible>
+ 					</control>
+ 				</control>
+--- a/addons/skin.estuary/xml/SkinSettings.xml
++++ b/addons/skin.estuary/xml/SkinSettings.xml
+@@ -266,6 +266,13 @@
+ 					<onclick>ActivateWindow(1101)</onclick>
+ 					<enable>!Skin.HasSetting(HomeMenuNoRadioButton)</enable>
+ 				</control>
++				<control type="radiobutton" id="6191">
++					<label>$LOCALIZE[40243]</label>
++					<include>DefaultSettingButton</include>
++					<selected>!Skin.HasSetting(HomeMenuNoWebAppsButton)</selected>
++					<onclick>Skin.ToggleSetting(HomeMenuNoWebAppsButton)</onclick>
++					<visible>System.SupportsWebApps</visible>
++				</control>
+ 				<control type="radiobutton" id="614">
+ 					<label>$LOCALIZE[24001]</label>
+ 					<include>DefaultSettingButton</include>
 --- /dev/null
 +++ b/addons/skin.estuary/xml/WebFullScreen.xml
 @@ -0,0 +1,4 @@
@@ -902,16 +1021,16 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
        </group>
      </category>
    </section>
-+  <section id="web" label="40231" help="40232">
-+    <category id="client" label="16000" help="40233">
++  <section id="web" label="40233" help="40234">
++    <category id="client" label="16000" help="40235">
 +      <requirement>HAVE_WAYLAND_SERVER</requirement>
-+      <group id="1" label="40234">
-+        <setting id="web.enabled" type="boolean" label="40237" help="40238">
++      <group id="1" label="40236">
++        <setting id="web.enabled" type="boolean" label="40239" help="40240">
 +          <level>1</level>
 +          <default>true</default>
 +          <control type="toggle" />
 +        </setting>
-+        <setting id="web.preload" type="boolean" parent="web.enabled" label="40239" help="40240">
++        <setting id="web.preload" type="boolean" parent="web.enabled" label="40241" help="40242">
 +          <level>1</level>
 +          <default>true</default>
 +          <dependencies>
@@ -921,7 +1040,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +          </dependencies>
 +          <control type="toggle" />
 +        </setting>
-+        <setting id="web.softwarecodecs" type="boolean" parent="web.enabled" label="40242" help="40243">
++        <setting id="web.softwarecodecs" type="boolean" parent="web.enabled" label="40244" help="40245">
 +          <level>1</level>
 +          <default>false</default>
 +          <dependencies>
@@ -931,7 +1050,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +          </dependencies>
 +          <control type="toggle" />
 +        </setting>
-+        <setting id="web.clientcommand" type="string" label="40235" help="40236">
++        <setting id="web.clientcommand" type="string" label="40237" help="40238">
 +          <level>2</level>
 +          <default>kodi-webview</default>
 +          <control type="edit" format="string" />
@@ -1280,7 +1399,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
      }
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/CMakeLists.txt
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,32 @@
 +if(TARGET ${APP_NAME_LC}::WaylandServer)
 +  set(SOURCES GUIDialogWebKeyboard.cpp
 +              GUIDialogWebOSD.cpp
@@ -1288,7 +1407,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +              WebAudioServer.cpp
 +              WebClientManager.cpp
 +              WebPlayer.cpp
-+              WebVideoBuffer.cpp)
++              WebVideoBuffer.cpp
++              WebVideoServer.cpp)
 +
 +  set(HEADERS GUIDialogWebKeyboard.h
 +              GUIDialogWebOSD.h
@@ -1299,7 +1419,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +              WebPlayer.h
 +              WebPlayerDefs.h
 +              WebVideoBuffer.h
-+              kodi-web-audio.h)
++              WebVideoServer.h
++              kodi-web-audio.h
++              kodi-web-video.h)
++
++  if("gbm" IN_LIST CORE_PLATFORM_NAME_LC AND TARGET ${APP_NAME_LC}::OpenGLES)
++    list(APPEND SOURCES WebLayerBridge.cpp)
++    list(APPEND HEADERS WebLayerBridge.h)
++  endif()
 +
 +  include_directories(${CMAKE_BINARY_DIR}/${CORE_BUILD_DIR}/platform/linux/waylandhost)
 +
@@ -2769,7 +2896,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -0,0 +1,849 @@
+@@ -0,0 +1,847 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2798,7 +2925,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include "guilib/WindowIDs.h"
 +#include "jobs/JobManager.h"
 +#include "kodi-web-audio.h"
-+#include "network/UplinkAddress.h"
++#include "kodi-web-video.h"
 +#include "resources/LocalizeStrings.h"
 +#include "resources/ResourcesComponent.h"
 +#include "settings/Settings.h"
@@ -2815,6 +2942,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +#if defined(HAVE_GBM)
 +#include "windowing/gbm/WinSystemGbm.h"
++#include "windowing/gbm/drm/DRMAtomic.h"
 +#include "windowing/gbm/drm/DRMUtils.h"
 +
 +#include "platform/linux/input/LibInputSettings.h"
@@ -2826,20 +2954,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +#include <algorithm>
 +#include <cmath>
-+#include <cstdlib>
 +#include <limits>
 +#include <mutex>
 +#include <utility>
 +
 +#include <fcntl.h>
-+#include <sys/socket.h>
 +#include <sys/stat.h>
 +#include <unistd.h>
 +#include <xf86drm.h>
-+
-+#if defined(HAS_UPLINKDNS)
-+#include <uplinkdns.h>
-+#endif
 +
 +using namespace KODI::WEB;
 +using namespace KODI::WAYLANDHOST;
@@ -2849,6 +2971,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +constexpr const char* PROFILE_ROOT = "special://profile/webprofiles/";
 +constexpr const char* AUDIO_SOCKET = "special://temp/webaudio.sock";
++constexpr const char* VIDEO_SOCKET = "special://temp/webvideo.sock";
 +
 +void OnWebKeyboardText(CGUIKeyboard*, const std::string& text)
 +{
@@ -2907,33 +3030,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  return path.empty() ? path : CSpecialProtocol::TranslatePath(path);
 +}
 +
-+void AddUplinkEnvironment(std::map<std::string, std::string>& env)
-+{
-+#if defined(HAS_UPLINKDNS)
-+  ADDON::VECADDONS addons;
-+  CServiceBroker::GetAddonMgr().GetAddons(addons, ADDON::AddonType::WEBAPP);
-+
-+  std::string uplinks;
-+  for (const auto& addon : addons)
-+  {
-+    const std::string uplink = addon->GetSetting("uplinkaddress");
-+    if (!uplink.empty())
-+      uplinks += (uplinks.empty() ? "" : " ") + uplink;
-+  }
-+
-+  // the client's network process resolves each session's names through the uplink it binds to
-+  if (uplinks.empty())
-+    return;
-+
-+  std::string preload = UPLINKDNS_SONAME;
-+  if (const char* inherited = std::getenv("LD_PRELOAD"); inherited && *inherited)
-+    preload = std::string(inherited) + " " + preload;
-+
-+  env.emplace("LD_PRELOAD", preload);
-+  env.emplace("UPLINKDNS_UPLINKS", uplinks);
-+#endif
-+}
-+
 +void NotifyOpenError(const std::string& profile, const std::string& reason)
 +{
 +  ADDON::AddonPtr addon;
@@ -2947,14 +3043,16 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +      CGUIDialogKaiToast::Error, StringUtils::Format(localizeStrings.Get(13329), name), reason);
 +}
 +
-+void NotifyUplinkMissing(const std::string& profile, const std::string& uplink)
++// web apps run at the screen's resolution, whatever size the GUI renders at
++WaylandHostConfig OutputMode()
 +{
-+  CLog::Log(LOGERROR, "CWebClientManager::{}: the uplink \"{}\" of {} does not resolve",
-+            __FUNCTION__, uplink, profile);
-+
-+  const auto& localizeStrings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
-+  // "The uplink {0:s} is not available."
-+  NotifyOpenError(profile, StringUtils::Format(localizeStrings.Get(40399), uplink));
++  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
++  const RESOLUTION_INFO res = gfx.GetResInfo();
++  WaylandHostConfig mode;
++  mode.width = res.iScreenWidth;
++  mode.height = res.iScreenHeight;
++  mode.refreshMilliHz = static_cast<int32_t>(std::lround(gfx.GetFPS() * 1000.0f));
++  return mode;
 +}
 +
 +} // unnamed namespace
@@ -2983,8 +3081,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  m_audio = std::make_unique<CWebAudioServer>();
 +  if (!m_audio->Start(CSpecialProtocol::TranslatePath(AUDIO_SOCKET)))
 +    m_audio.reset();
++  StartVideo();
 +
 +  CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
++  CServiceBroker::GetWinSystem()->Register(this);
 +  if (settings->GetBool(CSettings::SETTING_WEB_PRELOAD))
 +    Spawn();
 +}
@@ -2994,10 +3094,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  if (!m_host)
 +    return;
 +
++  CServiceBroker::GetWinSystem()->Unregister(this);
 +  CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
 +  m_host->Stop();
 +  m_host.reset();
 +  m_audio.reset();
++  m_video.reset();
 +
 +  std::unique_lock lock(m_lock);
 +  m_state = State::ABSENT;
@@ -3007,13 +3109,24 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  m_observer = nullptr;
 +}
 +
++void CWebClientManager::StartVideo()
++{
++#if defined(HAVE_GBM) && defined(HAS_GLES)
++  // display planes take part in atomic commits only
++  auto* gbm = dynamic_cast<WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem());
++  if (!gbm || !std::dynamic_pointer_cast<WINDOWING::GBM::CDRMAtomic>(gbm->GetDrm()))
++    return;
++
++  m_video = std::make_unique<CWebVideoServer>();
++  if (!m_video->Start(CSpecialProtocol::TranslatePath(VIDEO_SOCKET),
++                      gbm->GetDrm()->GetVideoFormats()))
++    m_video.reset();
++#endif
++}
++
 +bool CWebClientManager::StartHost()
 +{
-+  WaylandHostConfig config;
-+  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
-+  config.width = gfx.GetWidth();
-+  config.height = gfx.GetHeight();
-+  config.refreshMilliHz = static_cast<int32_t>(std::lround(gfx.GetFPS() * 1000.0f));
++  WaylandHostConfig config = OutputMode();
 +
 +#if defined(HAVE_GBM)
 +  if (auto* gbm = dynamic_cast<WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem()))
@@ -3060,10 +3173,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  // the client's audio sinks play through Kodi's audio engine
 +  if (m_audio)
 +    env.emplace(KODI_WEB_AUDIO_ENV, m_audio->GetPath());
++  // the client's video sinks show their frames on a display plane
++  if (m_video)
++    env.emplace(KODI_WEB_VIDEO_ENV, m_video->GetPath());
 +  // pages decrypt with the CDM that inputstream.adaptive installed
 +  if (const std::string cdm = CdmDirectory(); !cdm.empty())
 +    env.emplace("KODI_WEB_CDM_DIR", cdm);
-+  AddUplinkEnvironment(env);
 +  m_host->SpawnClient({command}, std::move(env));
 +}
 +
@@ -3086,11 +3201,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  }
 +
 +  const std::string uplink = UplinkOf(profile);
-+  if (!uplink.empty() && !KODI::NETWORK::ResolveUplink(uplink, AF_UNSPEC).IsValid())
-+  {
-+    NotifyUplinkMissing(profile, uplink);
-+    return false;
-+  }
 +
 +  std::unique_lock lock(m_lock);
 +  m_observer = &observer;
@@ -3160,6 +3270,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  return true;
 +}
 +
++void CWebClientManager::SetVideoObserver(IWebVideoObserver* observer)
++{
++  if (m_video)
++    m_video->SetObserver(observer);
++}
++
 +void CWebClientManager::LoadUrl(const std::string& profile, const std::string& url)
 +{
 +  if (m_host)
@@ -3182,6 +3298,15 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +{
 +  if (m_host)
 +    m_host->FrameDone();
++}
++
++void CWebClientManager::OnResetDisplay()
++{
++  if (!m_host)
++    return;
++
++  const WaylandHostConfig mode = OutputMode();
++  m_host->SetOutputMode(mode.width, mode.height, mode.refreshMilliHz);
 +}
 +
 +IWebViewObserver* CWebClientManager::ObserverOf(const std::string& profile)
@@ -3621,7 +3746,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebClientManager.h
-@@ -0,0 +1,213 @@
+@@ -0,0 +1,224 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -3633,6 +3758,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#pragma once
 +
 +#include "WebAudioServer.h"
++#include "WebVideoServer.h"
 +#include "application/IApplicationComponent.h"
 +#include "guilib/DispResource.h"
 +#include "jobs/Job.h"
@@ -3682,7 +3808,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +                                   bool paused) = 0;
 +};
 +
-+
 +/*!
 + * \brief Runs the Wayland host for Kodi's lifetime and keeps the web client
 + * warm: the client is started once the GUI is up, its views survive the
@@ -3690,7 +3815,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 + */
 +class CWebClientManager : public IApplicationComponent,
 +                          public WAYLANDHOST::IWaylandHostObserver,
-+                          public IRenderLoop
++                          public IRenderLoop,
++                          public IDispResource
 +{
 +public:
 +  enum class State
@@ -3732,12 +3858,20 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +   */
 +  bool GetShownView(ViewState& state) const;
 +
++  /*!
++   * \brief Send the frames of pages' video to the observer, none with nullptr
++   */
++  void SetVideoObserver(IWebVideoObserver* observer);
++
 +  void LoadUrl(const std::string& profile, const std::string& url);
 +  void Navigate(const std::string& profile, WAYLANDHOST::WebNavigation action);
 +  void SetActive(const std::string& profile, bool active);
 +
 +  // implementation of IRenderLoop
 +  void FrameMove() override;
++
++  // implementation of IDispResource
++  void OnResetDisplay() override;
 +
 +  // implementation of IWaylandHostObserver
 +  void OnSurfaceMapped(WAYLANDHOST::CWaylandSurface& surface) override;
@@ -3775,6 +3909,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +private:
 +  bool StartHost();
++  void StartVideo();
 +  void Spawn();
 +  void ConfigureView(const std::string& profile);
 +  bool ConfigureViewFromAddon(const std::string& profile);
@@ -3789,6 +3924,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +  std::unique_ptr<WAYLANDHOST::CWaylandHost> m_host;
 +  std::unique_ptr<CWebAudioServer> m_audio;
++  std::unique_ptr<CWebVideoServer> m_video;
 +  mutable CCriticalSection m_lock;
 +  State m_state{State::ABSENT};
 +  bool m_respawned{false};
@@ -3836,8 +3972,340 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace WEB
 +} // namespace KODI
 --- /dev/null
++++ b/xbmc/cores/WebPlayer/WebLayerBridge.cpp
+@@ -0,0 +1,236 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "WebLayerBridge.h"
++
++#include "cores/VideoPlayer/Buffers/VideoBufferDRMPRIME.h"
++#include "utils/log.h"
++#include "windowing/gbm/drm/DRMAtomic.h"
++
++#include <mutex>
++#include <utility>
++
++using namespace KODI::WEB;
++using namespace KODI::WINDOWING::GBM;
++
++CWebLayerBridge::~CWebLayerBridge()
++{
++  for (CVideoBufferDRMPRIME* page : {m_pending, m_page, m_prevPage})
++  {
++    if (page)
++      page->Release();
++  }
++
++  // the plane-off commit from Disable has run by now
++  for (uint32_t fbId : m_fbCache.TakeAll())
++    drmModeRmFB(m_DRM->GetFileDescriptor(), fbId);
++}
++
++void CWebLayerBridge::SetPage(CVideoBufferDRMPRIME* page)
++{
++  std::unique_lock lock(m_lock);
++  if (m_pending)
++    m_pending->Release();
++  m_pending = page;
++  m_clear = false;
++}
++
++void CWebLayerBridge::ClearPage()
++{
++  std::unique_lock lock(m_lock);
++  if (m_pending)
++    m_pending->Release();
++  m_pending = nullptr;
++  m_clear = true;
++}
++
++void CWebLayerBridge::SetVideoRect(const CRect& rect)
++{
++  std::unique_lock lock(m_lock);
++  if (rect == m_videoRect)
++    return;
++  m_videoRect = rect;
++  m_videoRectChanged = true;
++}
++
++void CWebLayerBridge::Disable()
++{
++  CVideoLayerBridgeDRMPRIME::Disable();
++  std::unique_lock lock(m_lock);
++  m_videoShown = false;
++  HidePage();
++}
++
++void CWebLayerBridge::SetVideoPlane(CVideoBufferDRMPRIME* buffer, const CRect& destRect)
++{
++  CVideoLayerBridgeDRMPRIME::SetVideoPlane(buffer, FitVideo(buffer->GetPicture(), destRect));
++  ApplyPage();
++}
++
++CRect CWebLayerBridge::FitVideo(const VideoPicture& picture, const CRect& destRect)
++{
++  std::unique_lock lock(m_lock);
++  m_rendererRect = destRect;
++  m_videoAspect = picture.iDisplayHeight ? static_cast<float>(picture.iDisplayWidth) /
++                                               static_cast<float>(picture.iDisplayHeight)
++                                         : 0.0f;
++  m_videoRectChanged = false;
++  m_videoShown = true;
++  return VideoDest();
++}
++
++void CWebLayerBridge::UpdateVideoPlane()
++{
++  CVideoLayerBridgeDRMPRIME::UpdateVideoPlane();
++  PlaceVideo();
++  ApplyPage();
++}
++
++// the page's rectangle in screen pixels, fitted to the video's aspect ratio
++CRect CWebLayerBridge::VideoDest() const
++{
++  if (m_videoRect.IsEmpty())
++    return m_rendererRect;
++
++  const RESOLUTION_INFO mode = m_DRM->GetCurrentMode();
++  const float screenWidth = static_cast<float>(mode.iScreenWidth);
++  const float screenHeight = static_cast<float>(mode.iScreenHeight);
++  const float scaleX = m_page ? screenWidth / static_cast<float>(m_page->GetWidth()) : 1.0f;
++  const float scaleY = m_page ? screenHeight / static_cast<float>(m_page->GetHeight()) : 1.0f;
++  CRect dest(m_videoRect.x1 * scaleX, m_videoRect.y1 * scaleY, m_videoRect.x2 * scaleX,
++             m_videoRect.y2 * scaleY);
++
++  if (m_videoAspect <= 0.0f)
++    return dest;
++
++  const float width = dest.Width();
++  const float height = dest.Height();
++  if (width > height * m_videoAspect)
++  {
++    const float fitted = height * m_videoAspect;
++    dest.x1 += (width - fitted) / 2;
++    dest.x2 = dest.x1 + fitted;
++  }
++  else
++  {
++    const float fitted = width / m_videoAspect;
++    dest.y1 += (height - fitted) / 2;
++    dest.y2 = dest.y1 + fitted;
++  }
++  return dest;
++}
++
++void CWebLayerBridge::PlaceVideo()
++{
++  std::unique_lock lock(m_lock);
++  if (!m_videoShown || !m_videoRectChanged)
++    return;
++
++  CDRMPlane* plane = m_DRM->GetVideoPlane();
++  if (!plane)
++    return;
++
++  m_videoRectChanged = false;
++  const CRect dest = VideoDest();
++  m_DRM->AddProperty(plane, "CRTC_X", static_cast<int32_t>(dest.x1) & ~1);
++  m_DRM->AddProperty(plane, "CRTC_Y", static_cast<int32_t>(dest.y1) & ~1);
++  m_DRM->AddProperty(plane, "CRTC_W", (static_cast<uint32_t>(dest.Width()) + 1) & ~1);
++  m_DRM->AddProperty(plane, "CRTC_H", (static_cast<uint32_t>(dest.Height()) + 1) & ~1);
++}
++
++void CWebLayerBridge::ApplyPage()
++{
++  std::unique_lock lock(m_lock);
++
++  if (m_clear)
++  {
++    m_clear = false;
++    HidePage();
++    m_plane = nullptr;
++    if (m_prevPage)
++      m_prevPage->Release();
++    m_prevPage = std::exchange(m_page, nullptr);
++    m_prevPageFb = std::exchange(m_pageFb, 0);
++    return;
++  }
++
++  if (m_pending)
++    ShowPage();
++
++  if (!m_page || !StackPage())
++    return;
++
++  const RESOLUTION_INFO mode = m_DRM->GetCurrentMode();
++  m_DRM->AddProperty(m_plane, "FB_ID", m_pageFb);
++  m_DRM->AddProperty(m_plane, "CRTC_ID", m_DRM->GetCrtc()->GetCrtcId());
++  m_DRM->AddProperty(m_plane, "SRC_X", 0);
++  m_DRM->AddProperty(m_plane, "SRC_Y", 0);
++  m_DRM->AddProperty(m_plane, "SRC_W", m_page->GetWidth() << 16);
++  m_DRM->AddProperty(m_plane, "SRC_H", m_page->GetHeight() << 16);
++  m_DRM->AddProperty(m_plane, "CRTC_X", 0);
++  m_DRM->AddProperty(m_plane, "CRTC_Y", 0);
++  m_DRM->AddProperty(m_plane, "CRTC_W", mode.iScreenWidth);
++  m_DRM->AddProperty(m_plane, "CRTC_H", mode.iScreenHeight);
++}
++
++void CWebLayerBridge::ShowPage()
++{
++  CVideoBufferDRMPRIME* page = std::exchange(m_pending, nullptr);
++  AVDRMFrameDescriptor* descriptor = page->GetDescriptor();
++
++  const auto identity =
++      DRMPRIME::GetDmaBufIdentity(descriptor, page->GetWidth(), page->GetHeight());
++  uint32_t fbId = identity ? m_fbCache.Lookup(*identity) : 0;
++  if (!fbId)
++  {
++    fbId = CreateFramebuffer(page);
++    if (!fbId)
++    {
++      page->Release();
++      return;
++    }
++    if (identity)
++      m_fbCache.Insert(*identity, fbId);
++  }
++
++  if (m_prevPage)
++    m_prevPage->Release();
++  m_prevPage = std::exchange(m_page, page);
++  m_prevPageFb = std::exchange(m_pageFb, fbId);
++
++  for (uint32_t doomed : m_fbCache.Reap({m_pageFb, m_prevPageFb}))
++    drmModeRmFB(m_DRM->GetFileDescriptor(), doomed);
++}
++
++// the renderer picks the video plane anew for each new video format
++bool CWebLayerBridge::StackPage()
++{
++  CDRMPlane* video = m_DRM->GetVideoPlane();
++  if (m_plane && m_stackedOn == video)
++    return true;
++
++  HidePage();
++  const AVDRMFrameDescriptor* descriptor = m_page->GetDescriptor();
++  const uint32_t format = descriptor->layers[0].format;
++  const uint64_t modifier = descriptor->objects[0].format_modifier;
++  m_plane = m_DRM->FindOverlayPlane(format, modifier, m_page->GetWidth(), m_page->GetHeight());
++  m_stackedOn = video;
++  if (!m_plane)
++    CLog::Log(LOGERROR, "CWebLayerBridge::{}: no plane between the video and the GUI plane",
++              __FUNCTION__);
++  return m_plane != nullptr;
++}
++
++void CWebLayerBridge::HidePage()
++{
++  if (!m_plane)
++    return;
++
++  m_DRM->AddProperty(m_plane, "FB_ID", 0);
++  m_DRM->AddProperty(m_plane, "CRTC_ID", 0);
++}
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/WebLayerBridge.h
+@@ -0,0 +1,90 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "cores/VideoPlayer/Buffers/DmaBufIdentityCache.h"
++#include "cores/VideoPlayer/VideoRenderers/HwDecRender/VideoLayerBridgeDRMPRIME.h"
++#include "threads/CriticalSection.h"
++#include "utils/Geometry.h"
++
++struct VideoPicture;
++
++namespace KODI
++{
++namespace WINDOWING
++{
++namespace GBM
++{
++class CDRMPlane;
++}
++} // namespace WINDOWING
++
++namespace WEB
++{
++
++/*!
++ * \brief The video layer bridge of the web player. While a page's video is
++ * on the video plane, the page itself is on a plane between the video and
++ * the GUI plane, where it covers the video except where it is transparent.
++ */
++class CWebLayerBridge : public CVideoLayerBridgeDRMPRIME
++{
++public:
++  using CVideoLayerBridgeDRMPRIME::CVideoLayerBridgeDRMPRIME;
++  ~CWebLayerBridge() override;
++
++  void Disable() override;
++  void SetVideoPlane(CVideoBufferDRMPRIME* buffer, const CRect& destRect) override;
++  void UpdateVideoPlane() override;
++
++  /*!
++   * \brief Show the page on the overlay plane from the next flip on; takes
++   * over the caller's reference to the page; any thread
++   */
++  void SetPage(CVideoBufferDRMPRIME* page);
++
++  /*!
++   * \brief Take the page off the overlay plane at the next flip; any thread
++   */
++  void ClearPage();
++
++  /*!
++   * \brief Show the video at a rectangle of the page, in the page's pixels; an
++   * empty one leaves the placement to the renderer; any thread
++   */
++  void SetVideoRect(const CRect& rect);
++
++private:
++  CRect FitVideo(const VideoPicture& picture, const CRect& destRect);
++  CRect VideoDest() const;
++  void PlaceVideo();
++  void ApplyPage();
++  void ShowPage();
++  bool StackPage();
++  void HidePage();
++
++  CCriticalSection m_lock;
++  CVideoBufferDRMPRIME* m_pending{nullptr};
++  bool m_clear{false};
++  CVideoBufferDRMPRIME* m_page{nullptr};
++  CVideoBufferDRMPRIME* m_prevPage{nullptr};
++  uint32_t m_pageFb{0};
++  uint32_t m_prevPageFb{0};
++  KODI::WINDOWING::GBM::CDRMPlane* m_plane{nullptr};
++  KODI::WINDOWING::GBM::CDRMPlane* m_stackedOn{nullptr};
++  CRect m_videoRect;
++  CRect m_rendererRect;
++  float m_videoAspect{0.0f};
++  bool m_videoRectChanged{false};
++  bool m_videoShown{false};
++  DRMPRIME::CDmaBufIdentityCache m_fbCache{MAX_FB_CACHE, "web-page-fb"};
++};
++
++} // namespace WEB
++} // namespace KODI
+--- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebPlayer.cpp
-@@ -0,0 +1,573 @@
+@@ -0,0 +1,744 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -3864,6 +4332,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include "input/actions/ActionIDs.h"
 +#include "input/keyboard/Key.h"
 +#include "input/keyboard/XBMC_keyboard.h"
++#include "kodi-web-video.h"
 +#include "messaging/ApplicationMessenger.h"
 +#include "utils/log.h"
 +#include "windowing/GraphicContext.h"
@@ -3871,6 +4340,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +#include "platform/linux/waylandhost/WaylandBuffer.h"
 +#include "platform/linux/waylandhost/WaylandSurface.h"
++
++#if defined(HAVE_GBM) && defined(HAS_GLES)
++#include "WebLayerBridge.h"
++#include "windowing/gbm/WinSystemGbm.h"
++#include "windowing/gbm/drm/DRMAtomic.h"
++#endif
++
++#include <mutex>
 +
 +#include <linux/input-event-codes.h>
 +
@@ -3884,8 +4361,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +// The web window's keymap section claims keys for Kodi outright. Of the
 +// others, a key bound globally to a Kodi command or to the volume stays
-+// with Kodi as well, unless it types a character into the page or is one of
-+// the colour keys, which TV pages use for their own menus.
++// with Kodi as well, unless it types a character into the page.
 +bool IsKodiKey(const XBMC_keysym& keysym, const CKey& key)
 +{
 +  CInputManager& input = CServiceBroker::GetInputManager();
@@ -3894,17 +4370,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +  if (keysym.unicode >= 0x20 && keysym.unicode != 0x7f)
 +    return false;
-+
-+  switch (keysym.sym)
-+  {
-+    case XBMCK_RED:
-+    case XBMCK_GREEN:
-+    case XBMCK_YELLOW:
-+    case XBMCK_BLUE:
-+      return false;
-+    default:
-+      break;
-+  }
 +
 +  switch (input.GetAction(WINDOW_FULLSCREEN_WEB, key, true).GetID())
 +  {
@@ -3915,6 +4380,51 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +      return true;
 +    default:
 +      return false;
++  }
++}
++
++AVColorSpace ColorSpaceOf(uint32_t matrix)
++{
++  switch (matrix)
++  {
++    case KODI_WEB_VIDEO_MATRIX_BT601:
++      return AVCOL_SPC_SMPTE170M;
++    case KODI_WEB_VIDEO_MATRIX_BT709:
++      return AVCOL_SPC_BT709;
++    case KODI_WEB_VIDEO_MATRIX_BT2020:
++      return AVCOL_SPC_BT2020_NCL;
++    default:
++      return AVCOL_SPC_UNSPECIFIED;
++  }
++}
++
++AVColorPrimaries PrimariesOf(uint32_t matrix)
++{
++  switch (matrix)
++  {
++    case KODI_WEB_VIDEO_MATRIX_BT601:
++      return AVCOL_PRI_SMPTE170M;
++    case KODI_WEB_VIDEO_MATRIX_BT709:
++      return AVCOL_PRI_BT709;
++    case KODI_WEB_VIDEO_MATRIX_BT2020:
++      return AVCOL_PRI_BT2020;
++    default:
++      return AVCOL_PRI_UNSPECIFIED;
++  }
++}
++
++AVColorTransferCharacteristic TransferOf(uint32_t transfer)
++{
++  switch (transfer)
++  {
++    case KODI_WEB_VIDEO_TRANSFER_SDR:
++      return AVCOL_TRC_BT709;
++    case KODI_WEB_VIDEO_TRANSFER_PQ:
++      return AVCOL_TRC_SMPTE2084;
++    case KODI_WEB_VIDEO_TRANSFER_HLG:
++      return AVCOL_TRC_ARIB_STD_B67;
++    default:
++      return AVCOL_TRC_UNSPECIFIED;
 +  }
 +}
 +
@@ -3946,6 +4456,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  m_options = options;
 +  m_stop = false;
 +  m_configured = false;
++  m_started = false;
++  m_videoFrames = false;
 +  m_shown = false;
 +  m_mediaVideo = false;
 +  m_mediaAudio = false;
@@ -3971,6 +4483,17 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    m_renderManager.UnInit();
 +    return false;
 +  }
++
++#if defined(HAVE_GBM) && defined(HAS_GLES)
++  auto* gbm = dynamic_cast<WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem());
++  auto drm = gbm ? std::dynamic_pointer_cast<WINDOWING::GBM::CDRMAtomic>(gbm->GetDrm()) : nullptr;
++  if (drm)
++  {
++    m_bridge = std::make_shared<CWebLayerBridge>(drm);
++    gbm->RegisterVideoLayerBridge(m_bridge);
++    m_manager->SetVideoObserver(this);
++  }
++#endif
 +
 +  CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
 +  CServiceBroker::GetInputManager().RegisterKeyboardEventHandler(this);
@@ -3999,6 +4522,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +  const bool wasPlaying = m_playing.exchange(false);
 +  m_stop = true;
++  m_manager->SetVideoObserver(nullptr);
 +  m_manager->ReleaseView(*this);
 +  if (m_surface)
 +  {
@@ -4014,6 +4538,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  m_pressedKeys.clear();
 +  CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
 +  m_renderManager.UnInit();
++  {
++    std::unique_lock lock(m_frameLock);
++    if (m_page)
++      m_page->Unlock();
++    m_page.reset();
++    m_videoFrames = false;
++  }
++  m_bridge.reset();
 +  m_pool.reset();
 +  CServiceBroker::GetDataCacheCore().Reset();
 +  m_processInfo.reset();
@@ -4311,6 +4843,30 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    return;
 +  }
 +
++  std::unique_lock lock(m_frameLock);
++  KeepPage(buffer);
++  if (m_videoFrames && m_bridge)
++  {
++    auto* page = static_cast<CWebVideoBuffer*>(m_pool->Get());
++    page->SetBuffer(std::move(buffer));
++    m_bridge->SetPage(page);
++    return;
++  }
++
++  ShowPage(std::move(buffer));
++}
++
++// the last page stays locked, to be shown again when its video leaves the video plane
++void CWebPlayer::KeepPage(const std::shared_ptr<CWaylandBuffer>& buffer)
++{
++  if (m_page)
++    m_page->Unlock();
++  buffer->Lock();
++  m_page = buffer;
++}
++
++void CWebPlayer::ShowPage(std::shared_ptr<CWaylandBuffer> buffer)
++{
 +  auto* videoBuffer = static_cast<CWebVideoBuffer*>(m_pool->Get());
 +  videoBuffer->SetBuffer(buffer);
 +
@@ -4330,14 +4886,93 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  picture.pts = m_clock.GetClock();
 +  picture.dts = DVD_NOPTS_VALUE;
 +  videoBuffer->SetPictureParams(picture);
++  ShowPicture(picture);
++}
 +
-+  if (!m_configured)
++void CWebPlayer::OnWebVideoFrame(CWebVideoFrame* frame)
++{
++  std::unique_lock lock(m_frameLock);
++  if (m_stop || !m_pool || !m_bridge)
 +  {
-+    CLog::Log(LOGINFO, "CWebPlayer::{}: first frame {}x{} format {:#x} modifier {:#x} planes {}",
-+              __FUNCTION__, buffer->GetWidth(), buffer->GetHeight(), buffer->GetFormat(),
-+              buffer->GetModifier(), buffer->GetPlaneCount());
++    frame->Release();
++    return;
++  }
++
++  if (!m_videoFrames)
++  {
++    CLog::Log(LOGINFO, "CWebPlayer::{}: the page's video goes to the video plane", __FUNCTION__);
++    m_videoFrames = true;
++    if (m_page)
++    {
++      m_page->Lock();
++      auto* page = static_cast<CWebVideoBuffer*>(m_pool->Get());
++      page->SetBuffer(m_page);
++      m_bridge->SetPage(page);
++    }
++  }
++
++  const uint64_t displayWidth =
++      static_cast<uint64_t>(frame->GetWidth()) * frame->GetParN() / frame->GetParD();
++
++  VideoPicture picture;
++  picture.Reset();
++  picture.videoBuffer = frame;
++  picture.iWidth = frame->GetWidth();
++  picture.iHeight = frame->GetHeight();
++  picture.iDisplayWidth = static_cast<unsigned int>(displayWidth);
++  picture.iDisplayHeight = picture.iHeight;
++  picture.pixelFormat = AV_PIX_FMT_DRM_PRIME;
++  picture.color_space = ColorSpaceOf(frame->GetMatrix());
++  picture.color_range = frame->GetRange() == KODI_WEB_VIDEO_RANGE_FULL ? 1 : 0;
++  picture.color_primaries = PrimariesOf(frame->GetMatrix());
++  picture.color_transfer = TransferOf(frame->GetTransfer());
++  picture.chroma_position = AVCHROMA_LOC_UNSPECIFIED;
++  picture.pts = m_clock.GetClock();
++  picture.dts = DVD_NOPTS_VALUE;
++  frame->SetPictureParams(picture);
++  ShowPicture(picture);
++}
++
++void CWebPlayer::OnWebVideoClear()
++{
++  std::unique_lock lock(m_frameLock);
++  if (!m_videoFrames)
++    return;
++
++  CLog::Log(LOGINFO, "CWebPlayer::{}: the page's video leaves the video plane", __FUNCTION__);
++  m_videoFrames = false;
++  m_bridge->ClearPage();
++  if (m_page && !m_stop && m_pool)
++  {
++    m_page->Lock();
++    ShowPage(m_page);
++  }
++}
++
++void CWebPlayer::OnWebVideoRect(const CRect& rect)
++{
++  std::unique_lock lock(m_frameLock);
++  if (m_bridge)
++    m_bridge->SetVideoRect(rect);
++}
++
++void CWebPlayer::ShowPicture(VideoPicture& picture)
++{
++  auto* buffer = static_cast<CVideoBufferDRMPRIME*>(picture.videoBuffer);
++  const AVDRMFrameDescriptor* descriptor = buffer->GetDescriptor();
++  const uint32_t format = descriptor->layers[0].format;
++
++  if (!m_configured || format != m_configuredFormat || picture.iWidth != m_configuredWidth ||
++      picture.iHeight != m_configuredHeight)
++  {
++    CLog::Log(LOGINFO, "CWebPlayer::{}: frames {}x{} format {:#x} modifier {:#x} planes {}",
++              __FUNCTION__, picture.iWidth, picture.iHeight, format,
++              descriptor->objects[0].format_modifier, descriptor->layers[0].nb_planes);
 +    if (!ConfigureRenderer(picture))
 +      return;
++    m_configuredFormat = format;
++    m_configuredWidth = picture.iWidth;
++    m_configuredHeight = picture.iHeight;
 +  }
 +
 +  if (!m_renderManager.AddVideoPicture(picture, m_stop, VS_INTERLACEMETHOD_NONE, false))
@@ -4365,6 +5000,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  }
 +
 +  m_configured = true;
++  if (m_started)
++    return true;
++
++  m_started = true;
 +  m_renderManager.ShowVideo(true);
 +  if (m_options.fullscreen)
 +    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SWITCHTOFULLSCREEN);
@@ -4413,7 +5052,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebPlayer.h
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,169 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -4444,19 +5083,23 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +namespace WEB
 +{
 +
++class CWebLayerBridge;
 +class CWebVideoBufferPool;
 +
 +/*!
 + * \brief Plays a web page: the view the client manager provides for the
 + * item's profile loads the URL, and the frames the client commits go
 + * through Kodi's video renderers, so the GUI composes over them like over
-+ * any other video. While the web window is up, keys the keymap does not
-+ * claim and the pointer go to the client.
++ * any other video. While a page's video hands its frames to Kodi, those go
++ * to the video plane instead and the page to a plane above it. While the
++ * web window is up, keys the keymap does not claim and the pointer go to
++ * the client.
 + */
 +class CWebPlayer : public IPlayer,
 +                   public IRenderLoop,
 +                   public IRenderMsg,
 +                   public IWebViewObserver,
++                   public IWebVideoObserver,
 +                   public KEYBOARD::IKeyboardEventHandler,
 +                   public MOUSE::IMouseDriverHandler
 +{
@@ -4514,6 +5157,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +                           bool audio,
 +                           bool paused) override;
 +
++  // implementation of IWebVideoObserver
++  void OnWebVideoFrame(CWebVideoFrame* frame) override;
++  void OnWebVideoClear() override;
++  void OnWebVideoRect(const CRect& rect) override;
++
 +  // implementation of IKeyboardEventHandler
 +  bool OnKeyboardEvent(const XBMC_keysym& keysym, const CKey& key, bool pressed) override;
 +
@@ -4534,6 +5182,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +private:
 +  bool ConfigureRenderer(const VideoPicture& picture);
++  void ShowPicture(VideoPicture& picture);
++  void ShowPage(std::shared_ptr<WAYLANDHOST::CWaylandBuffer> buffer);
++  void KeepPage(const std::shared_ptr<WAYLANDHOST::CWaylandBuffer>& buffer);
 +  void UpdateInputRouting();
 +  void UpdateVisibility();
 +  void StopFromClient();
@@ -4546,11 +5197,19 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  std::string m_url;
 +  std::atomic<WAYLANDHOST::CWaylandSurface*> m_surface{nullptr};
 +  std::shared_ptr<CWebVideoBufferPool> m_pool;
++  std::shared_ptr<CWebLayerBridge> m_bridge;
 +  std::unique_ptr<CFileItem> m_item;
 +  CPlayerOptions m_options;
 +  std::atomic<bool> m_playing{false};
 +  volatile std::atomic_bool m_stop{false};
++  CCriticalSection m_frameLock;
++  std::shared_ptr<WAYLANDHOST::CWaylandBuffer> m_page;
++  bool m_videoFrames{false};
 +  bool m_configured{false};
++  bool m_started{false};
++  uint32_t m_configuredFormat{0};
++  unsigned int m_configuredWidth{0};
++  unsigned int m_configuredHeight{0};
 +  float m_fps{0.0f};
 +  bool m_inputActive{false};
 +  bool m_shown{false};
@@ -4709,7 +5368,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebVideoBuffer.h
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,69 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -4755,6 +5414,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  uint32_t GetWidth() const override;
 +  uint32_t GetHeight() const override;
 +  AVDRMFrameDescriptor* GetDescriptor() const override;
++  bool PrefersPlane() const override { return true; }
 +
 +private:
 +  std::shared_ptr<WAYLANDHOST::CWaylandBuffer> m_buffer;
@@ -4774,6 +5434,599 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  CCriticalSection m_critSection;
 +  std::vector<CWebVideoBuffer*> m_all;
 +  std::deque<int> m_free;
++};
++
++} // namespace WEB
++} // namespace KODI
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/WebVideoServer.cpp
+@@ -0,0 +1,417 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "WebVideoServer.h"
++
++#include "kodi-web-video.h"
++#include "utils/log.h"
++
++#include <algorithm>
++#include <cerrno>
++#include <cstring>
++#include <mutex>
++
++#include <poll.h>
++#include <sys/eventfd.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++using namespace KODI::WEB;
++
++namespace
++{
++
++void Signal(int fd)
++{
++  if (eventfd_write(fd, 1) < 0)
++    CLog::Log(LOGERROR, "CWebVideoServer::{}: cannot signal: {}", __FUNCTION__, strerror(errno));
++}
++
++void CloseAll(const std::vector<int>& fds)
++{
++  for (int fd : fds)
++    close(fd);
++}
++
++bool FrameIsValid(const kodi_web_video_frame& frame, size_t fdCount)
++{
++  if (frame.object_count != fdCount || frame.object_count == 0 || frame.plane_count == 0 ||
++      frame.plane_count > KODI_WEB_VIDEO_MAX_PLANES)
++    return false;
++
++  return std::all_of(frame.object, frame.object + frame.plane_count,
++                     [&frame](uint32_t object) { return object < frame.object_count; });
++}
++
++} // namespace
++
++CWebVideoConnection::CWebVideoConnection(int fd) : m_fd(fd)
++{
++}
++
++CWebVideoConnection::~CWebVideoConnection()
++{
++  close(m_fd);
++}
++
++void CWebVideoConnection::Release(uint32_t id)
++{
++  const kodi_web_video_release release{KODI_WEB_VIDEO_RELEASE, id};
++  // a sink that is gone no longer waits for its frames
++  send(m_fd, &release, sizeof(release), MSG_NOSIGNAL | MSG_DONTWAIT);
++}
++
++CWebVideoFrame::CWebVideoFrame(int id) : CVideoBufferDRMPRIME(id)
++{
++}
++
++CWebVideoFrame::~CWebVideoFrame()
++{
++  Clear();
++}
++
++void CWebVideoFrame::Set(std::shared_ptr<CWebVideoConnection> connection,
++                         const kodi_web_video_frame& frame,
++                         const std::vector<int>& fds)
++{
++  Clear();
++  m_connection = std::move(connection);
++  m_frameId = frame.id;
++  m_width = frame.width;
++  m_height = frame.height;
++  m_parN = frame.par_n ? frame.par_n : 1;
++  m_parD = frame.par_d ? frame.par_d : 1;
++  m_matrix = frame.matrix;
++  m_range = frame.range;
++  m_transfer = frame.transfer;
++
++  m_descriptor = {};
++  m_descriptor.nb_objects = static_cast<int>(fds.size());
++  for (size_t i = 0; i < fds.size(); ++i)
++  {
++    m_descriptor.objects[i].fd = fds[i];
++    m_descriptor.objects[i].size = static_cast<size_t>(lseek(fds[i], 0, SEEK_END));
++    m_descriptor.objects[i].format_modifier = frame.modifier;
++  }
++
++  AVDRMLayerDescriptor& layer = m_descriptor.layers[0];
++  m_descriptor.nb_layers = 1;
++  layer.format = frame.fourcc;
++  layer.nb_planes = static_cast<int>(frame.plane_count);
++  for (uint32_t i = 0; i < frame.plane_count; ++i)
++  {
++    layer.planes[i].object_index = static_cast<int>(frame.object[i]);
++    layer.planes[i].offset = frame.offset[i];
++    layer.planes[i].pitch = frame.stride[i];
++  }
++}
++
++void CWebVideoFrame::Clear()
++{
++  for (int i = 0; i < m_descriptor.nb_objects; ++i)
++    close(m_descriptor.objects[i].fd);
++  m_descriptor = {};
++
++  if (m_connection)
++    m_connection->Release(m_frameId);
++  m_connection.reset();
++}
++
++AVDRMFrameDescriptor* CWebVideoFrame::GetDescriptor() const
++{
++  return const_cast<AVDRMFrameDescriptor*>(&m_descriptor);
++}
++
++CWebVideoFramePool::~CWebVideoFramePool()
++{
++  for (CWebVideoFrame* frame : m_all)
++    delete frame;
++}
++
++CVideoBuffer* CWebVideoFramePool::Get()
++{
++  std::unique_lock lock(m_critSection);
++
++  CWebVideoFrame* frame;
++  if (!m_free.empty())
++  {
++    frame = m_all[m_free.front()];
++    m_free.pop_front();
++  }
++  else
++  {
++    frame = new CWebVideoFrame(static_cast<int>(m_all.size()));
++    m_all.push_back(frame);
++  }
++
++  frame->Acquire(GetPtr());
++  return frame;
++}
++
++void CWebVideoFramePool::Return(int id)
++{
++  std::unique_lock lock(m_critSection);
++  m_all[id]->Clear();
++  m_free.push_back(id);
++}
++
++CWebVideoServer::CWebVideoServer()
++  : CThread("webvideoserver"),
++    m_pool(std::make_shared<CWebVideoFramePool>())
++{
++}
++
++CWebVideoServer::~CWebVideoServer()
++{
++  Stop();
++}
++
++bool CWebVideoServer::Start(const std::string& path,
++                            std::vector<std::pair<uint32_t, uint64_t>> formats)
++{
++  sockaddr_un addr{};
++  if (path.size() >= sizeof(addr.sun_path) || formats.empty())
++  {
++    CLog::Log(LOGERROR, "CWebVideoServer::{}: cannot serve {} for {} formats", __FUNCTION__, path,
++              formats.size());
++    return false;
++  }
++  addr.sun_family = AF_UNIX;
++  memcpy(addr.sun_path, path.c_str(), path.size());
++
++  m_listenFd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
++  m_stopFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
++  unlink(path.c_str());
++  if (m_listenFd < 0 || m_stopFd < 0 ||
++      bind(m_listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0 ||
++      chmod(path.c_str(), S_IRUSR | S_IWUSR) < 0 || listen(m_listenFd, SOMAXCONN) < 0)
++  {
++    CLog::Log(LOGERROR, "CWebVideoServer::{}: cannot serve {}: {}", __FUNCTION__, path,
++              strerror(errno));
++    for (int* fd : {&m_listenFd, &m_stopFd})
++    {
++      if (*fd >= 0)
++        close(*fd);
++      *fd = -1;
++    }
++    return false;
++  }
++
++  if (formats.size() > KODI_WEB_VIDEO_MAX_FORMATS)
++    formats.resize(KODI_WEB_VIDEO_MAX_FORMATS);
++  m_formats = std::move(formats);
++  m_path = path;
++  Create();
++  CLog::Log(LOGINFO, "CWebVideoServer::{}: web video at {}, {} formats", __FUNCTION__, path,
++            m_formats.size());
++  return true;
++}
++
++void CWebVideoServer::Stop()
++{
++  if (m_listenFd < 0)
++    return;
++
++  m_bStop = true;
++  Signal(m_stopFd);
++  StopThread(true);
++  m_connections.clear();
++
++  close(m_listenFd);
++  close(m_stopFd);
++  m_listenFd = -1;
++  m_stopFd = -1;
++  unlink(m_path.c_str());
++}
++
++void CWebVideoServer::SetObserver(IWebVideoObserver* observer)
++{
++  std::unique_lock lock(m_observerLock);
++  m_observer = observer;
++}
++
++void CWebVideoServer::Process()
++{
++  while (!m_bStop)
++  {
++    std::vector<pollfd> fds{{m_stopFd, POLLIN, 0}, {m_listenFd, POLLIN, 0}};
++    for (const auto& connection : m_connections)
++      fds.push_back({connection->GetFd(), POLLIN, 0});
++
++    if (poll(fds.data(), fds.size(), -1) < 0)
++    {
++      if (errno == EINTR)
++        continue;
++      CLog::Log(LOGERROR, "CWebVideoServer::{}: poll failed: {}", __FUNCTION__, strerror(errno));
++      return;
++    }
++
++    if (fds[0].revents)
++      return;
++
++    std::vector<std::shared_ptr<CWebVideoConnection>> gone;
++    for (size_t i = 2; i < fds.size(); ++i)
++    {
++      if (fds[i].revents && !Receive(m_connections[i - 2]))
++        gone.push_back(m_connections[i - 2]);
++    }
++    if (!gone.empty())
++    {
++      std::erase_if(m_connections, [&gone](const auto& connection)
++                    { return std::ranges::find(gone, connection) != gone.end(); });
++      Clear();
++    }
++
++    if (fds[1].revents)
++      Accept();
++  }
++}
++
++void CWebVideoServer::Accept()
++{
++  const int fd = accept4(m_listenFd, nullptr, nullptr, SOCK_CLOEXEC);
++  if (fd < 0)
++  {
++    CLog::Log(LOGERROR, "CWebVideoServer::{}: accept failed: {}", __FUNCTION__, strerror(errno));
++    return;
++  }
++  m_connections.push_back(std::make_shared<CWebVideoConnection>(fd));
++}
++
++bool CWebVideoServer::Hello(const CWebVideoConnection& connection)
++{
++  kodi_web_video_hello_reply reply{};
++  reply.type = KODI_WEB_VIDEO_HELLO_REPLY;
++  reply.version = KODI_WEB_VIDEO_VERSION;
++  reply.format_count = static_cast<uint32_t>(m_formats.size());
++  for (size_t i = 0; i < m_formats.size(); ++i)
++  {
++    reply.formats[i].fourcc = m_formats[i].first;
++    reply.formats[i].modifier = m_formats[i].second;
++  }
++  return send(connection.GetFd(), &reply, sizeof(reply), MSG_NOSIGNAL) == sizeof(reply);
++}
++
++bool CWebVideoServer::Receive(const std::shared_ptr<CWebVideoConnection>& connection)
++{
++  alignas(kodi_web_video_frame) uint8_t message[sizeof(kodi_web_video_frame)];
++  alignas(cmsghdr) char control[CMSG_SPACE(sizeof(int) * KODI_WEB_VIDEO_MAX_PLANES)];
++  iovec iov{message, sizeof(message)};
++  msghdr msg{};
++  msg.msg_iov = &iov;
++  msg.msg_iovlen = 1;
++  msg.msg_control = control;
++  msg.msg_controllen = sizeof(control);
++
++  const ssize_t len = recvmsg(connection->GetFd(), &msg, MSG_CMSG_CLOEXEC);
++  if (len <= 0)
++    return false;
++
++  std::vector<int> fds;
++  for (cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg))
++  {
++    if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS)
++      continue;
++    const size_t count = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
++    const int* received = reinterpret_cast<const int*>(CMSG_DATA(cmsg));
++    fds.insert(fds.end(), received, received + count);
++  }
++
++  uint32_t type;
++  if (static_cast<size_t>(len) < sizeof(type) || (msg.msg_flags & MSG_CTRUNC))
++  {
++    CloseAll(fds);
++    return false;
++  }
++  memcpy(&type, message, sizeof(type));
++
++  switch (type)
++  {
++    case KODI_WEB_VIDEO_HELLO:
++    {
++      kodi_web_video_hello hello;
++      CloseAll(fds);
++      if (static_cast<size_t>(len) != sizeof(hello))
++        return false;
++      memcpy(&hello, message, sizeof(hello));
++      return hello.version == KODI_WEB_VIDEO_VERSION && Hello(*connection);
++    }
++    case KODI_WEB_VIDEO_FRAME:
++    {
++      kodi_web_video_frame frame;
++      if (static_cast<size_t>(len) != sizeof(frame))
++      {
++        CloseAll(fds);
++        return false;
++      }
++      memcpy(&frame, message, sizeof(frame));
++      Deliver(connection, frame, fds);
++      return true;
++    }
++    case KODI_WEB_VIDEO_CLEAR:
++      CloseAll(fds);
++      Clear();
++      return true;
++    case KODI_WEB_VIDEO_RECT:
++    {
++      kodi_web_video_rect rect;
++      CloseAll(fds);
++      if (static_cast<size_t>(len) != sizeof(rect))
++        return false;
++      memcpy(&rect, message, sizeof(rect));
++      if (rect.width < 0 || rect.height < 0)
++        return false;
++      Place(CRect(static_cast<float>(rect.x), static_cast<float>(rect.y),
++                  static_cast<float>(rect.x + rect.width),
++                  static_cast<float>(rect.y + rect.height)));
++      return true;
++    }
++    default:
++      CloseAll(fds);
++      return false;
++  }
++}
++
++void CWebVideoServer::Deliver(const std::shared_ptr<CWebVideoConnection>& connection,
++                              const kodi_web_video_frame& frame,
++                              const std::vector<int>& fds)
++{
++  if (!FrameIsValid(frame, fds.size()))
++  {
++    CLog::Log(LOGERROR, "CWebVideoServer::{}: frame {} with {} planes in {} of {} objects",
++              __FUNCTION__, frame.id, frame.plane_count, fds.size(), frame.object_count);
++    CloseAll(fds);
++    connection->Release(frame.id);
++    return;
++  }
++
++  auto* buffer = static_cast<CWebVideoFrame*>(m_pool->Get());
++  buffer->Set(connection, frame, fds);
++
++  std::unique_lock lock(m_observerLock);
++  if (m_observer)
++    m_observer->OnWebVideoFrame(buffer);
++  else
++    buffer->Release();
++}
++
++void CWebVideoServer::Clear()
++{
++  std::unique_lock lock(m_observerLock);
++  if (m_observer)
++    m_observer->OnWebVideoClear();
++}
++
++void CWebVideoServer::Place(const CRect& rect)
++{
++  std::unique_lock lock(m_observerLock);
++  if (m_observer)
++    m_observer->OnWebVideoRect(rect);
++}
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/WebVideoServer.h
+@@ -0,0 +1,170 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "cores/VideoPlayer/Buffers/VideoBufferDRMPRIME.h"
++#include "threads/CriticalSection.h"
++#include "threads/Thread.h"
++#include "utils/Geometry.h"
++
++#include <cstdint>
++#include <deque>
++#include <memory>
++#include <string>
++#include <utility>
++#include <vector>
++
++struct kodi_web_video_frame;
++
++namespace KODI
++{
++namespace WEB
++{
++
++/*!
++ * \brief The connection of one of the web client's video sinks
++ */
++class CWebVideoConnection
++{
++public:
++  explicit CWebVideoConnection(int fd);
++  ~CWebVideoConnection();
++
++  int GetFd() const { return m_fd; }
++
++  /*!
++   * \brief Tell the sink Kodi no longer shows its frame; any thread
++   */
++  void Release(uint32_t id);
++
++private:
++  int m_fd;
++};
++
++/*!
++ * \brief A frame a video sink handed over; Kodi scans it out from the sink's
++ * memory, and the sink gets it back once the frame returns to its pool
++ */
++class CWebVideoFrame : public CVideoBufferDRMPRIME
++{
++public:
++  explicit CWebVideoFrame(int id);
++  ~CWebVideoFrame() override;
++
++  void Set(std::shared_ptr<CWebVideoConnection> connection,
++           const kodi_web_video_frame& frame,
++           const std::vector<int>& fds);
++  void Clear();
++
++  uint32_t GetWidth() const override { return m_width; }
++  uint32_t GetHeight() const override { return m_height; }
++  AVDRMFrameDescriptor* GetDescriptor() const override;
++  bool PrefersPlane() const override { return true; }
++
++  uint32_t GetParN() const { return m_parN; }
++  uint32_t GetParD() const { return m_parD; }
++  uint32_t GetMatrix() const { return m_matrix; }
++  uint32_t GetRange() const { return m_range; }
++  uint32_t GetTransfer() const { return m_transfer; }
++
++private:
++  std::shared_ptr<CWebVideoConnection> m_connection;
++  uint32_t m_frameId{0};
++  uint32_t m_width{0};
++  uint32_t m_height{0};
++  uint32_t m_parN{1};
++  uint32_t m_parD{1};
++  uint32_t m_matrix{0};
++  uint32_t m_range{0};
++  uint32_t m_transfer{0};
++  AVDRMFrameDescriptor m_descriptor{};
++};
++
++class CWebVideoFramePool : public IVideoBufferPool
++{
++public:
++  ~CWebVideoFramePool() override;
++
++  // implementation of IVideoBufferPool
++  CVideoBuffer* Get() override;
++  void Return(int id) override;
++
++private:
++  CCriticalSection m_critSection;
++  std::vector<CWebVideoFrame*> m_all;
++  std::deque<int> m_free;
++};
++
++/*!
++ * \brief Receives the frames of the web client's video
++ */
++class IWebVideoObserver
++{
++public:
++  virtual ~IWebVideoObserver() = default;
++
++  /*!
++   * \brief A frame is due; the observer takes over one reference to it
++   */
++  virtual void OnWebVideoFrame(CWebVideoFrame* frame) = 0;
++
++  /*!
++   * \brief The video shows nothing until its next frame
++   */
++  virtual void OnWebVideoClear() = 0;
++
++  /*!
++   * \brief Where on the view the video shows, in the view's pixels; an empty
++   * rectangle leaves the placement to the renderer
++   */
++  virtual void OnWebVideoRect(const CRect& rect) = 0;
++};
++
++/*!
++ * \brief Serves the socket the web client's video sinks connect to, so the
++ * video of web pages is shown on a display plane underneath the page
++ */
++class CWebVideoServer : private CThread
++{
++public:
++  CWebVideoServer();
++  ~CWebVideoServer() override;
++
++  bool Start(const std::string& path, std::vector<std::pair<uint32_t, uint64_t>> formats);
++  void Stop();
++  const std::string& GetPath() const { return m_path; }
++
++  /*!
++   * \brief Send the frames to the observer, none with nullptr; any thread
++   */
++  void SetObserver(IWebVideoObserver* observer);
++
++private:
++  void Process() override;
++  void Accept();
++  bool Receive(const std::shared_ptr<CWebVideoConnection>& connection);
++  bool Hello(const CWebVideoConnection& connection);
++  void Deliver(const std::shared_ptr<CWebVideoConnection>& connection,
++               const kodi_web_video_frame& frame,
++               const std::vector<int>& fds);
++  void Clear();
++  void Place(const CRect& rect);
++
++  std::string m_path;
++  int m_listenFd{-1};
++  int m_stopFd{-1};
++  std::vector<std::pair<uint32_t, uint64_t>> m_formats;
++  std::shared_ptr<CWebVideoFramePool> m_pool;
++  std::vector<std::shared_ptr<CWebVideoConnection>> m_connections;
++  CCriticalSection m_observerLock;
++  IWebVideoObserver* m_observer{nullptr};
 +};
 +
 +} // namespace WEB
@@ -4953,6 +6206,144 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  int64_t stamp_ns;
 +  uint32_t playing;
 +  uint32_t reserved;
++};
++
++#endif
+--- /dev/null
++++ b/xbmc/cores/WebPlayer/kodi-web-video.h
+@@ -0,0 +1,135 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * kodi-web-video: the decoded frames of a web page's video, shown by Kodi on
++ * a display plane underneath the page.
++ *
++ * The web engine's video sink connects to the AF_UNIX SOCK_SEQPACKET socket
++ * Kodi names in KODI_WEB_VIDEO_SOCKET, one connection per sink. Every message
++ * starts with a uint32_t type; all fields are in host byte order, both ends
++ * run on the same host.
++ *
++ *  sink -> Kodi  HELLO          version
++ *  Kodi -> sink  HELLO_REPLY    version, the DRM formats and modifiers Kodi
++ *                               can show
++ *  sink -> Kodi  FRAME          id, size, DRM format and modifier, plane
++ *                               layout, colorimetry; carries one descriptor
++ *                               (SCM_RIGHTS) per DMA-BUF object
++ *  Kodi -> sink  RELEASE        id of a frame Kodi no longer shows
++ *  sink -> Kodi  CLEAR          the sink shows nothing until its next FRAME
++ *  sink -> Kodi  RECT           where on the view the video is shown, in the
++ *                               view's pixels; an empty one leaves the
++ *                               placement to Kodi
++ *
++ * The sink sends a frame when it is due and keeps it until Kodi releases it,
++ * as Kodi scans the frame out from the memory the sink holds. Kodi releases
++ * every frame once the connection closes.
++ */
++
++#ifndef KODI_WEB_VIDEO_H
++#define KODI_WEB_VIDEO_H
++
++#include <stdint.h>
++
++#define KODI_WEB_VIDEO_VERSION 1
++#define KODI_WEB_VIDEO_ENV "KODI_WEB_VIDEO_SOCKET"
++#define KODI_WEB_VIDEO_MAX_FORMATS 64
++#define KODI_WEB_VIDEO_MAX_PLANES 4
++
++enum kodi_web_video_type
++{
++  KODI_WEB_VIDEO_HELLO = 1,
++  KODI_WEB_VIDEO_HELLO_REPLY,
++  KODI_WEB_VIDEO_FRAME,
++  KODI_WEB_VIDEO_RELEASE,
++  KODI_WEB_VIDEO_CLEAR,
++  KODI_WEB_VIDEO_RECT,
++};
++
++/* the matrix coefficients, as in ITU-T H.273 */
++enum kodi_web_video_matrix
++{
++  KODI_WEB_VIDEO_MATRIX_UNSPECIFIED = 0,
++  KODI_WEB_VIDEO_MATRIX_BT601,
++  KODI_WEB_VIDEO_MATRIX_BT709,
++  KODI_WEB_VIDEO_MATRIX_BT2020,
++};
++
++enum kodi_web_video_range
++{
++  KODI_WEB_VIDEO_RANGE_UNSPECIFIED = 0,
++  KODI_WEB_VIDEO_RANGE_LIMITED,
++  KODI_WEB_VIDEO_RANGE_FULL,
++};
++
++enum kodi_web_video_transfer
++{
++  KODI_WEB_VIDEO_TRANSFER_UNSPECIFIED = 0,
++  KODI_WEB_VIDEO_TRANSFER_SDR,
++  KODI_WEB_VIDEO_TRANSFER_PQ,
++  KODI_WEB_VIDEO_TRANSFER_HLG,
++};
++
++struct kodi_web_video_hello
++{
++  uint32_t type;
++  uint32_t version;
++};
++
++struct kodi_web_video_format
++{
++  uint32_t fourcc;
++  uint32_t pad;
++  uint64_t modifier;
++};
++
++struct kodi_web_video_hello_reply
++{
++  uint32_t type;
++  uint32_t version;
++  uint32_t format_count;
++  uint32_t pad;
++  struct kodi_web_video_format formats[KODI_WEB_VIDEO_MAX_FORMATS];
++};
++
++struct kodi_web_video_frame
++{
++  uint32_t type;
++  uint32_t id;
++  uint32_t width;
++  uint32_t height;
++  uint32_t fourcc;
++  uint32_t object_count;
++  uint64_t modifier;
++  uint32_t plane_count;
++  uint32_t object[KODI_WEB_VIDEO_MAX_PLANES];
++  uint32_t offset[KODI_WEB_VIDEO_MAX_PLANES];
++  uint32_t stride[KODI_WEB_VIDEO_MAX_PLANES];
++  /* pixel aspect ratio */
++  uint32_t par_n;
++  uint32_t par_d;
++  uint32_t matrix;
++  uint32_t range;
++  uint32_t transfer;
++};
++
++struct kodi_web_video_release
++{
++  uint32_t type;
++  uint32_t id;
++};
++
++struct kodi_web_video_clear
++{
++  uint32_t type;
++};
++
++struct kodi_web_video_rect
++{
++  uint32_t type;
++  int32_t x;
++  int32_t y;
++  int32_t width;
++  int32_t height;
 +};
 +
 +#endif
@@ -5178,7 +6569,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
        return true;
 --- a/xbmc/input/InputManager.cpp
 +++ b/xbmc/input/InputManager.cpp
-@@ -637,7 +637,8 @@ bool CInputManager::HandleKey(const CKey
+@@ -631,7 +631,8 @@ bool CInputManager::HandleKey(const CKey
      return true;
    }
  

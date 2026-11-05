@@ -27,7 +27,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -18326,8 +18326,25 @@ msgctxt "#34130"
+@@ -18331,8 +18331,25 @@ msgctxt "#34130"
  msgid "384.0"
  msgstr ""
  
@@ -55,7 +55,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
  #: xbmc/PlayListPlayer.cpp
  msgctxt "#34201"
-@@ -22269,7 +22286,13 @@ msgctxt "#36448"
+@@ -22274,7 +22291,13 @@ msgctxt "#36448"
  msgid "Video files only: display order in the stream selection dialogs. [Media] stream order in the media, [Sorted] sorted using the stream attributes[CR]"
  msgstr ""
  
@@ -72,7 +72,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #: system/settings/settings.xml
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -3374,6 +3374,20 @@
+@@ -3411,6 +3411,20 @@
            </constraints>
            <control type="list" format="integer" />
          </setting>
@@ -219,7 +219,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    AE_QUALITY_UNKNOWN = -1, /*! Unset, unknown or incorrect quality level */
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -402,6 +402,7 @@ public:
+@@ -406,6 +406,7 @@ public:
    static constexpr auto SETTING_AUDIOOUTPUT_AUDIODEVICE = "audiooutput.audiodevice";
    static constexpr auto SETTING_AUDIOOUTPUT_CHANNELS = "audiooutput.channels";
    static constexpr auto SETTING_AUDIOOUTPUT_CONFIG = "audiooutput.config";

@@ -221,7 +221,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "profiles/ProfileManager.h"
  #include "resources/LocalizeStrings.h"
  #include "resources/ResourcesComponent.h"
-@@ -976,8 +977,15 @@ void CAdvancedSettings::ParseSettingsFil
+@@ -978,8 +979,15 @@ void CAdvancedSettings::ParseSettingsFil
          uplink.addonId = XMLUtils::GetAttribute(pUplink, "id");
          uplink.localAddress = XMLUtils::GetAttribute(pUplink, "localaddress");
  

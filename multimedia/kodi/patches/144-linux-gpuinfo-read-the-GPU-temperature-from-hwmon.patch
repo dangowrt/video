@@ -126,7 +126,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  };
 --- a/xbmc/settings/AdvancedSettings.cpp
 +++ b/xbmc/settings/AdvancedSettings.cpp
-@@ -472,6 +472,7 @@ void CAdvancedSettings::Initialize()
+@@ -473,6 +473,7 @@ void CAdvancedSettings::Initialize()
    m_cpuTempCmd = "";
    m_gpuTempCmd = "";
    m_cpuTempHwmon = "";
@@ -134,7 +134,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
    m_powerdownCommand = "";
    m_rebootCommand = "";
-@@ -1222,6 +1223,7 @@ void CAdvancedSettings::ParseSettingsFil
+@@ -1242,6 +1243,7 @@ void CAdvancedSettings::ParseSettingsFil
    XMLUtils::GetString(pRootElement, "cputempcommand", m_cpuTempCmd);
    XMLUtils::GetString(pRootElement, "gputempcommand", m_gpuTempCmd);
    XMLUtils::GetString(pRootElement, "cputemphwmon", m_cpuTempHwmon);
@@ -144,7 +144,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    if (pPowerManagement)
 --- a/xbmc/settings/AdvancedSettings.h
 +++ b/xbmc/settings/AdvancedSettings.h
-@@ -357,6 +357,7 @@ class CAdvancedSettings : public ISettin
+@@ -360,6 +360,7 @@ class CAdvancedSettings : public ISettin
      std::string m_cpuTempCmd;
      std::string m_gpuTempCmd;
      std::string m_cpuTempHwmon;

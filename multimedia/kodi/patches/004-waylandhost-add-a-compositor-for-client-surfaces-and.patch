@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
-Date: Wed, 4 Nov 2026 12:50:47 +0000
+Date: Tue, 3 Nov 2026 17:06:40 +0000
 Subject: [PATCH] waylandhost: add a compositor for client surfaces and
  kodi_web_v1
 
@@ -12,7 +12,10 @@ a client. Committed client buffers are handed to an observer, which
 shows them through Kodi's renderers, and the observer learns when a
 surface goes away. When the host stops, its clients get SIGTERM and
 their exit is awaited; a client still running 90 s later, for instance
-one blocked on a stale network mount, is killed.
+one blocked on a stale network mount, is killed. Clients learn the
+screen's mode, and when the display is reset for a new mode every
+output gets the new mode and every surface a configure for the new
+size.
 
 The host also serves kodi_web_v1, a protocol through which Kodi drives
 a web browser it hosts: the browser creates one view per profile, a
@@ -28,12 +31,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  .../platform/linux/waylandhost/CMakeLists.txt |   34 +
  .../linux/waylandhost/WaylandBuffer.cpp       |   64 +
  .../linux/waylandhost/WaylandBuffer.h         |   96 +
- .../linux/waylandhost/WaylandHost.cpp         | 2154 +++++++++++++++++
- xbmc/platform/linux/waylandhost/WaylandHost.h |  383 +++
+ .../linux/waylandhost/WaylandHost.cpp         | 2189 +++++++++++++++++
+ xbmc/platform/linux/waylandhost/WaylandHost.h |  394 +++
  .../linux/waylandhost/WaylandSurface.cpp      |  216 ++
  .../linux/waylandhost/WaylandSurface.h        |   96 +
  .../waylandhost/protocol/kodi-web-v1.xml      |  393 +++
- 9 files changed, 3437 insertions(+)
+ 9 files changed, 3483 insertions(+)
  create mode 100644 cmake/treedata/optional/common/waylandserver.txt
  create mode 100644 xbmc/platform/linux/waylandhost/CMakeLists.txt
  create mode 100644 xbmc/platform/linux/waylandhost/WaylandBuffer.cpp
@@ -253,7 +256,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.cpp
-@@ -0,0 +1,2154 @@
+@@ -0,0 +1,2189 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -1547,14 +1550,49 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  if (!resource)
 +    return;
 +
++  wl_resource_set_destructor(resource, OutputDestroyed);
++  host->m_outputs.push_back(resource);
 +  wl_output_send_geometry(resource, 0, 0, 0, 0, WL_OUTPUT_SUBPIXEL_UNKNOWN, "Kodi", "Kodi",
 +                          WL_OUTPUT_TRANSFORM_NORMAL);
-+  wl_output_send_mode(resource, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
-+                      host->m_config.width, host->m_config.height, host->m_config.refreshMilliHz);
-+  if (wl_resource_get_version(resource) >= WL_OUTPUT_SCALE_SINCE_VERSION)
-+    wl_output_send_scale(resource, 1);
-+  if (wl_resource_get_version(resource) >= WL_OUTPUT_DONE_SINCE_VERSION)
-+    wl_output_send_done(resource);
++  host->SendOutputMode(resource);
++}
++
++void CWaylandHost::OutputDestroyed(wl_resource* resource)
++{
++  static_cast<CWaylandHost*>(wl_resource_get_user_data(resource))->m_outputs.remove(resource);
++}
++
++void CWaylandHost::SendOutputMode(wl_resource* output) const
++{
++  wl_output_send_mode(output, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED, m_config.width,
++                      m_config.height, m_config.refreshMilliHz);
++  if (wl_resource_get_version(output) >= WL_OUTPUT_SCALE_SINCE_VERSION)
++    wl_output_send_scale(output, 1);
++  if (wl_resource_get_version(output) >= WL_OUTPUT_DONE_SINCE_VERSION)
++    wl_output_send_done(output);
++}
++
++void CWaylandHost::SetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz)
++{
++  Post([this, width, height, refreshMilliHz] { DoSetOutputMode(width, height, refreshMilliHz); });
++}
++
++void CWaylandHost::DoSetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz)
++{
++  if (width == m_config.width && height == m_config.height &&
++      refreshMilliHz == m_config.refreshMilliHz)
++    return;
++
++  CLog::Log(LOGINFO, "CWaylandHost::{}: {}x{} at {} mHz", __FUNCTION__, width, height,
++            refreshMilliHz);
++  m_config.width = width;
++  m_config.height = height;
++  m_config.refreshMilliHz = refreshMilliHz;
++  for (wl_resource* output : m_outputs)
++    SendOutputMode(output);
++  for (CWaylandSurface* surface : m_surfaces)
++    surface->SendConfigure(width, height);
++  wl_display_flush_clients(m_display);
 +}
 +
 +void CWaylandHost::BindSeat(wl_client* client, void* data, uint32_t version, uint32_t id)
@@ -2410,7 +2448,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.h
-@@ -0,0 +1,383 @@
+@@ -0,0 +1,394 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2576,6 +2614,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +   */
 +  void TerminateClients();
 +
++  /*!
++   * \brief Tell the clients the output's new mode and resize their surfaces
++   * to it; any thread
++   */
++  void SetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz);
++
 +  // input injection; any thread
 +  void KeyboardKey(uint32_t evdevCode, bool pressed);
 +  void PointerMotion(int32_t x, int32_t y);
@@ -2719,6 +2763,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  void DoPointerAxis(int32_t value120);
 +  void DoPointerScroll(int32_t x, int32_t y, int32_t pixels);
 +  void DoFrameDone();
++  void DoSetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz);
++  void SendOutputMode(wl_resource* output) const;
 +  void SetKeyboardFocus(CWaylandSurface* surface);
 +  void SendKeyboardEnter(CWaylandSurface& surface);
 +  void SendKeyboardEnterTo(wl_resource* keyboard, CWaylandSurface& surface);
@@ -2735,6 +2781,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  // globals
 +  static void BindCompositor(wl_client* client, void* data, uint32_t version, uint32_t id);
 +  static void BindOutput(wl_client* client, void* data, uint32_t version, uint32_t id);
++  static void OutputDestroyed(wl_resource* resource);
 +  static void BindSeat(wl_client* client, void* data, uint32_t version, uint32_t id);
 +  static void BindXdgWmBase(wl_client* client, void* data, uint32_t version, uint32_t id);
 +  static void BindLinuxDmabuf(wl_client* client, void* data, uint32_t version, uint32_t id);
@@ -2751,7 +2798,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  void SendContentFilterList(const std::string& name, const std::string& path);
 +
 +  IWaylandHostObserver& m_observer;
-+  const WaylandHostConfig m_config;
++  // changed only on the host thread
++  WaylandHostConfig m_config;
 +
 +  wl_display* m_display{nullptr};
 +  wl_event_loop* m_loop{nullptr};
@@ -2768,6 +2816,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  std::list<WebView> m_views;
 +  std::map<std::string, std::string> m_filterLists;
 +  std::list<TextInput> m_textInputs;
++  std::list<wl_resource*> m_outputs;
 +  std::list<wl_resource*> m_keyboards;
 +  std::list<wl_resource*> m_pointers;
 +  CWaylandSurface* m_keyboardFocus{nullptr};
