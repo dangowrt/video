@@ -148,7 +148,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_state = State::ABSENT;
    m_views.clear();
    m_surfaces.clear();
-@@ -517,7 +551,7 @@ bool CWebClientManager::ConfigureViewFro
+@@ -528,7 +562,7 @@ bool CWebClientManager::ConfigureViewFro
      return false;
  
    const auto webapp = std::dynamic_pointer_cast<ADDON::CAddon>(addon);
@@ -157,7 +157,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    if (!type)
      return false;
  
-@@ -539,7 +573,13 @@ bool CWebClientManager::ConfigureViewFro
+@@ -554,7 +588,13 @@ bool CWebClientManager::ConfigureViewFro
      {
        const std::string list = values.GetValue("contentfilter@list").asString();
        if (!list.empty())
@@ -181,7 +181,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "WebVideoServer.h"
  #include "application/IApplicationComponent.h"
  #include "guilib/DispResource.h"
-@@ -176,6 +177,7 @@ private:
+@@ -181,6 +182,7 @@ private:
    std::unique_ptr<WAYLANDHOST::CWaylandHost> m_host;
    std::unique_ptr<CWebAudioServer> m_audio;
    std::unique_ptr<CWebVideoServer> m_video;

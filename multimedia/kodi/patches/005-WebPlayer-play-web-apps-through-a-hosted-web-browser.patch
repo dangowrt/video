@@ -6,18 +6,20 @@ Subject: [PATCH] WebPlayer: play web apps through a hosted web browser
 Streaming services and broadcasters increasingly offer their catalogue
 only as a web app made for TV sets. This adds a player for such apps.
 
-CWebClientManager runs the Wayland host for Kodi's lifetime and keeps a
-web browser, set by web.clientcommand, warm as one of its clients. When
-a web page is played, CWebPlayer asks the browser for the view of the
-item's profile, loads the URL, and passes the frames the browser
-commits through Kodi's video renderers, so that Kodi's OSD and dialogs
-compose over the page as over any other video. While the web window is
-in front, keys the keymap leaves to the page and the pointer go to the
-browser; text fields open Kodi's keyboard along the bottom of the
-screen. The browser's audio plays through Kodi's audio engine over a
-socket of its own, pages decrypt with the CDM inputstream.adaptive
-installed, and the media state a page reports drives the screensaver
-and display power rules as a video or music would.
+CWebClientManager runs the Wayland host for Kodi's lifetime and a web
+browser, set by web.clientcommand, as one of its clients. When a web
+page is played, CWebPlayer asks the browser for a view of the item's
+profile, loads the URL, and passes the frames the browser commits
+through Kodi's video renderers, so that Kodi's OSD and dialogs compose
+over the page as over any other video. While the web window is in front,
+keys the keymap leaves to the page and the pointer go to the browser;
+text fields open Kodi's keyboard along the bottom of the screen. The
+browser's audio plays through Kodi's audio engine over a socket of its
+own, pages decrypt with the CDM inputstream.adaptive installed, and the
+media state a page reports drives the screensaver and display power
+rules as a video or music would. The view lives as long as the player:
+leaving the app, from the page or by starting another one, closes it, so
+that no page keeps running in the background.
 
 The frames are DRM PRIME buffers, which the GBM and Wayland windowing
 show, so the web host runs only there; System.SupportsWebApps tells
@@ -39,10 +41,12 @@ video stops, the page returns to the video plane.
 
 Web apps are a new add-on type, kodi.webapp: a manifest names the start
 URL, user agent, user scripts and content filters of the app, whose
-profile is the add-on id. Web apps are listed as an add-on source and
-in a "Web apps" section of Estuary's home menu, accept URLs as assets,
-and may let the user choose among several start URLs. The web player
-plays web apps only, which ask for it by name.
+profile is the add-on id, and the viewport a TV edition is written for,
+1920x1080 or 1280x720 as a television's browser has at any panel
+resolution, which the page is zoomed to fit. Web apps are listed as an
+add-on source and in a "Web apps" section of Estuary's home menu, accept
+URLs as assets, and may let the user choose among several start URLs.
+The web player plays web apps only, which ask for it by name.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
@@ -81,11 +85,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/cores/WebPlayer/WebApp.h                 |  35 +
  xbmc/cores/WebPlayer/WebAudioServer.cpp       | 796 ++++++++++++++++
  xbmc/cores/WebPlayer/WebAudioServer.h         | 136 +++
- xbmc/cores/WebPlayer/WebClientManager.cpp     | 847 ++++++++++++++++++
- xbmc/cores/WebPlayer/WebClientManager.h       | 224 +++++
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 866 ++++++++++++++++++
+ xbmc/cores/WebPlayer/WebClientManager.h       | 229 +++++
  xbmc/cores/WebPlayer/WebLayerBridge.cpp       | 236 +++++
  xbmc/cores/WebPlayer/WebLayerBridge.h         |  90 ++
- xbmc/cores/WebPlayer/WebPlayer.cpp            | 744 +++++++++++++++
+ xbmc/cores/WebPlayer/WebPlayer.cpp            | 739 +++++++++++++++
  xbmc/cores/WebPlayer/WebPlayer.h              | 169 ++++
  xbmc/cores/WebPlayer/WebPlayerDefs.h          |  26 +
  xbmc/cores/WebPlayer/WebVideoBuffer.cpp       | 112 +++
@@ -109,7 +113,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/settings/Settings.h                      |   4 +
  xbmc/utils/ExecString.cpp                     |   2 +
  xbmc/windows/GUIMediaWindow.cpp               |   9 +
- 63 files changed, 5901 insertions(+), 29 deletions(-)
+ 63 files changed, 5920 insertions(+), 29 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -142,7 +146,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +++ b/addons/kodi.webapp/addon.xml
 @@ -0,0 +1,7 @@
 +<?xml version="1.0" encoding="UTF-8"?>
-+<addon id="kodi.webapp" version="1.1.0" provider-name="Team Kodi">
++<addon id="kodi.webapp" version="1.2.0" provider-name="Team Kodi">
 +  <backwards-compatibility abi="1.0.0"/>
 +  <requires>
 +    <import addon="xbmc.core" version="0.1.0"/>
@@ -2896,7 +2900,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -0,0 +1,847 @@
+@@ -0,0 +1,866 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -3105,7 +3109,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  m_state = State::ABSENT;
 +  m_views.clear();
 +  m_surfaces.clear();
-+  m_replacing.clear();
++  m_closing.clear();
 +  m_observer = nullptr;
 +}
 +
@@ -3219,16 +3223,13 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  }
 +
 +  m_uplinks[profile] = uplink;
-+  if (m_replacing.count(profile))
++  if (m_closing.count(profile))
 +    return true;
 +
 +  // the uplink is fixed when the client creates the view's session
 +  if (view != m_views.end())
 +  {
-+    m_replacing.insert(profile);
-+    m_surfaces.erase(view->second);
-+    m_views.erase(view);
-+    m_host->WebViewClose(profile);
++    CloseView(profile);
 +    return true;
 +  }
 +
@@ -3253,11 +3254,25 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +void CWebClientManager::ReleaseView(IWebViewObserver& observer)
 +{
 +  std::unique_lock lock(m_lock);
-+  if (m_observer == &observer)
-+  {
-+    m_observer = nullptr;
-+    m_wantPending = false;
-+  }
++  if (m_observer != &observer)
++    return;
++
++  m_observer = nullptr;
++  m_wantPending = false;
++  CloseView(m_observedProfile);
++}
++
++// the client destroys the view later; a request for the profile waits for that
++void CWebClientManager::CloseView(const std::string& profile)
++{
++  const auto view = m_views.find(profile);
++  if (view == m_views.end())
++    return;
++
++  m_closing.insert(profile);
++  m_surfaces.erase(view->second);
++  m_views.erase(view);
++  m_host->WebViewClose(profile);
 +}
 +
 +bool CWebClientManager::GetShownView(ViewState& state) const
@@ -3361,7 +3376,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +            __FUNCTION__, pid, status);
 +  m_views.clear();
 +  m_surfaces.clear();
-+  m_replacing.clear();
++  m_closing.clear();
 +  IWebViewObserver* observer = m_observer;
 +  const std::string profile = m_observedProfile;
 +
@@ -3434,6 +3449,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +          profile,
 +          URIUtils::AddFileToFolder(webapp->Path(), values.GetValue("userscript").asString()),
 +          true);
++    else if (element == "viewport")
++      m_host->WebViewSetViewport(profile,
++                                 std::max(values.GetValue("viewport@width").asInteger(), 0),
++                                 std::max(values.GetValue("viewport@height").asInteger(), 0));
 +    else if (element == "contentfilter")
 +    {
 +      const std::string list = values.GetValue("contentfilter@list").asString();
@@ -3513,17 +3532,21 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +void CWebClientManager::OnWebViewCreated(const std::string& profile, CWaylandSurface& surface)
 +{
-+  ConfigureView(profile);
-+
 +  std::unique_lock lock(m_lock);
 +  m_views[profile] = &surface;
 +  m_surfaces[&surface] = profile;
 +  IWebViewObserver* observer = ObserverOf(profile);
-+  if (observer)
-+    m_wantPending = false;
++  // the player that asked for the view has stopped since
++  if (!observer)
++  {
++    CloseView(profile);
++    return;
++  }
++  m_wantPending = false;
 +  lock.unlock();
-+  if (observer)
-+    observer->OnWebViewAvailable(profile, surface);
++
++  ConfigureView(profile);
++  observer->OnWebViewAvailable(profile, surface);
 +}
 +
 +void CWebClientManager::OnWebViewUnavailable(const std::string& profile, const std::string& message)
@@ -3626,11 +3649,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    m_surfaces.erase(view->second);
 +    m_views.erase(view);
 +  }
-+  const bool replaced = m_replacing.erase(profile) > 0;
++  const bool closed = m_closing.erase(profile) > 0;
 +  IWebViewObserver* observer = ObserverOf(profile);
 +  const std::string uplink = m_uplinks[profile];
 +  lock.unlock();
-+  if (replaced && observer)
++  if (closed && observer)
 +    m_host->WebWantView(profile, uplink);
 +  else if (observer)
 +    observer->OnWebViewGone(profile);
@@ -3746,7 +3769,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebClientManager.h
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,229 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -3809,9 +3832,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +};
 +
 +/*!
-+ * \brief Runs the Wayland host for Kodi's lifetime and keeps the web client
-+ * warm: the client is started once the GUI is up, its views survive the
-+ * player that showed them, and a crashed client is started again once.
++ * \brief Runs the Wayland host for Kodi's lifetime and the web client
++ * alongside: the client is started once the GUI is up, a view lives as long
++ * as the player that shows it, and a crashed client is started again once.
 + */
 +class CWebClientManager : public IApplicationComponent,
 +                          public WAYLANDHOST::IWaylandHostObserver,
@@ -3851,6 +3874,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +   * answer comes through the observer, at once if the view exists
 +   */
 +  bool RequestView(const std::string& profile, IWebViewObserver& observer);
++
++  /*!
++   * \brief The observer is done with its view, which closes
++   */
 +  void ReleaseView(IWebViewObserver& observer);
 +
 +  /*!
@@ -3920,6 +3947,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +                        bool scripts);
 +  void SendProfileFile(const std::string& profile, const std::string& file, bool script);
 +  IWebViewObserver* ObserverOf(const std::string& profile);
++  void CloseView(const std::string& profile);
 +  void EnsureCaretVisible();
 +
 +  std::unique_ptr<WAYLANDHOST::CWaylandHost> m_host;
@@ -3935,7 +3963,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  std::map<std::string, WAYLANDHOST::CWaylandSurface*> m_views;
 +  std::map<WAYLANDHOST::CWaylandSurface*, std::string> m_surfaces;
 +  std::map<std::string, std::string> m_uplinks;
-+  std::set<std::string> m_replacing;
++  std::set<std::string> m_closing;
 +  bool m_keyboardOpen{false};
 +  bool m_textInputActive{false};
 +  WAYLANDHOST::TextInputState m_textInput;
@@ -4305,7 +4333,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebPlayer.cpp
-@@ -0,0 +1,744 @@
+@@ -0,0 +1,739 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -4524,11 +4552,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  m_stop = true;
 +  m_manager->SetVideoObserver(nullptr);
 +  m_manager->ReleaseView(*this);
-+  if (m_surface)
-+  {
-+    m_manager->SetActive(m_profile, false);
-+    m_manager->LoadUrl(m_profile, "about:blank");
-+  }
 +  m_surface = nullptr;
 +  m_manager.reset();
 +
