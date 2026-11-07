@@ -97,7 +97,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/cores/WebPlayer/WebPlayerDefs.h          |  26 +
  xbmc/cores/WebPlayer/WebVideoBuffer.cpp       | 112 +++
  xbmc/cores/WebPlayer/WebVideoBuffer.h         |  69 ++
- xbmc/cores/WebPlayer/WebVideoServer.cpp       | 417 +++++++++
+ xbmc/cores/WebPlayer/WebVideoServer.cpp       | 421 +++++++++
  xbmc/cores/WebPlayer/WebVideoServer.h         | 170 ++++
  xbmc/cores/WebPlayer/kodi-web-audio.h         | 175 ++++
  xbmc/cores/WebPlayer/kodi-web-video.h         | 135 +++
@@ -116,7 +116,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/settings/Settings.h                      |   5 +
  xbmc/utils/ExecString.cpp                     |   2 +
  xbmc/windows/GUIMediaWindow.cpp               |   9 +
- 63 files changed, 5951 insertions(+), 29 deletions(-)
+ 63 files changed, 5955 insertions(+), 29 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -5496,7 +5496,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebVideoServer.cpp
-@@ -0,0 +1,417 @@
+@@ -0,0 +1,421 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -5704,7 +5704,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  }
 +
 +  if (formats.size() > KODI_WEB_VIDEO_MAX_FORMATS)
++  {
++    CLog::Log(LOGWARNING, "CWebVideoServer::{}: offering the first {} of {} formats", __FUNCTION__,
++              KODI_WEB_VIDEO_MAX_FORMATS, formats.size());
 +    formats.resize(KODI_WEB_VIDEO_MAX_FORMATS);
++  }
 +  m_formats = std::move(formats);
 +  m_path = path;
 +  Create();

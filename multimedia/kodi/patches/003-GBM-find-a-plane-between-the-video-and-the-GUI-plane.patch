@@ -7,17 +7,19 @@ A client that composes a layer of its own over the video, such as a web
 page with its video on the video plane, needs a third plane stacked
 between the video and the GUI plane. FindOverlayPlane() picks a free
 plane of the CRTC for the layer's format, and GetVideoFormats() lists
-what the planes besides the GUI plane can show. MoveOnTopOf() moves two
-planes to the ends of their zpos ranges, which leaves no level in
-between, so the three planes get the lowest, a middle and the highest
-level instead, or must already be in that order where zpos is fixed.
+what the planes besides the GUI plane can show, each format in its
+linear layout before any modifier, so that a client taking only the
+first entries still gets every format. MoveOnTopOf() moves two planes to
+the ends of their zpos ranges, which leaves no level in between, so the
+three planes get the lowest, a middle and the highest level instead, or
+must already be in that order where zpos is fixed.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
  xbmc/windowing/gbm/drm/DRMPlane.h   |  4 ++
- xbmc/windowing/gbm/drm/DRMUtils.cpp | 75 +++++++++++++++++++++++++++++
+ xbmc/windowing/gbm/drm/DRMUtils.cpp | 85 +++++++++++++++++++++++++++++
  xbmc/windowing/gbm/drm/DRMUtils.h   |  4 ++
- 3 files changed, 83 insertions(+)
+ 3 files changed, 93 insertions(+)
 
 --- a/xbmc/windowing/gbm/drm/DRMPlane.h
 +++ b/xbmc/windowing/gbm/drm/DRMPlane.h
@@ -73,7 +75,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  } // namespace
  
  CDRMUtils::~CDRMUtils()
-@@ -368,6 +393,56 @@ bool CDRMUtils::FindVideoAndGuiPlane(uin
+@@ -368,6 +393,66 @@ bool CDRMUtils::FindVideoAndGuiPlane(uin
    return false;
  }
  
@@ -86,15 +88,25 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +      formats.emplace_back(format, modifier);
 +  };
 +
++  std::vector<CDRMPlane*> planes;
 +  for (auto& plane : m_planes)
 +  {
-+    if (plane.get() == m_gui_plane ||
-+        !plane->Check(0, 0, DRM_FORMAT_INVALID, DRM_FORMAT_MOD_INVALID, m_crtc, PLANE_TYPE_ANY))
-+      continue;
++    if (plane.get() != m_gui_plane &&
++        plane->Check(0, 0, DRM_FORMAT_INVALID, DRM_FORMAT_MOD_INVALID, m_crtc, PLANE_TYPE_ANY))
++      planes.emplace_back(plane.get());
++  }
 +
++  // each format in its linear layout first, so that a client taking only so
++  // many entries still gets every format
++  for (auto* plane : planes)
++  {
++    for (uint32_t format : plane->GetFormats())
++      add(format, DRM_FORMAT_MOD_LINEAR);
++  }
++  for (auto* plane : planes)
++  {
 +    for (uint32_t format : plane->GetFormats())
 +    {
-+      add(format, DRM_FORMAT_MOD_LINEAR);
 +      for (uint64_t modifier : plane->GetModifiersForFormat(format))
 +        add(format, modifier);
 +    }
