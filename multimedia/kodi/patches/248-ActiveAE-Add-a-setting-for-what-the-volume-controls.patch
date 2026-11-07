@@ -72,7 +72,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #: system/settings/settings.xml
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -3411,6 +3411,20 @@
+@@ -3421,6 +3421,20 @@
            </constraints>
            <control type="list" format="integer" />
          </setting>
@@ -219,7 +219,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    AE_QUALITY_UNKNOWN = -1, /*! Unset, unknown or incorrect quality level */
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -406,6 +406,7 @@ public:
+@@ -407,6 +407,7 @@ public:
    static constexpr auto SETTING_AUDIOOUTPUT_AUDIODEVICE = "audiooutput.audiodevice";
    static constexpr auto SETTING_AUDIOOUTPUT_CHANNELS = "audiooutput.channels";
    static constexpr auto SETTING_AUDIOOUTPUT_CONFIG = "audiooutput.config";

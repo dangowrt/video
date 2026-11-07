@@ -86,7 +86,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
                WebVideoBuffer.h
 --- a/xbmc/cores/WebPlayer/WebClientManager.cpp
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -144,6 +144,32 @@ void NotifyOpenError(const std::string&
+@@ -146,6 +146,32 @@ void NotifyOpenError(const std::string&
        CGUIDialogKaiToast::Error, StringUtils::Format(localizeStrings.Get(13329), name), reason);
  }
  
@@ -119,7 +119,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  // web apps run at the screen's resolution, whatever size the GUI renders at
  WaylandHostConfig OutputMode()
  {
-@@ -184,6 +210,9 @@ void CWebClientManager::Start()
+@@ -186,6 +212,9 @@ void CWebClientManager::Start()
      m_audio.reset();
    StartVideo();
  
@@ -129,7 +129,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
    CServiceBroker::GetWinSystem()->Register(this);
    if (settings->GetBool(CSettings::SETTING_WEB_PRELOAD))
-@@ -197,12 +226,17 @@ void CWebClientManager::Stop()
+@@ -199,12 +228,17 @@ void CWebClientManager::Stop()
  
    CServiceBroker::GetWinSystem()->Unregister(this);
    CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
@@ -148,7 +148,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_state = State::ABSENT;
    m_views.clear();
    m_surfaces.clear();
-@@ -528,7 +562,7 @@ bool CWebClientManager::ConfigureViewFro
+@@ -536,7 +570,7 @@ bool CWebClientManager::ConfigureViewFro
      return false;
  
    const auto webapp = std::dynamic_pointer_cast<ADDON::CAddon>(addon);
@@ -157,7 +157,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    if (!type)
      return false;
  
-@@ -554,7 +588,13 @@ bool CWebClientManager::ConfigureViewFro
+@@ -562,7 +596,13 @@ bool CWebClientManager::ConfigureViewFro
      {
        const std::string list = values.GetValue("contentfilter@list").asString();
        if (!list.empty())

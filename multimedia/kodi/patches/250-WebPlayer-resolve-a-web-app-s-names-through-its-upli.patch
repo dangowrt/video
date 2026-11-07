@@ -19,12 +19,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25770,7 +25770,13 @@ msgctxt "#40248"
- msgid "Reload"
+@@ -25782,7 +25782,13 @@ msgctxt "#40250"
+ msgid "Keep the files web apps download in Kodi's profile, so that apps start faster on a slow connection after a restart. Off caches them in memory only, which spares the storage the writes."
  msgstr ""
  
--#empty strings from id 40249 to 40399
-+#empty strings from id 40249 to 40398
+-#empty strings from id 40251 to 40399
++#empty strings from id 40251 to 40398
 +
 +#. Notification text when a web app's uplink has no local address
 +#: xbmc/cores/WebPlayer/WebClientManager.cpp
@@ -66,7 +66,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  using namespace KODI::WEB;
  using namespace KODI::WAYLANDHOST;
  
-@@ -131,6 +138,33 @@ std::string CdmDirectory()
+@@ -133,6 +140,33 @@ std::string CdmDirectory()
    return path.empty() ? path : CSpecialProtocol::TranslatePath(path);
  }
  
@@ -100,7 +100,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  void NotifyOpenError(const std::string& profile, const std::string& reason)
  {
    ADDON::AddonPtr addon;
-@@ -144,6 +178,16 @@ void NotifyOpenError(const std::string&
+@@ -146,6 +180,16 @@ void NotifyOpenError(const std::string&
        CGUIDialogKaiToast::Error, StringUtils::Format(localizeStrings.Get(13329), name), reason);
  }
  
@@ -117,7 +117,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  const ADDON::CAddonType* WebAppType(const std::shared_ptr<ADDON::CAddon>& webapp)
  {
    return webapp ? webapp->Type(ADDON::AddonType::WEBAPP) : nullptr;
-@@ -314,6 +358,7 @@ void CWebClientManager::Spawn()
+@@ -322,6 +366,7 @@ void CWebClientManager::Spawn()
    // pages decrypt with the CDM that inputstream.adaptive installed
    if (const std::string cdm = CdmDirectory(); !cdm.empty())
      env.emplace("KODI_WEB_CDM_DIR", cdm);
@@ -125,7 +125,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_host->SpawnClient({command}, std::move(env));
  }
  
-@@ -336,6 +381,11 @@ bool CWebClientManager::RequestView(cons
+@@ -344,6 +389,11 @@ bool CWebClientManager::RequestView(cons
    }
  
    const std::string uplink = UplinkOf(profile);

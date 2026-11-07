@@ -19,7 +19,10 @@ own, pages decrypt with the CDM inputstream.adaptive installed, and the
 media state a page reports drives the screensaver and display power
 rules as a video or music would. The view lives as long as the player:
 leaving the app, from the page or by starting another one, closes it, so
-that no page keeps running in the background.
+that no page keeps running in the background. The browser caches what
+pages download in memory, and on disk in Kodi's profile only when
+web.diskcache asks for it, since that writes to the storage as pages
+load.
 
 The frames are DRM PRIME buffers, which the GBM and Wayland windowing
 show, so the web host runs only there; System.SupportsWebApps tells
@@ -51,7 +54,7 @@ The web player plays web apps only, which ask for it by name.
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
  addons/kodi.webapp/addon.xml                  |   7 +
- .../resources/strings.po                      | 111 ++-
+ .../resources/strings.po                      | 123 ++-
  .../resource.language.en_gb/strings.po        |   5 +
  addons/skin.estuary/xml/DialogWebKeyboard.xml | 525 +++++++++++
  addons/skin.estuary/xml/DialogWebOSD.xml      |  63 ++
@@ -63,7 +66,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  .../optional/common/waylandserver.txt         |   1 +
  system/addon-manifest.xml                     |   1 +
  system/keymaps/keyboard.xml                   |  12 +
- system/settings/settings.xml                  |  37 +
+ system/settings/settings.xml                  |  47 +
  xbmc/GUIInfoManager.cpp                       |  11 +-
  xbmc/addons/AddonBuilder.cpp                  |   1 +
  xbmc/addons/addoninfo/AddonInfo.cpp           |   3 +-
@@ -85,7 +88,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/cores/WebPlayer/WebApp.h                 |  35 +
  xbmc/cores/WebPlayer/WebAudioServer.cpp       | 796 ++++++++++++++++
  xbmc/cores/WebPlayer/WebAudioServer.h         | 136 +++
- xbmc/cores/WebPlayer/WebClientManager.cpp     | 866 ++++++++++++++++++
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 874 ++++++++++++++++++
  xbmc/cores/WebPlayer/WebClientManager.h       | 229 +++++
  xbmc/cores/WebPlayer/WebLayerBridge.cpp       | 236 +++++
  xbmc/cores/WebPlayer/WebLayerBridge.h         |  90 ++
@@ -110,10 +113,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/input/WindowTranslator.cpp               |   4 +
  xbmc/interfaces/builtins/AddonBuiltins.cpp    |  34 +
  xbmc/settings/SettingConditions.cpp           |   3 +
- xbmc/settings/Settings.h                      |   4 +
+ xbmc/settings/Settings.h                      |   5 +
  xbmc/utils/ExecString.cpp                     |   2 +
  xbmc/windows/GUIMediaWindow.cpp               |   9 +
- 63 files changed, 5920 insertions(+), 29 deletions(-)
+ 63 files changed, 5951 insertions(+), 29 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -168,7 +171,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
  #: xbmc/guilib/WindowIDs.h
  msgctxt "#12999"
-@@ -25624,7 +25629,109 @@ msgctxt "#40230"
+@@ -25624,7 +25629,121 @@ msgctxt "#40230"
  msgid "Turn on to show individual versions in the movies view, turn off to group them"
  msgstr ""
  
@@ -275,7 +278,19 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +msgid "Reload"
 +msgstr ""
 +
-+#empty strings from id 40249 to 40399
++#. Name of the setting that keeps the files web apps download on disk
++#: system/settings/settings.xml
++msgctxt "#40249"
++msgid "Cache web apps on disk"
++msgstr ""
++
++#. Help for setting Cache web apps on disk
++#: system/settings/settings.xml
++msgctxt "#40250"
++msgid "Keep the files web apps download in Kodi's profile, so that apps start faster on a slow connection after a restart. Off caches them in memory only, which spares the storage the writes."
++msgstr ""
++
++#empty strings from id 40251 to 40399
  
  # Video versions
  
@@ -1021,7 +1036,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
        <m>OSD</m>
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -2890,6 +2890,43 @@
+@@ -2890,6 +2890,53 @@
        </group>
      </category>
    </section>
@@ -1045,6 +1060,16 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +          <control type="toggle" />
 +        </setting>
 +        <setting id="web.softwarecodecs" type="boolean" parent="web.enabled" label="40244" help="40245">
++          <level>1</level>
++          <default>false</default>
++          <dependencies>
++            <dependency type="enable">
++              <condition setting="web.enabled" operator="is">true</condition>
++            </dependency>
++          </dependencies>
++          <control type="toggle" />
++        </setting>
++        <setting id="web.diskcache" type="boolean" parent="web.enabled" label="40249" help="40250">
 +          <level>1</level>
 +          <default>false</default>
 +          <dependencies>
@@ -2900,7 +2925,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -0,0 +1,866 @@
+@@ -0,0 +1,874 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2976,6 +3001,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +constexpr const char* PROFILE_ROOT = "special://profile/webprofiles/";
 +constexpr const char* AUDIO_SOCKET = "special://temp/webaudio.sock";
 +constexpr const char* VIDEO_SOCKET = "special://temp/webvideo.sock";
++constexpr const char* CACHE_TEMP = "special://temp/webcache";
++constexpr const char* CACHE_KEPT = "special://profile/webcache";
 +
 +void OnWebKeyboardText(CGUIKeyboard*, const std::string& text)
 +{
@@ -3166,12 +3193,18 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  const std::string command = settings->GetString(CSettings::SETTING_WEB_CLIENTCOMMAND);
 +  CLog::Log(LOGINFO, "CWebClientManager::{}: starting {}", __FUNCTION__, command);
 +  m_state = State::STARTING;
++  // a disk cache in Kodi's profile writes to its storage as pages load, so
++  // it is kept only while the user asks for one
++  const bool diskCache = settings->GetBool(CSettings::SETTING_WEB_DISKCACHE);
++  if (!diskCache && XFILE::CDirectory::Exists(CACHE_KEPT))
++    XFILE::CDirectory::RemoveRecursive(CACHE_KEPT);
 +  // the client keeps profile data under XDG_DATA_HOME; Kodi's profile is
 +  // where it survives restarts and follows the Kodi profile in use
 +  std::map<std::string, std::string> env{
 +      {"WPE_PLATFORM", "wayland"},
 +      {"XDG_DATA_HOME", CSpecialProtocol::TranslatePath("special://profile/webdata")},
-+      {"XDG_CACHE_HOME", CSpecialProtocol::TranslatePath("special://temp/webcache")},
++      {"XDG_CACHE_HOME", CSpecialProtocol::TranslatePath(diskCache ? CACHE_KEPT : CACHE_TEMP)},
++      {"KODI_WEBVIEW_DISK_CACHE", diskCache ? "1" : "0"},
 +      {"KODI_WEBVIEW_SOFTWARE_CODECS",
 +       settings->GetBool(CSettings::SETTING_WEB_SOFTWARECODECS) ? "1" : "0"}};
 +  // the client's audio sinks play through Kodi's audio engine
@@ -6693,13 +6726,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #endif
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -338,6 +338,10 @@ public:
+@@ -338,6 +338,11 @@ public:
    static constexpr auto SETTING_WEATHER_CURRENTLOCATION = "weather.currentlocation";
    static constexpr auto SETTING_WEATHER_ADDON = "weather.addon";
    static constexpr auto SETTING_WEATHER_ADDONSETTINGS = "weather.addonsettings";
 +  static constexpr auto SETTING_WEB_ENABLED = "web.enabled";
 +  static constexpr auto SETTING_WEB_PRELOAD = "web.preload";
 +  static constexpr auto SETTING_WEB_SOFTWARECODECS = "web.softwarecodecs";
++  static constexpr auto SETTING_WEB_DISKCACHE = "web.diskcache";
 +  static constexpr auto SETTING_WEB_CLIENTCOMMAND = "web.clientcommand";
    static constexpr auto SETTING_SERVICES_DEVICENAME = "services.devicename";
    static constexpr auto SETTING_SERVICES_DEVICEUUID = "services.deviceuuid";

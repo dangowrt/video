@@ -62,7 +62,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #: system/settings/settings.xml
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -3693,6 +3693,14 @@
+@@ -3703,6 +3703,14 @@
            <control type="toggle" />
            <default>true</default>
          </setting>
@@ -94,7 +94,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -431,6 +431,7 @@ public:
+@@ -432,6 +432,7 @@ public:
    static constexpr auto SETTING_INPUT_PERIPHERALS = "input.peripherals";
    static constexpr auto SETTING_INPUT_PERIPHERALLIBRARIES = "input.peripherallibraries";
    static constexpr auto SETTING_INPUT_ENABLEMOUSE = "input.enablemouse";

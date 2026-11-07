@@ -52,7 +52,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #: system/settings/settings.xml
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -3835,6 +3835,11 @@
+@@ -3845,6 +3845,11 @@
              <formatlabel>14044</formatlabel>
            </control>
          </setting>
@@ -84,7 +84,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    }
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -451,6 +451,7 @@ public:
+@@ -452,6 +452,7 @@ public:
    static constexpr auto SETTING_NETWORK_HTTPPROXYPASSWORD = "network.httpproxypassword";
    static constexpr auto SETTING_NETWORK_BANDWIDTH = "network.bandwidth";
    static constexpr auto SETTING_POWERMANAGEMENT_DISPLAYSOFF = "powermanagement.displaysoff";
