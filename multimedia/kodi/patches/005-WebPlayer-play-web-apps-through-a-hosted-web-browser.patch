@@ -91,7 +91,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/cores/WebPlayer/WebAudioServer.h         | 136 +++
  xbmc/cores/WebPlayer/WebClientManager.cpp     | 930 ++++++++++++++++++
  xbmc/cores/WebPlayer/WebClientManager.h       | 251 +++++
- xbmc/cores/WebPlayer/WebLayerBridge.cpp       | 236 +++++
+ xbmc/cores/WebPlayer/WebLayerBridge.cpp       | 238 +++++
  xbmc/cores/WebPlayer/WebLayerBridge.h         |  90 ++
  xbmc/cores/WebPlayer/WebPlayer.cpp            | 766 +++++++++++++++
  xbmc/cores/WebPlayer/WebPlayer.h              | 173 ++++
@@ -117,7 +117,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/settings/Settings.h                      |   5 +
  xbmc/utils/ExecString.cpp                     |   2 +
  xbmc/windows/GUIMediaWindow.cpp               |   9 +
- 63 files changed, 6062 insertions(+), 29 deletions(-)
+ 63 files changed, 6064 insertions(+), 29 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -4113,7 +4113,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebLayerBridge.cpp
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,238 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -4163,6 +4163,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    m_pending->Release();
 +  m_pending = nullptr;
 +  m_clear = true;
++  m_videoRect = CRect();
++  m_videoRectChanged = true;
 +}
 +
 +void CWebLayerBridge::SetVideoRect(const CRect& rect)
