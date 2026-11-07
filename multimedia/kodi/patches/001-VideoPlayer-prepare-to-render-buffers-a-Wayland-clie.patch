@@ -4,24 +4,25 @@ Date: Tue, 3 Nov 2026 17:06:39 +0000
 Subject: [PATCH] VideoPlayer: prepare to render buffers a Wayland client hands
  over
 
-Kodi can host Wayland clients and show their surfaces through its
-video renderers. For that, the build looks for wayland-server,
-wayland-scanner and the protocol definitions, taking linux-dmabuf from
-unstable/ where wayland-protocols has no stable/ copy yet; the DRM
-PRIME renderers accept DRM PRIME buffers whatever the decoder setting
-says, as these buffers come from no decoder; and CVideoBufferDMA copes
-with a factory that has no buffer object to export.
+Kodi can host Wayland clients and show their surfaces through its video
+renderers. For that, the build looks for wayland-server 1.20, wayland-
+scanner and the protocol definitions of wayland-protocols 1.24, the
+first releases with the wl_surface and linux-dmabuf versions the host
+serves, taking linux-dmabuf from unstable/ where wayland-protocols has
+no stable/ copy yet; the DRM PRIME renderers accept DRM PRIME buffers
+whatever the decoder setting says, as these buffers come from no
+decoder; and CVideoBufferDMA copes with a factory that has no buffer
+object to export.
 
 A DRM PRIME buffer may prefer a display plane, and the plane renderer
 then takes it whatever the setting for DRM PRIME video picks, with the
-GLES renderer behind it for formats no plane shows. A video layer
-bridge derived from CVideoLayerBridgeDRMPRIME creates framebuffers for
-buffers of its own with the same conversion from a buffer's
-descriptor.
+GLES renderer behind it for formats no plane shows. A video layer bridge
+derived from CVideoLayerBridgeDRMPRIME creates framebuffers for buffers
+of its own with the same conversion from a buffer's descriptor.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
- cmake/modules/FindWaylandServer.cmake         | 79 +++++++++++++++++++
+ cmake/modules/FindWaylandServer.cmake         | 81 +++++++++++++++++++
  cmake/platform/linux/gbm.cmake                |  2 +-
  cmake/platform/linux/wayland.cmake            |  2 +-
  .../VideoPlayer/Buffers/VideoBufferDMA.cpp    | 14 +++-
@@ -30,12 +31,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  .../HwDecRender/RendererDRMPRIME.cpp          | 11 +--
  .../HwDecRender/RendererDRMPRIMEGLES.cpp      |  3 -
  .../HwDecRender/VideoLayerBridgeDRMPRIME.h    |  9 ++-
- 9 files changed, 143 insertions(+), 19 deletions(-)
+ 9 files changed, 145 insertions(+), 19 deletions(-)
  create mode 100644 cmake/modules/FindWaylandServer.cmake
 
 --- /dev/null
 +++ b/cmake/modules/FindWaylandServer.cmake
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,81 @@
 +#.rst:
 +# FindWaylandServer
 +# -----------------
@@ -74,7 +75,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    find_program(WAYLAND_SCANNER_EXECUTABLE NAMES wayland-scanner
 +                                            HINTS ${PC_WAYLAND_SCANNER_EXECUTABLE})
 +
-+    pkg_check_modules(PC_WAYLAND_PROTOCOLS wayland-protocols ${SEARCH_QUIET})
++    # the host serves wl_surface 5 (wayland 1.20) and linux-dmabuf 4 (wayland-protocols 1.24)
++    pkg_check_modules(PC_WAYLAND_SERVER_VERSION wayland-server>=1.20 ${SEARCH_QUIET})
++    pkg_check_modules(PC_WAYLAND_PROTOCOLS wayland-protocols>=1.24 ${SEARCH_QUIET})
 +    if(PC_WAYLAND_PROTOCOLS_FOUND)
 +      pkg_get_variable(_protocols_dir wayland-protocols pkgdatadir)
 +    endif()
@@ -100,14 +103,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +      set(WAYLAND_SERVER_PROTOCOLS ${_protocols} CACHE INTERNAL "")
 +    endif()
 +
-+    if(WAYLAND_SCANNER_EXECUTABLE AND _protocols_found)
++    if(WAYLAND_SCANNER_EXECUTABLE AND PC_WAYLAND_SERVER_VERSION_FOUND AND _protocols_found)
 +      add_library(${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} ALIAS PkgConfig::${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME})
 +
 +      set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_COMPILE_DEFINITIONS HAVE_WAYLAND_SERVER)
 +
 +      ADD_TARGET_COMPILE_DEFINITION()
 +    elseif(WaylandServer_FIND_REQUIRED)
-+      message(FATAL_ERROR "wayland-scanner or the wayland-protocols descriptions were not found.")
++      message(FATAL_ERROR "wayland-scanner, wayland-server 1.20 or the wayland-protocols 1.24 descriptions were not found.")
 +    endif()
 +  else()
 +    if(WaylandServer_FIND_REQUIRED)

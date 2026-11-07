@@ -10,36 +10,71 @@ EasyPrivacy as default configuration in system/contentfilterlists.xml,
 and CWebFilterLists stores them in the profile, with the ETag and
 Last-Modified date of each, and hands them to the web client. The lists
 installed web apps name are fetched in the background when Kodi starts,
-a list named later when a web app first asks for it. As Kodi may run
-for a long time, every six hours a HEAD request asks for each list's
+and those of a web app installed later as it is installed. As Kodi may
+run for a long time, every six hours a HEAD request asks for each list's
 published generation. A list states how often it is to be updated, as
-"! Expires: 4 days" in its header; that interval is stored with the
-Date the server sent the list with, and a newer generation is fetched
-only once the server's Date in a check is that far ahead. Both times
-are the server's, so a local clock that is not set yet neither
-shortens nor extends the interval. A list without that header line is
-fetched whenever a newer generation is published. The client is
-handed each list once a run, and again when its content changes. A
-fetch that fails, for instance because TLS rejects certificates
-against a clock that is still wrong, is retried as soon as the system
-clock is set; meanwhile the stored copy serves.
+"! Expires: 4 days" in its header; that interval is stored with the Date
+the server sent the list with, and a newer generation is fetched only
+once the server's Date in a check is that far ahead. Both times are the
+server's, so a local clock that is not set yet neither shortens nor
+extends the interval. A list without that header line is fetched
+whenever a newer generation is published. The client is handed each list
+once a run, and again when its content changes. A fetch that fails, for
+instance because TLS rejects certificates against a clock that is still
+wrong, is retried as soon as the system clock is set; meanwhile the
+stored copy serves. A web app never opens without its lists: while one
+is still being fetched, or prepared by the web client, a progress dialog
+keeps the user waiting, and a list that cannot be had keeps the app from
+opening, with a notification.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
- cmake/installdata/common/common.txt       |   1 +
- system/contentfilterlists.xml             |  13 +
- xbmc/cores/WebPlayer/CMakeLists.txt       |   2 +
- xbmc/cores/WebPlayer/WebClientManager.cpp |  44 ++-
- xbmc/cores/WebPlayer/WebClientManager.h   |   2 +
- xbmc/cores/WebPlayer/WebFilterLists.cpp   | 370 ++++++++++++++++++++++
- xbmc/cores/WebPlayer/WebFilterLists.h     |  94 ++++++
- xbmc/settings/AdvancedSettings.cpp        |  20 ++
- xbmc/settings/AdvancedSettings.h          |   3 +
- 9 files changed, 547 insertions(+), 2 deletions(-)
+ .../resources/strings.po                      |  20 +-
+ cmake/installdata/common/common.txt           |   1 +
+ system/contentfilterlists.xml                 |  13 +
+ xbmc/cores/WebPlayer/CMakeLists.txt           |   2 +
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 110 ++++-
+ xbmc/cores/WebPlayer/WebClientManager.h       |  27 ++
+ xbmc/cores/WebPlayer/WebFilterLists.cpp       | 437 ++++++++++++++++++
+ xbmc/cores/WebPlayer/WebFilterLists.h         | 127 +++++
+ xbmc/cores/WebPlayer/WebPlayer.cpp            |  91 +++-
+ xbmc/cores/WebPlayer/WebPlayer.h              |   1 +
+ xbmc/settings/AdvancedSettings.cpp            |  20 +
+ xbmc/settings/AdvancedSettings.h              |   3 +
+ 12 files changed, 848 insertions(+), 4 deletions(-)
  create mode 100644 system/contentfilterlists.xml
  create mode 100644 xbmc/cores/WebPlayer/WebFilterLists.cpp
  create mode 100644 xbmc/cores/WebPlayer/WebFilterLists.h
 
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25743,7 +25743,25 @@ msgctxt "#40250"
+ msgid "Keep the files web apps download in Kodi's profile, so that apps start faster on a slow connection after a restart. Off caches them in memory only, which spares the storage the writes."
+ msgstr ""
+ 
+-#empty strings from id 40251 to 40399
++#. Progress text while a web app waits for a content filter list to download
++#: xbmc/cores/WebPlayer/WebPlayer.cpp
++msgctxt "#40251"
++msgid "Fetching the content filter list {0:s}"
++msgstr ""
++
++#. Progress text while the web client prepares a content filter list
++#: xbmc/cores/WebPlayer/WebPlayer.cpp
++msgctxt "#40252"
++msgid "Preparing the content filter list {0:s}"
++msgstr ""
++
++#. Notification text when a web app cannot open without a content filter list
++#: xbmc/cores/WebPlayer/WebClientManager.cpp
++msgctxt "#40253"
++msgid "The content filter list {0:s} is not available."
++msgstr ""
++
++#empty strings from id 40254 to 40399
+ 
+ # Video versions
+ 
 --- a/cmake/installdata/common/common.txt
 +++ b/cmake/installdata/common/common.txt
 @@ -1,6 +1,7 @@
@@ -86,7 +121,23 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
                WebVideoBuffer.h
 --- a/xbmc/cores/WebPlayer/WebClientManager.cpp
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -146,6 +146,32 @@ void NotifyOpenError(const std::string&
+@@ -14,6 +14,7 @@
+ #include "ServiceBroker.h"
+ #include "WebApp.h"
+ #include "addons/Addon.h"
++#include "addons/AddonEvents.h"
+ #include "addons/AddonManager.h"
+ #include "addons/addoninfo/AddonType.h"
+ #include "application/ApplicationComponents.h"
+@@ -57,6 +58,7 @@
+ #include <cmath>
+ #include <limits>
+ #include <mutex>
++#include <typeinfo>
+ #include <utility>
+ 
+ #include <fcntl.h>
+@@ -146,6 +148,45 @@ void NotifyOpenError(const std::string&
        CGUIDialogKaiToast::Error, StringUtils::Format(localizeStrings.Get(13329), name), reason);
  }
  
@@ -95,42 +146,61 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  return webapp ? webapp->Type(ADDON::AddonType::WEBAPP) : nullptr;
 +}
 +
++void AddFilterListsOf(const ADDON::AddonPtr& addon, std::set<std::string>& lists)
++{
++  const ADDON::CAddonType* type = WebAppType(std::dynamic_pointer_cast<ADDON::CAddon>(addon));
++  if (!type)
++    return;
++
++  for (const auto& [element, values] : type->GetValues())
++  {
++    const std::string list = values.GetValue("contentfilter@list").asString();
++    if (element == "contentfilter" && !list.empty())
++      lists.insert(list);
++  }
++}
++
 +std::set<std::string> FilterListsOfInstalledWebApps()
 +{
 +  std::set<std::string> lists;
 +  ADDON::VECADDONS addons;
 +  CServiceBroker::GetAddonMgr().GetInstalledAddons(addons, ADDON::AddonType::WEBAPP);
 +  for (const auto& addon : addons)
-+  {
-+    const ADDON::CAddonType* type = WebAppType(std::dynamic_pointer_cast<ADDON::CAddon>(addon));
-+    if (!type)
-+      continue;
-+
-+    for (const auto& [element, values] : type->GetValues())
-+    {
-+      const std::string list = values.GetValue("contentfilter@list").asString();
-+      if (element == "contentfilter" && !list.empty())
-+        lists.insert(list);
-+    }
-+  }
++    AddFilterListsOf(addon, lists);
 +  return lists;
 +}
 +
- // web apps run at the screen's resolution, whatever size the GUI renders at
- WaylandHostConfig OutputMode()
- {
-@@ -186,6 +212,9 @@ void CWebClientManager::Start()
++std::set<std::string> FilterListsOfWebApp(const std::string& id)
++{
++  std::set<std::string> lists;
++  ADDON::AddonPtr addon;
++  if (CServiceBroker::GetAddonMgr().GetAddon(id, addon, ADDON::AddonType::WEBAPP,
++                                             ADDON::OnlyEnabled::CHOICE_YES))
++    AddFilterListsOf(addon, lists);
++  return lists;
++}
++
+ // the command is run as execvpe() runs it: a name with a slash as a path,
+ // any other through PATH
+ bool ClientCommandExists(const std::string& command)
+@@ -214,6 +255,12 @@ void CWebClientManager::Start()
      m_audio.reset();
    StartVideo();
  
-+  m_filterLists = std::make_unique<CWebFilterLists>(*m_host);
++  m_filterLists = std::make_unique<CWebFilterLists>(*m_host, m_filterListsChanged);
 +  m_filterLists->Start(FilterListsOfInstalledWebApps());
++  // a web app's lists are fetched when it is installed, not when it opens
++  CServiceBroker::GetAddonMgr().Events().Subscribe(this, [this](const ADDON::AddonEvent& event)
++                                                   { OnAddonEvent(event); });
 +
    CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
    CServiceBroker::GetWinSystem()->Register(this);
-   if (settings->GetBool(CSettings::SETTING_WEB_PRELOAD))
-@@ -199,12 +228,17 @@ void CWebClientManager::Stop()
+   // a preloaded client is wasted memory where no web app could use it
+@@ -227,14 +274,20 @@ void CWebClientManager::Stop()
+   if (!m_host)
+     return;
  
++  CServiceBroker::GetAddonMgr().Events().Unsubscribe(this);
    CServiceBroker::GetWinSystem()->Unregister(this);
    CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
 +  std::unique_lock lock(m_lock);
@@ -148,7 +218,68 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_state = State::ABSENT;
    m_views.clear();
    m_surfaces.clear();
-@@ -536,7 +570,7 @@ bool CWebClientManager::ConfigureViewFro
+@@ -242,6 +295,51 @@ void CWebClientManager::Stop()
+   m_observer = nullptr;
+ }
+ 
++void CWebClientManager::OnAddonEvent(const ADDON::AddonEvent& event)
++{
++  if (typeid(event) != typeid(ADDON::AddonEvents::ReInstalled) &&
++      typeid(event) != typeid(ADDON::AddonEvents::Enabled))
++    return;
++
++  const std::set<std::string> lists = FilterListsOfWebApp(event.addonId);
++  std::unique_lock lock(m_lock);
++  if (!m_filterLists)
++    return;
++  for (const auto& list : lists)
++    m_filterLists->Want(list);
++}
++
++std::set<std::string> CWebClientManager::WantFilterLists(const std::string& profile)
++{
++  const std::set<std::string> lists = FilterListsOfWebApp(profile);
++  std::unique_lock lock(m_lock);
++  if (m_filterLists)
++  {
++    for (const auto& list : lists)
++      m_filterLists->Want(list);
++  }
++  return lists;
++}
++
++CWebFilterLists::ListState CWebClientManager::FilterListState(const std::string& name) const
++{
++  std::unique_lock lock(m_lock);
++  return m_filterLists ? m_filterLists->State(name) : CWebFilterLists::ListState::UNKNOWN;
++}
++
++void CWebClientManager::NotifyFilterListMissing(const std::string& profile, const std::string& list)
++{
++  const auto& localizeStrings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
++  NotifyOpenError(profile, StringUtils::Format(localizeStrings.Get(40253), list));
++}
++
++void CWebClientManager::OnWebFilterListPrepared(const std::string& name, bool prepared)
++{
++  std::unique_lock lock(m_lock);
++  if (m_filterLists)
++    m_filterLists->OnPrepared(name, prepared);
++}
++
+ void CWebClientManager::StartVideo()
+ {
+ #if defined(HAVE_GBM) && defined(HAS_GLES)
+@@ -538,6 +636,8 @@ void CWebClientManager::OnClientExited(p
+   m_views.clear();
+   m_surfaces.clear();
+   m_closing.clear();
++  if (m_filterLists)
++    m_filterLists->ClientGone();
+   CObserverCall observer(*this, m_observer);
+   const std::string profile = m_observedProfile;
+ 
+@@ -592,7 +692,7 @@ bool CWebClientManager::ConfigureViewFro
      return false;
  
    const auto webapp = std::dynamic_pointer_cast<ADDON::CAddon>(addon);
@@ -157,7 +288,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    if (!type)
      return false;
  
-@@ -562,7 +596,13 @@ bool CWebClientManager::ConfigureViewFro
+@@ -618,7 +718,13 @@ bool CWebClientManager::ConfigureViewFro
      {
        const std::string list = values.GetValue("contentfilter@list").asString();
        if (!list.empty())
@@ -181,17 +312,70 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "WebVideoServer.h"
  #include "application/IApplicationComponent.h"
  #include "guilib/DispResource.h"
-@@ -181,6 +182,7 @@ private:
+@@ -23,6 +24,11 @@
+ #include <set>
+ #include <string>
+ 
++namespace ADDON
++{
++struct AddonEvent;
++}
++
+ namespace KODI
+ {
+ namespace WEB
+@@ -120,6 +126,23 @@ public:
+    */
+   void SetVideoObserver(IWebVideoObserver* observer);
+ 
++  /*!
++   * \brief The shared content filter lists a web app uses, fetched now if
++   * they are not yet
++   */
++  std::set<std::string> WantFilterLists(const std::string& profile);
++  CWebFilterLists::ListState FilterListState(const std::string& name) const;
++
++  /*!
++   * \brief Set whenever a filter list's state changes
++   */
++  CEvent& FilterListsChanged() { return m_filterListsChanged; }
++
++  /*!
++   * \brief Tell the user that a web app cannot open without a filter list
++   */
++  void NotifyFilterListMissing(const std::string& profile, const std::string& list);
++
+   void LoadUrl(const std::string& profile, const std::string& url);
+   void Navigate(const std::string& profile, WAYLANDHOST::WebNavigation action);
+   void SetActive(const std::string& profile, bool active);
+@@ -140,6 +163,7 @@ public:
+   void OnWebClientReady() override;
+   void OnWebViewCreated(const std::string& profile, WAYLANDHOST::CWaylandSurface& surface) override;
+   void OnWebViewUnavailable(const std::string& profile, const std::string& message) override;
++  void OnWebFilterListPrepared(const std::string& name, bool prepared) override;
+   void OnWebViewUrl(const std::string& profile, const std::string& url) override;
+   void OnWebViewTitle(const std::string& profile, const std::string& title) override;
+   void OnWebViewProgress(const std::string& profile, uint32_t percent) override;
+@@ -183,6 +207,7 @@ private:
+     IWebViewObserver* m_observer;
+   };
+ 
++  void OnAddonEvent(const ADDON::AddonEvent& event);
+   bool StartHost();
+   void StartVideo();
+   void Spawn();
+@@ -201,6 +226,8 @@ private:
    std::unique_ptr<WAYLANDHOST::CWaylandHost> m_host;
    std::unique_ptr<CWebAudioServer> m_audio;
    std::unique_ptr<CWebVideoServer> m_video;
 +  std::unique_ptr<CWebFilterLists> m_filterLists;
++  CEvent m_filterListsChanged;
    mutable CCriticalSection m_lock;
    State m_state{State::ABSENT};
    bool m_respawned{false};
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebFilterLists.cpp
-@@ -0,0 +1,370 @@
+@@ -0,0 +1,437 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -311,9 +495,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +} // unnamed namespace
 +
-+CWebFilterLists::CWebFilterLists(WAYLANDHOST::CWaylandHost& host)
++CWebFilterLists::CWebFilterLists(WAYLANDHOST::CWaylandHost& host, CEvent& changed)
 +  : CThread("WebFilterLists"),
-+    m_host(host)
++    m_host(host),
++    m_changed(changed)
 +{
 +}
 +
@@ -384,8 +569,18 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +void CWebFilterLists::Want(const std::string& name)
 +{
 +  std::unique_lock lock(m_lock);
-+  if (m_wakeFd < 0 || !Track(name))
++  if (m_wakeFd < 0)
 +    return;
++  if (!Track(name))
++  {
++    // a list not fetched yet is tried again as soon as a web app wants it
++    if (m_started && m_pending.count(name))
++    {
++      m_fetchFailed.erase(name);
++      Wake();
++    }
++    return;
++  }
 +
 +  if (m_started)
 +  {
@@ -460,27 +655,83 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +      break;
 +
 +    const Result result = Fetch(name, m_lists.at(name));
++    lock.lock();
 +    if (result == Result::FAILED)
 +      fetched = false;
 +    else
-+    {
-+      lock.lock();
 +      m_pending.erase(name);
-+      lock.unlock();
-+    }
-+    if (result == Result::UPDATED || !m_handed.count(name))
-+      Hand(name);
++    const bool hand = result == Result::UPDATED || !m_handed.count(name);
++    lock.unlock();
++
++    const bool stored = !hand || Hand(name);
++    lock.lock();
++    if (result == Result::FAILED && !stored)
++      m_fetchFailed.insert(name);
++    else
++      m_fetchFailed.erase(name);
++    lock.unlock();
++    m_changed.Set();
 +  }
 +  return fetched;
 +}
 +
-+void CWebFilterLists::Hand(const std::string& name)
++bool CWebFilterLists::Hand(const std::string& name)
 +{
 +  const std::string path = m_dir + name + ".txt";
 +  if (!XFILE::CFile::Exists(path, false))
-+    return;
-+  m_host.WebSetContentFilterList(name, path);
++    return false;
++
++  // a new generation is prepared again before a web app opens with it; reset
++  // before it is sent, as the client's answer may come right after
++  std::unique_lock lock(m_lock);
 +  m_handed.insert(name);
++  m_prepared.erase(name);
++  m_prepareFailed.erase(name);
++  lock.unlock();
++  m_host.WebSetContentFilterList(name, path);
++  return true;
++}
++
++CWebFilterLists::ListState CWebFilterLists::State(const std::string& name) const
++{
++  std::unique_lock lock(m_lock);
++  if (!m_lists.count(name))
++    return ListState::UNKNOWN;
++  if (m_prepared.count(name))
++    return ListState::PREPARED;
++  if (m_prepareFailed.count(name))
++    return ListState::PREPARE_FAILED;
++  if (m_handed.count(name))
++    return ListState::PREPARING;
++  if (m_fetchFailed.count(name))
++    return ListState::FETCH_FAILED;
++  return ListState::FETCHING;
++}
++
++void CWebFilterLists::OnPrepared(const std::string& name, bool prepared)
++{
++  std::unique_lock lock(m_lock);
++  if (prepared)
++  {
++    m_prepared.insert(name);
++    m_prepareFailed.erase(name);
++  }
++  else
++  {
++    m_prepareFailed.insert(name);
++    m_prepared.erase(name);
++  }
++  lock.unlock();
++  m_changed.Set();
++}
++
++void CWebFilterLists::ClientGone()
++{
++  std::unique_lock lock(m_lock);
++  m_prepared.clear();
++  m_prepareFailed.clear();
++  lock.unlock();
++  m_changed.Set();
 +}
 +
 +CWebFilterLists::Result CWebFilterLists::Fetch(const std::string& name, const std::string& url)
@@ -564,7 +815,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebFilterLists.h
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,127 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -576,6 +827,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#pragma once
 +
 +#include "threads/CriticalSection.h"
++#include "threads/Event.h"
 +#include "threads/Thread.h"
 +
 +#include <map>
@@ -607,7 +859,20 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +class CWebFilterLists : private CThread
 +{
 +public:
-+  explicit CWebFilterLists(WAYLANDHOST::CWaylandHost& host);
++  enum class ListState
++  {
++    UNKNOWN,
++    FETCHING,
++    FETCH_FAILED,
++    PREPARING,
++    PREPARED,
++    PREPARE_FAILED,
++  };
++
++  /*!
++   * \brief changed is set whenever a list's state changes
++   */
++  CWebFilterLists(WAYLANDHOST::CWaylandHost& host, CEvent& changed);
 +  ~CWebFilterLists() override;
 +
 +  void Start(const std::set<std::string>& used);
@@ -616,6 +881,21 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +   * \brief A web app asks for a list; one not yet known is fetched; any thread
 +   */
 +  void Want(const std::string& name);
++
++  /*!
++   * \brief How far a list is on its way to the web client; any thread
++   */
++  ListState State(const std::string& name) const;
++
++  /*!
++   * \brief The web client has prepared a list, or cannot
++   */
++  void OnPrepared(const std::string& name, bool prepared);
++
++  /*!
++   * \brief The web client is gone; the next one prepares the lists again
++   */
++  void ClientGone();
 +
 +protected:
 +  void Process() override;
@@ -640,25 +920,173 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  bool Track(const std::string& name);
 +  bool FetchAll(bool all);
 +  Result Fetch(const std::string& name, const std::string& url);
-+  void Hand(const std::string& name);
++  bool Hand(const std::string& name);
 +  void ArmClockChange();
 +  Wakeup Wait(bool retry);
 +  void Wake();
 +
 +  WAYLANDHOST::CWaylandHost& m_host;
++  CEvent& m_changed;
 +  std::map<std::string, std::string> m_lists;
 +  std::string m_dir;
 +  int m_wakeFd{-1};
 +  int m_clockFd{-1};
-+  CCriticalSection m_lock;
++  mutable CCriticalSection m_lock;
 +  std::set<std::string> m_wanted;
 +  std::set<std::string> m_pending;
 +  std::set<std::string> m_handed;
++  std::set<std::string> m_fetchFailed;
++  std::set<std::string> m_prepared;
++  std::set<std::string> m_prepareFailed;
 +  bool m_started{false};
 +};
 +
 +} // namespace WEB
 +} // namespace KODI
+--- a/xbmc/cores/WebPlayer/WebPlayer.cpp
++++ b/xbmc/cores/WebPlayer/WebPlayer.cpp
+@@ -16,6 +16,7 @@
+ #include "cores/DataCacheCore.h"
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
+ #include "cores/VideoPlayer/Process/ProcessInfo.h"
++#include "dialogs/GUIDialogProgress.h"
+ #include "guilib/GUIComponent.h"
+ #include "guilib/GUIWindowManager.h"
+ #include "guilib/WindowIDs.h"
+@@ -26,6 +27,10 @@
+ #include "input/keyboard/XBMC_keyboard.h"
+ #include "kodi-web-video.h"
+ #include "messaging/ApplicationMessenger.h"
++#include "resources/LocalizeStrings.h"
++#include "resources/ResourcesComponent.h"
++#include "utils/StringUtils.h"
++#include "utils/Variant.h"
+ #include "utils/log.h"
+ #include "windowing/GraphicContext.h"
+ #include "windowing/WinSystem.h"
+@@ -120,6 +125,40 @@ AVColorTransferCharacteristic TransferOf
+   }
+ }
+ 
++// the shared list a web app still waits for, and the message telling why, or
++// one it cannot have
++struct FilterListWait
++{
++  std::string list;
++  uint32_t message{0};
++  bool failed{false};
++};
++
++FilterListWait NextFilterListWait(const CWebClientManager& manager,
++                                  const std::set<std::string>& lists)
++{
++  FilterListWait wait;
++  for (const auto& list : lists)
++  {
++    switch (manager.FilterListState(list))
++    {
++      case CWebFilterLists::ListState::PREPARED:
++        break;
++      case CWebFilterLists::ListState::FETCHING:
++        // "Fetching the content filter list {0:s}"
++        return {list, 40251, false};
++      case CWebFilterLists::ListState::PREPARING:
++        // "Preparing the content filter list {0:s}"
++        if (wait.list.empty())
++          wait = {list, 40252, false};
++        break;
++      default:
++        return {list, 0, true};
++    }
++  }
++  return wait;
++}
++
+ } // unnamed namespace
+ 
+ CWebPlayer::CWebPlayer(IPlayerCallback& callback)
+@@ -175,7 +214,7 @@ bool CWebPlayer::OpenFile(const CFileIte
+   m_openFailed = false;
+   playLock.unlock();
+ 
+-  if (!m_manager->RequestView(m_profile, *this))
++  if (!m_manager->RequestView(m_profile, *this) || !AwaitFilterLists())
+   {
+     playLock.lock();
+     m_opening = false;
+@@ -716,12 +755,62 @@ bool CWebPlayer::ConfigureRenderer(const
+   return true;
+ }
+ 
++// a web app never opens without its shared content filter lists; the user
++// waits while they are fetched and prepared, or cancels
++bool CWebPlayer::AwaitFilterLists()
++{
++  const std::set<std::string> lists = m_manager->WantFilterLists(m_profile);
++  const auto& localizeStrings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
++  CGUIDialogProgress* dialog = nullptr;
++  FilterListWait wait;
++
++  while (!(wait = NextFilterListWait(*m_manager, lists)).list.empty() && !wait.failed)
++  {
++    std::unique_lock lock(m_playLock);
++    if (m_openFailed)
++      break;
++    lock.unlock();
++
++    if (!dialog)
++    {
++      dialog = CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogProgress>(
++          WINDOW_DIALOG_PROGRESS);
++      if (!dialog)
++        return false;
++      dialog->SetHeading(CVariant{m_item->GetLabel().empty() ? m_profile : m_item->GetLabel()});
++      dialog->SetLine(1, CVariant{""});
++      dialog->SetLine(2, CVariant{""});
++      dialog->ShowProgressBar(false);
++      dialog->SetCanCancel(true);
++      dialog->Open();
++    }
++    dialog->SetLine(0, CVariant{StringUtils::Format(localizeStrings.Get(wait.message), wait.list)});
++    if (!dialog->WaitOnEvent(m_manager->FilterListsChanged()))
++      break;
++  }
++  if (dialog)
++    dialog->Close();
++
++  if (wait.failed)
++  {
++    CLog::Log(LOGERROR, "CWebPlayer::{}: {} cannot open without the content filter list {}",
++              __FUNCTION__, m_profile, wait.list);
++    m_manager->NotifyFilterListMissing(m_profile, wait.list);
++    return false;
++  }
++  std::unique_lock lock(m_playLock);
++  return wait.list.empty() && !m_openFailed;
++}
++
+ void CWebPlayer::StopFromClient(bool error)
+ {
+   std::unique_lock lock(m_playLock);
+   if (m_opening)
+   {
++    // wakes AwaitFilterLists()
+     m_openFailed = true;
++    if (m_manager)
++      m_manager->FilterListsChanged().Set();
+     return;
+   }
+   if (!m_playing.exchange(false))
+--- a/xbmc/cores/WebPlayer/WebPlayer.h
++++ b/xbmc/cores/WebPlayer/WebPlayer.h
+@@ -133,6 +133,7 @@ private:
+   void UpdateInputRouting();
+   void UpdateVisibility();
+   void StopFromClient(bool error = false);
++  bool AwaitFilterLists();
+ 
+   std::unique_ptr<CProcessInfo> m_processInfo;
+   CDVDClock m_clock;
 --- a/xbmc/settings/AdvancedSettings.cpp
 +++ b/xbmc/settings/AdvancedSettings.cpp
 @@ -451,6 +451,7 @@ void CAdvancedSettings::Initialize()
