@@ -18,7 +18,10 @@ A DRM PRIME buffer may prefer a display plane, and the plane renderer
 then takes it whatever the setting for DRM PRIME video picks, with the
 GLES renderer behind it for formats no plane shows. A video layer bridge
 derived from CVideoLayerBridgeDRMPRIME creates framebuffers for buffers
-of its own with the same conversion from a buffer's descriptor.
+of its own with the same conversion from a buffer's descriptor. The plane
+renderer is created anew when the DRM format or modifier of the
+buffers changes, so that it picks a video plane which scans out the new
+layout.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
@@ -28,10 +31,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  .../VideoPlayer/Buffers/VideoBufferDMA.cpp    | 14 +++-
  .../VideoPlayer/Buffers/VideoBufferDRMPRIME.h |  6 ++
  .../Buffers/test/TestVideoBufferDMA.cpp       | 36 +++++++++
- .../HwDecRender/RendererDRMPRIME.cpp          | 11 +--
+ .../HwDecRender/RendererDRMPRIME.cpp          | 57 ++++++++-----
+ .../HwDecRender/RendererDRMPRIME.h            |  2 +
  .../HwDecRender/RendererDRMPRIMEGLES.cpp      |  3 -
  .../HwDecRender/VideoLayerBridgeDRMPRIME.h    |  9 ++-
- 9 files changed, 145 insertions(+), 19 deletions(-)
+ 10 files changed, 179 insertions(+), 33 deletions(-)
  create mode 100644 cmake/modules/FindWaylandServer.cmake
 
 --- /dev/null
@@ -239,7 +243,35 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.cpp
-@@ -42,15 +42,10 @@ CRendererDRMPRIME::~CRendererDRMPRIME()
+@@ -26,6 +26,27 @@
+ 
+ using namespace KODI::WINDOWING::GBM;
+ 
++namespace
++{
++
++bool DrmLayout(CVideoBuffer* buffer, uint32_t& format, uint64_t& modifier)
++{
++  auto* buf = dynamic_cast<CVideoBufferDRMPRIME*>(buffer);
++  if (!buf || !buf->AcquireDescriptor())
++    return false;
++
++  const AVDRMFrameDescriptor* desc = buf->GetDescriptor();
++  if (desc)
++  {
++    format = desc->layers[0].format;
++    modifier = desc->objects[0].format_modifier;
++  }
++  buf->ReleaseDescriptor();
++  return desc != nullptr;
++}
++
++} // unnamed namespace
++
+ CRendererDRMPRIME::~CRendererDRMPRIME()
+ {
+   Flush(false);
+@@ -42,15 +63,10 @@ CRendererDRMPRIME::~CRendererDRMPRIME()
  CBaseRenderer* CRendererDRMPRIME::Create(CVideoBuffer* buffer)
  {
    auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
@@ -258,6 +290,68 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
      auto winSystem = static_cast<CWinSystemGbm*>(CServiceBroker::GetWinSystem());
      if (!winSystem)
        return nullptr;
+@@ -59,24 +75,14 @@ CBaseRenderer* CRendererDRMPRIME::Create
+     if (!drm)
+       return nullptr;
+ 
+-    if (!buf->AcquireDescriptor())
++    uint32_t format;
++    uint64_t modifier;
++    if (!DrmLayout(buf, format, modifier))
+       return nullptr;
+ 
+-    AVDRMFrameDescriptor* desc = buf->GetDescriptor();
+-    if (!desc)
+-    {
+-      buf->ReleaseDescriptor();
+-      return nullptr;
+-    }
+-
+-    AVDRMLayerDescriptor* layer = &desc->layers[0];
+-    uint32_t format = layer->format;
+-    uint64_t modifier = desc->objects[0].format_modifier;
+     uint64_t width = buf->GetWidth();
+     uint64_t height = buf->GetHeight();
+ 
+-    buf->ReleaseDescriptor();
+-
+     auto gui = drm->GetGuiPlane();
+     if (!gui)
+       return nullptr;
+@@ -107,6 +113,9 @@ void CRendererDRMPRIME::Register()
+ bool CRendererDRMPRIME::Configure(const VideoPicture& picture, float fps, unsigned int orientation)
+ {
+   m_format = picture.videoBuffer->GetFormat();
++  m_drmFormat = 0;
++  m_drmModifier = 0;
++  DrmLayout(picture.videoBuffer, m_drmFormat, m_drmModifier);
+   m_sourceWidth = picture.iWidth;
+   m_sourceHeight = picture.iHeight;
+   m_renderOrientation = orientation;
+@@ -273,7 +282,11 @@ bool CRendererDRMPRIME::ConfigChanged(co
+   if (picture.videoBuffer->GetFormat() != m_format)
+     return true;
+ 
+-  return false;
++  // a client may hand over pictures the chosen video plane cannot scan out
++  uint32_t format = 0;
++  uint64_t modifier = 0;
++  DrmLayout(picture.videoBuffer, format, modifier);
++  return format != m_drmFormat || modifier != m_drmModifier;
+ }
+ 
+ bool CRendererDRMPRIME::Supports(ERENDERFEATURE feature) const
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.h
+@@ -51,6 +51,8 @@ protected:
+ private:
+   bool m_bConfigured = false;
+   int m_iLastRenderBuffer = -1;
++  uint32_t m_drmFormat = 0;
++  uint64_t m_drmModifier = 0;
+   CRect m_planeDestRect;
+ 
+   std::shared_ptr<CVideoLayerBridgeDRMPRIME> m_videoLayerBridge;
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
 @@ -41,9 +41,6 @@ CBaseRenderer* CRendererDRMPRIMEGLES::Cr
