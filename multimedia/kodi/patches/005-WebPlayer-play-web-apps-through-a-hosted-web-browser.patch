@@ -30,18 +30,20 @@ show, so the web host runs only there; System.SupportsWebApps tells
 skins whether it does. Web apps run at the screen's resolution and
 follow its mode.
 
-On GBM with atomic DRM, the browser's video sinks hand each decoded
-DMA-BUF frame over a second socket, kodi-web-video, when it is due. The
-web player shows those frames on the video plane and the page on a plane
-between the video and the GUI plane, where the page covers the video
-except where it is transparent, so the GPU composes neither the video
-nor the page. Page and video buffers prefer a plane, which keeps this
-independent of the renderer the settings pick for Kodi's own video. A
+On GBM with atomic DRM, and with the PRIME render method set to direct
+to plane, the browser's video sinks hand each decoded DMA-BUF frame over
+a second socket, kodi-web-video, when it is due. The web player shows
+those frames on the video plane and the page on a plane between the
+video and the GUI plane, where the page covers the video except where it
+is transparent, so the GPU composes neither the video nor the page. A
 page with an opaque background leaves a transparent hole where its video
 element is, and the sink reports that rectangle, so the video plane
 moves there, fitted to the video's aspect ratio. A frame goes back to
 its sink once no plane shows it, and when a page's video stops, the page
-returns to the video plane.
+returns to the video plane. Web video follows the PRIME render method as
+Kodi's own video does: with the GLES method the browser gets no video
+socket and pages draw their video, and a change of the method restarts
+an idle browser, or the browser once its web app closes.
 
 Web apps are a new add-on type, kodi.webapp: a manifest names the start
 URL, user agent, user scripts and content filters of the app, whose
@@ -54,70 +56,70 @@ The web player plays web apps only, which ask for it by name.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
- addons/kodi.webapp/addon.xml                  |   7 +
- .../resources/strings.po                      | 123 ++-
- .../resource.language.en_gb/strings.po        |   5 +
- addons/skin.estuary/xml/DialogWebKeyboard.xml | 525 ++++++++++
- addons/skin.estuary/xml/DialogWebOSD.xml      |  63 ++
- addons/skin.estuary/xml/Home.xml              |  38 +
- addons/skin.estuary/xml/MyPrograms.xml        |   3 +-
- addons/skin.estuary/xml/SkinSettings.xml      |   7 +
- addons/skin.estuary/xml/WebFullScreen.xml     |   4 +
- cmake/installdata/common/addons.txt           |   1 +
- .../optional/common/waylandserver.txt         |   1 +
- system/addon-manifest.xml                     |   1 +
- system/keymaps/keyboard.xml                   |  12 +
- system/settings/settings.xml                  |  47 +
- xbmc/GUIInfoManager.cpp                       |  11 +-
- xbmc/addons/AddonBuilder.cpp                  |   1 +
- xbmc/addons/addoninfo/AddonInfo.cpp           |   3 +-
- xbmc/addons/addoninfo/AddonInfoBuilder.cpp    |  21 +-
- xbmc/addons/addoninfo/AddonType.h             |   1 +
- xbmc/addons/gui/GUIDialogAddonInfo.cpp        |   2 +-
- xbmc/application/Application.cpp              |  34 +-
- xbmc/application/ApplicationPlay.cpp          |   7 +-
- xbmc/application/ApplicationPlayer.cpp        |  11 +
- xbmc/application/ApplicationPlayer.h          |   1 +
- xbmc/application/ApplicationSkinHandling.cpp  |  10 +
- xbmc/cores/WebPlayer/CMakeLists.txt           |  32 +
- xbmc/cores/WebPlayer/GUIDialogWebKeyboard.cpp |  43 +
- xbmc/cores/WebPlayer/GUIDialogWebKeyboard.h   |  35 +
- xbmc/cores/WebPlayer/GUIDialogWebOSD.cpp      | 112 +++
- xbmc/cores/WebPlayer/GUIDialogWebOSD.h        |  42 +
- .../WebPlayer/GUIWindowFullScreenWeb.cpp      | 184 ++++
- xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.h |  52 +
- xbmc/cores/WebPlayer/WebApp.h                 |  35 +
- xbmc/cores/WebPlayer/WebAudioServer.cpp       | 796 +++++++++++++++
- xbmc/cores/WebPlayer/WebAudioServer.h         | 136 +++
- xbmc/cores/WebPlayer/WebClientManager.cpp     | 930 ++++++++++++++++++
- xbmc/cores/WebPlayer/WebClientManager.h       | 251 +++++
- xbmc/cores/WebPlayer/WebLayerBridge.cpp       | 238 +++++
- xbmc/cores/WebPlayer/WebLayerBridge.h         |  90 ++
- xbmc/cores/WebPlayer/WebPlayer.cpp            | 766 +++++++++++++++
- xbmc/cores/WebPlayer/WebPlayer.h              | 173 ++++
- xbmc/cores/WebPlayer/WebPlayerDefs.h          |  26 +
- xbmc/cores/WebPlayer/WebVideoBuffer.cpp       | 112 +++
- xbmc/cores/WebPlayer/WebVideoBuffer.h         |  69 ++
- xbmc/cores/WebPlayer/WebVideoServer.cpp       | 421 ++++++++
- xbmc/cores/WebPlayer/WebVideoServer.h         | 170 ++++
- xbmc/cores/WebPlayer/kodi-web-audio.h         | 173 ++++
- xbmc/cores/WebPlayer/kodi-web-video.h         | 135 +++
- .../playercorefactory/PlayerCoreConfig.cpp    |   9 +
- .../playercorefactory/PlayerCoreFactory.cpp   |  11 +
- xbmc/filesystem/AddonsDirectory.cpp           |  16 +-
- xbmc/guilib/GUIWindow.cpp                     |   2 +-
- xbmc/guilib/GUIWindowManager.cpp              |  17 +
- xbmc/guilib/WindowIDs.h                       |   3 +
- xbmc/guilib/guiinfo/GUIInfoLabels.h           |   2 +-
- xbmc/guilib/guiinfo/SystemGUIInfo.cpp         |  13 +
- xbmc/input/InputManager.cpp                   |   3 +-
- xbmc/input/WindowTranslator.cpp               |   4 +
- xbmc/interfaces/builtins/AddonBuiltins.cpp    |  34 +
- xbmc/settings/SettingConditions.cpp           |   3 +
- xbmc/settings/Settings.h                      |   5 +
- xbmc/utils/ExecString.cpp                     |   2 +
- xbmc/windows/GUIMediaWindow.cpp               |   9 +
- 63 files changed, 6064 insertions(+), 29 deletions(-)
+ addons/kodi.webapp/addon.xml                  |    7 +
+ .../resources/strings.po                      |  123 +-
+ .../resource.language.en_gb/strings.po        |    5 +
+ addons/skin.estuary/xml/DialogWebKeyboard.xml |  525 +++++++++
+ addons/skin.estuary/xml/DialogWebOSD.xml      |   63 +
+ addons/skin.estuary/xml/Home.xml              |   38 +
+ addons/skin.estuary/xml/MyPrograms.xml        |    3 +-
+ addons/skin.estuary/xml/SkinSettings.xml      |    7 +
+ addons/skin.estuary/xml/WebFullScreen.xml     |    4 +
+ cmake/installdata/common/addons.txt           |    1 +
+ .../optional/common/waylandserver.txt         |    1 +
+ system/addon-manifest.xml                     |    1 +
+ system/keymaps/keyboard.xml                   |   12 +
+ system/settings/settings.xml                  |   47 +
+ xbmc/GUIInfoManager.cpp                       |   11 +-
+ xbmc/addons/AddonBuilder.cpp                  |    1 +
+ xbmc/addons/addoninfo/AddonInfo.cpp           |    3 +-
+ xbmc/addons/addoninfo/AddonInfoBuilder.cpp    |   21 +-
+ xbmc/addons/addoninfo/AddonType.h             |    1 +
+ xbmc/addons/gui/GUIDialogAddonInfo.cpp        |    2 +-
+ xbmc/application/Application.cpp              |   34 +-
+ xbmc/application/ApplicationPlay.cpp          |    7 +-
+ xbmc/application/ApplicationPlayer.cpp        |   11 +
+ xbmc/application/ApplicationPlayer.h          |    1 +
+ xbmc/application/ApplicationSkinHandling.cpp  |   10 +
+ xbmc/cores/WebPlayer/CMakeLists.txt           |   32 +
+ xbmc/cores/WebPlayer/GUIDialogWebKeyboard.cpp |   43 +
+ xbmc/cores/WebPlayer/GUIDialogWebKeyboard.h   |   35 +
+ xbmc/cores/WebPlayer/GUIDialogWebOSD.cpp      |  112 ++
+ xbmc/cores/WebPlayer/GUIDialogWebOSD.h        |   42 +
+ .../WebPlayer/GUIWindowFullScreenWeb.cpp      |  184 +++
+ xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.h |   52 +
+ xbmc/cores/WebPlayer/WebApp.h                 |   35 +
+ xbmc/cores/WebPlayer/WebAudioServer.cpp       |  796 +++++++++++++
+ xbmc/cores/WebPlayer/WebAudioServer.h         |  136 +++
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 1010 +++++++++++++++++
+ xbmc/cores/WebPlayer/WebClientManager.h       |  266 +++++
+ xbmc/cores/WebPlayer/WebLayerBridge.cpp       |  238 ++++
+ xbmc/cores/WebPlayer/WebLayerBridge.h         |   90 ++
+ xbmc/cores/WebPlayer/WebPlayer.cpp            |  766 +++++++++++++
+ xbmc/cores/WebPlayer/WebPlayer.h              |  173 +++
+ xbmc/cores/WebPlayer/WebPlayerDefs.h          |   26 +
+ xbmc/cores/WebPlayer/WebVideoBuffer.cpp       |  112 ++
+ xbmc/cores/WebPlayer/WebVideoBuffer.h         |   68 ++
+ xbmc/cores/WebPlayer/WebVideoServer.cpp       |  421 +++++++
+ xbmc/cores/WebPlayer/WebVideoServer.h         |  169 +++
+ xbmc/cores/WebPlayer/kodi-web-audio.h         |  173 +++
+ xbmc/cores/WebPlayer/kodi-web-video.h         |  135 +++
+ .../playercorefactory/PlayerCoreConfig.cpp    |    9 +
+ .../playercorefactory/PlayerCoreFactory.cpp   |   11 +
+ xbmc/filesystem/AddonsDirectory.cpp           |   16 +-
+ xbmc/guilib/GUIWindow.cpp                     |    2 +-
+ xbmc/guilib/GUIWindowManager.cpp              |   17 +
+ xbmc/guilib/WindowIDs.h                       |    3 +
+ xbmc/guilib/guiinfo/GUIInfoLabels.h           |    2 +-
+ xbmc/guilib/guiinfo/SystemGUIInfo.cpp         |   13 +
+ xbmc/input/InputManager.cpp                   |    3 +-
+ xbmc/input/WindowTranslator.cpp               |    4 +
+ xbmc/interfaces/builtins/AddonBuiltins.cpp    |   34 +
+ xbmc/settings/SettingConditions.cpp           |    3 +
+ xbmc/settings/Settings.h                      |    5 +
+ xbmc/utils/ExecString.cpp                     |    2 +
+ xbmc/windows/GUIMediaWindow.cpp               |    9 +
+ 63 files changed, 6157 insertions(+), 29 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -2926,7 +2928,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -0,0 +1,930 @@
+@@ -0,0 +1,1010 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2960,6 +2962,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include "resources/ResourcesComponent.h"
 +#include "settings/Settings.h"
 +#include "settings/SettingsComponent.h"
++#include "settings/lib/Setting.h"
 +#include "utils/StringUtils.h"
 +#include "utils/URIUtils.h"
 +#include "utils/Variant.h"
@@ -3103,6 +3106,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +         !addons.empty();
 +}
 +
++// pages show their video on a display plane where Kodi shows its own video on one
++bool VideoOnPlane()
++{
++  constexpr int PRIME_RENDER_DIRECT = 0;
++  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
++             CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER) == PRIME_RENDER_DIRECT;
++}
++
 +// web apps run at the screen's resolution, whatever size the GUI renders at
 +WaylandHostConfig OutputMode()
 +{
@@ -3141,10 +3152,16 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  m_audio = std::make_unique<CWebAudioServer>();
 +  if (!m_audio->Start(CSpecialProtocol::TranslatePath(AUDIO_SOCKET)))
 +    m_audio.reset();
-+  StartVideo();
 +
 +  CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
 +  CServiceBroker::GetWinSystem()->Register(this);
++  settings->RegisterCallback(this, {CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER});
++  SpawnIfPreloaded();
++}
++
++void CWebClientManager::SpawnIfPreloaded()
++{
++  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 +  // a preloaded client is wasted memory where no web app could use it
 +  if (settings->GetBool(CSettings::SETTING_WEB_PRELOAD) && WebAppsInstalled() &&
 +      ClientCommandExists(settings->GetString(CSettings::SETTING_WEB_CLIENTCOMMAND)))
@@ -3156,6 +3173,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  if (!m_host)
 +    return;
 +
++  if (const auto settingsComponent = CServiceBroker::GetSettingsComponent())
++    settingsComponent->GetSettings()->UnregisterCallback(this);
 +  CServiceBroker::GetWinSystem()->Unregister(this);
 +  CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
 +  m_host->Stop();
@@ -3171,8 +3190,17 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  m_observer = nullptr;
 +}
 +
-+void CWebClientManager::StartVideo()
++// the client finds a video socket only while pages' video goes to a display plane
++void CWebClientManager::UpdateVideo()
 +{
++  if (!VideoOnPlane())
++  {
++    m_video.reset();
++    return;
++  }
++  if (m_video)
++    return;
++
 +#if defined(HAVE_GBM) && defined(HAS_GLES)
 +  // display planes take part in atomic commits only
 +  auto* gbm = dynamic_cast<WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem());
@@ -3182,8 +3210,47 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  m_video = std::make_unique<CWebVideoServer>();
 +  if (!m_video->Start(CSpecialProtocol::TranslatePath(VIDEO_SOCKET),
 +                      gbm->GetDrm()->GetVideoFormats()))
++  {
 +    m_video.reset();
++    return;
++  }
++  m_video->SetObserver(m_videoObserver);
 +#endif
++}
++
++bool CWebClientManager::ShowsVideoOnPlane() const
++{
++  std::unique_lock lock(m_lock);
++  return m_video != nullptr;
++}
++
++void CWebClientManager::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
++{
++  if (!setting || setting->GetId() != CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER)
++    return;
++
++  std::unique_lock lock(m_lock);
++  // a client not running picks the setting up when it starts
++  if (!m_host || (m_state != State::READY && m_state != State::STARTING) ||
++      (m_video != nullptr) == VideoOnPlane())
++    return;
++
++  if (m_observer)
++  {
++    m_restartWhenIdle = true;
++    return;
++  }
++  RestartClientForVideo();
++}
++
++// m_lock held
++void CWebClientManager::RestartClientForVideo()
++{
++  CLog::Log(LOGINFO, "CWebClientManager::{}: restarting the web client for the video setting",
++            __FUNCTION__);
++  m_restartWhenIdle = false;
++  m_restarting = true;
++  m_host->TerminateClients();
 +}
 +
 +bool CWebClientManager::StartHost()
@@ -3224,6 +3291,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  const std::string command = settings->GetString(CSettings::SETTING_WEB_CLIENTCOMMAND);
 +  CLog::Log(LOGINFO, "CWebClientManager::{}: starting {}", __FUNCTION__, command);
 +  m_state = State::STARTING;
++  UpdateVideo();
 +  // a disk cache in Kodi's profile writes to its storage as pages load, so
 +  // it is kept only while the user asks for one
 +  const bool diskCache = settings->GetBool(CSettings::SETTING_WEB_DISKCACHE);
@@ -3326,6 +3394,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  // the observer is torn down next: calls into it still running finish first
 +  m_observerCallsDone.wait(lock, [this] { return m_observerCalls == 0; });
 +  CloseView(m_observedProfile);
++  if (m_restartWhenIdle && m_state == State::READY && (m_video != nullptr) != VideoOnPlane())
++    RestartClientForVideo();
 +}
 +
 +// the client destroys the view later; a request for the profile waits for that
@@ -3353,6 +3423,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +void CWebClientManager::SetVideoObserver(IWebVideoObserver* observer)
 +{
++  std::unique_lock lock(m_lock);
++  m_videoObserver = observer;
 +  if (m_video)
 +    m_video->SetObserver(observer);
 +}
@@ -3462,11 +3534,21 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  if (pid < 0)
 +    CLog::Log(LOGERROR, "CWebClientManager::{}: the web client could not be started", __FUNCTION__);
 +  else
-+    CLog::Log(LOGWARNING, "CWebClientManager::{}: the web client (pid {}) exited with status {}",
-+              __FUNCTION__, pid, status);
++    CLog::Log(m_restarting ? LOGINFO : LOGWARNING,
++              "CWebClientManager::{}: the web client (pid {}) exited with status {}", __FUNCTION__,
++              pid, status);
 +  m_views.clear();
 +  m_surfaces.clear();
 +  m_closing.clear();
++  if (m_restarting)
++  {
++    m_restarting = false;
++    m_state = State::ABSENT;
++    m_wantPending = false;
++    SpawnIfPreloaded();
++    return;
++  }
++
 +  CObserverCall observer(*this, m_observer);
 +  const std::string profile = m_observedProfile;
 +
@@ -3859,7 +3941,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebClientManager.h
-@@ -0,0 +1,251 @@
+@@ -0,0 +1,266 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -3875,6 +3957,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include "application/IApplicationComponent.h"
 +#include "guilib/DispResource.h"
 +#include "jobs/Job.h"
++#include "settings/lib/ISettingCallback.h"
 +#include "threads/Condition.h"
 +#include "threads/CriticalSection.h"
 +
@@ -3930,7 +4013,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +class CWebClientManager : public IApplicationComponent,
 +                          public WAYLANDHOST::IWaylandHostObserver,
 +                          public IRenderLoop,
-+                          public IDispResource
++                          public IDispResource,
++                          public ISettingCallback
 +{
 +public:
 +  enum class State
@@ -3978,6 +4062,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  bool GetShownView(ViewState& state) const;
 +
 +  /*!
++   * \brief Whether the running client shows pages' video on a display plane
++   */
++  bool ShowsVideoOnPlane() const;
++
++  /*!
 +   * \brief Send the frames of pages' video to the observer, none with nullptr
 +   */
 +  void SetVideoObserver(IWebVideoObserver* observer);
@@ -3991,6 +4080,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +  // implementation of IDispResource
 +  void OnResetDisplay() override;
++
++  // implementation of ISettingCallback
++  void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
 +
 +  // implementation of IWaylandHostObserver
 +  void OnSurfaceMapped(WAYLANDHOST::CWaylandSurface& surface) override;
@@ -4046,8 +4138,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  };
 +
 +  bool StartHost();
-+  void StartVideo();
++  void UpdateVideo();
 +  void Spawn();
++  void SpawnIfPreloaded();
++  void RestartClientForVideo();
 +  void ConfigureView(const std::string& profile);
 +  bool ConfigureViewFromAddon(const std::string& profile);
 +  std::string UplinkOf(const std::string& profile) const;
@@ -4063,9 +4157,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  std::unique_ptr<WAYLANDHOST::CWaylandHost> m_host;
 +  std::unique_ptr<CWebAudioServer> m_audio;
 +  std::unique_ptr<CWebVideoServer> m_video;
++  IWebVideoObserver* m_videoObserver{nullptr};
 +  mutable CCriticalSection m_lock;
 +  State m_state{State::ABSENT};
 +  bool m_respawned{false};
++  bool m_restarting{false};
++  bool m_restartWhenIdle{false};
 +  IWebViewObserver* m_observer{nullptr};
 +  int m_observerCalls{0};
 +  XbmcThreads::ConditionVariable m_observerCallsDone;
@@ -4637,7 +4734,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#if defined(HAVE_GBM) && defined(HAS_GLES)
 +  auto* gbm = dynamic_cast<WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem());
 +  auto drm = gbm ? std::dynamic_pointer_cast<WINDOWING::GBM::CDRMAtomic>(gbm->GetDrm()) : nullptr;
-+  if (drm)
++  if (drm && m_manager->ShowsVideoOnPlane())
 +  {
 +    m_bridge = std::make_shared<CWebLayerBridge>(drm);
 +    gbm->RegisterVideoLayerBridge(m_bridge);
@@ -5536,7 +5633,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebVideoBuffer.h
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,68 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -5582,7 +5679,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  uint32_t GetWidth() const override;
 +  uint32_t GetHeight() const override;
 +  AVDRMFrameDescriptor* GetDescriptor() const override;
-+  bool PrefersPlane() const override { return true; }
 +
 +private:
 +  std::shared_ptr<WAYLANDHOST::CWaylandBuffer> m_buffer;
@@ -6032,7 +6128,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebVideoServer.h
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,169 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -6100,7 +6196,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  uint32_t GetWidth() const override { return m_width; }
 +  uint32_t GetHeight() const override { return m_height; }
 +  AVDRMFrameDescriptor* GetDescriptor() const override;
-+  bool PrefersPlane() const override { return true; }
 +
 +  uint32_t GetParN() const { return m_parN; }
 +  uint32_t GetParD() const { return m_parD; }

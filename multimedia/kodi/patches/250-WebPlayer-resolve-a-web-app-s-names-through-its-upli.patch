@@ -44,7 +44,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "resources/LocalizeStrings.h"
  #include "resources/ResourcesComponent.h"
  #include "settings/Settings.h"
-@@ -56,16 +57,22 @@
+@@ -57,16 +58,22 @@
  
  #include <algorithm>
  #include <cmath>
@@ -67,7 +67,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  using namespace KODI::WEB;
  using namespace KODI::WAYLANDHOST;
  
-@@ -135,6 +142,33 @@ std::string CdmDirectory()
+@@ -136,6 +143,33 @@ std::string CdmDirectory()
    return path.empty() ? path : CSpecialProtocol::TranslatePath(path);
  }
  
@@ -101,7 +101,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  void NotifyOpenError(const std::string& profile, const std::string& reason)
  {
    ADDON::AddonPtr addon;
-@@ -148,6 +182,16 @@ void NotifyOpenError(const std::string&
+@@ -149,6 +183,16 @@ void NotifyOpenError(const std::string&
        CGUIDialogKaiToast::Error, StringUtils::Format(localizeStrings.Get(13329), name), reason);
  }
  
@@ -118,7 +118,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  const ADDON::CAddonType* WebAppType(const std::shared_ptr<ADDON::CAddon>& webapp)
  {
    return webapp ? webapp->Type(ADDON::AddonType::WEBAPP) : nullptr;
-@@ -416,6 +460,7 @@ void CWebClientManager::Spawn()
+@@ -482,6 +526,7 @@ void CWebClientManager::Spawn()
    // pages decrypt with the CDM that inputstream.adaptive installed
    if (const std::string cdm = CdmDirectory(); !cdm.empty())
      env.emplace("KODI_WEB_CDM_DIR", cdm);
@@ -126,7 +126,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_host->SpawnClient({command}, std::move(env));
  }
  
-@@ -438,6 +483,11 @@ bool CWebClientManager::RequestView(cons
+@@ -504,6 +549,11 @@ bool CWebClientManager::RequestView(cons
    }
  
    const std::string uplink = UplinkOf(profile);
