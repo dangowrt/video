@@ -114,12 +114,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/guilib/guiinfo/SystemGUIInfo.cpp         |   13 +
  xbmc/input/InputManager.cpp                   |    3 +-
  xbmc/input/WindowTranslator.cpp               |    4 +
- xbmc/interfaces/builtins/AddonBuiltins.cpp    |   34 +
+ xbmc/interfaces/builtins/AddonBuiltins.cpp    |   35 +
  xbmc/settings/SettingConditions.cpp           |    3 +
  xbmc/settings/Settings.h                      |    5 +
  xbmc/utils/ExecString.cpp                     |    2 +
  xbmc/windows/GUIMediaWindow.cpp               |    9 +
- 63 files changed, 6157 insertions(+), 29 deletions(-)
+ 63 files changed, 6158 insertions(+), 29 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -6884,7 +6884,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "filesystem/PluginDirectory.h"
  #include "games/tags/GameInfoTag.h"
  #include "guilib/GUIComponent.h"
-@@ -180,6 +184,36 @@ static int RunAddon(const std::vector<st
+@@ -180,6 +184,37 @@ static int RunAddon(const std::vector<st
        // quotes.
        RunScript(params);
      }
@@ -6911,6 +6911,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +      if (url.empty())
 +        url = type->GetValue("@starturl").asString();
 +      CFileItem item(url, false);
++      item.SetLabel(webapp->Name());
 +      item.SetProperty(KODI::WEB::PROPERTY_PROFILE, addonid);
 +      if (!g_application.PlayMedia(item, KODI::WEB::PLAYER_NAME, PLAYLIST::Id::TYPE_NONE))
 +      {
