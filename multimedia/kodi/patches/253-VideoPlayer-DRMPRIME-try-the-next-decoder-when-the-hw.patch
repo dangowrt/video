@@ -1,0 +1,163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sun, 8 Nov 2026 22:56:33 +0000
+Subject: [PATCH] VideoPlayer: DRMPRIME: try the next decoder when the hwaccel
+ fails
+
+FindDecoder() picks the first decoder that offers a DRM PRIME hardware
+configuration. A decoder with a hwaccel, such as h264 with the V4L2
+request hwaccel, offers one even where no device can decode the codec,
+as on the Raspberry Pi 4, whose H.264 decoder is stateful. The hwaccel
+then fails to initialise, ffmpeg asks again without the hardware
+format and decodes in software, although a stateful decoder such as
+h264_v4l2m2m could deliver DRM PRIME frames. Notice that second
+request and reopen with the next decoder that offers a hardware
+configuration, skipping those whose hwaccel failed.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp | 51 +++++++++++++++++--
+ .../DVDCodecs/Video/DVDVideoCodecDRMPRIME.h   |  8 +++
+ 2 files changed, 56 insertions(+), 3 deletions(-)
+
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp
+@@ -105,6 +105,17 @@ CDVDVideoCodecDRMPRIME::~CDVDVideoCodecD
+   avcodec_free_context(&m_pCodecContext);
+ }
+ 
++void CDVDVideoCodecDRMPRIME::Reopen()
++{
++  av_frame_unref(m_pFrame);
++  av_frame_unref(m_pFilterFrame);
++  FilterClose();
++  avcodec_free_context(&m_pCodecContext);
++
++  if (!Open(m_hints, m_options))
++    CLog::Log(LOGERROR, "CDVDVideoCodecDRMPRIME::{} - unable to reopen the decoder", __FUNCTION__);
++}
++
+ std::unique_ptr<CDVDVideoCodec> CDVDVideoCodecDRMPRIME::Create(CProcessInfo& processInfo)
+ {
+   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+@@ -186,7 +197,7 @@ static const AVCodecHWConfig* FindHWConf
+   return nullptr;
+ }
+ 
+-static const AVCodec* FindDecoder(CDVDStreamInfo& hints)
++static const AVCodec* FindDecoder(CDVDStreamInfo& hints, const std::set<std::string>& skip)
+ {
+   const AVCodec* codec = nullptr;
+   void* i = 0;
+@@ -198,6 +209,8 @@ static const AVCodec* FindDecoder(CDVDSt
+         continue;
+       if (codec->id != hints.codec)
+         continue;
++      if (skip.contains(codec->name))
++        continue;
+ 
+       const AVCodecHWConfig* config = FindHWConfig(codec);
+       if (config)
+@@ -214,11 +227,22 @@ static const AVCodec* FindDecoder(CDVDSt
+ enum AVPixelFormat CDVDVideoCodecDRMPRIME::GetFormat(struct AVCodecContext* avctx,
+                                                      const enum AVPixelFormat* fmt)
+ {
++  CDVDVideoCodecDRMPRIME* ctx = static_cast<CDVDVideoCodecDRMPRIME*>(avctx->opaque);
++  bool hwOffered = false;
++
++  for (int n = 0; fmt[n] != AV_PIX_FMT_NONE; n++)
++    hwOffered |= IsSupportedHwFormat(fmt[n]);
++
++  // ffmpeg asks again without the hardware format once the hwaccel fails to initialise
++  if (hwOffered)
++    ctx->m_hwFormatOffered = true;
++  else if (ctx->m_hwFormatOffered)
++    ctx->m_hwFormatFailed = true;
++
+   for (int n = 0; fmt[n] != AV_PIX_FMT_NONE; n++)
+   {
+     if (IsSupportedHwFormat(fmt[n]) || IsSupportedSwFormat(fmt[n]))
+     {
+-      CDVDVideoCodecDRMPRIME* ctx = static_cast<CDVDVideoCodecDRMPRIME*>(avctx->opaque);
+       ctx->UpdateProcessInfo(avctx, fmt[n]);
+       return fmt[n];
+     }
+@@ -294,7 +318,7 @@ int CDVDVideoCodecDRMPRIME::GetBuffer(st
+ 
+ bool CDVDVideoCodecDRMPRIME::Open(CDVDStreamInfo& hints, CDVDCodecOptions& options)
+ {
+-  const AVCodec* pCodec = FindDecoder(hints);
++  const AVCodec* pCodec = FindDecoder(hints, m_skipDecoders);
+   if (!pCodec)
+   {
+     CLog::Log(LOGDEBUG, "CDVDVideoCodecDRMPRIME::{} - unable to find decoder for codec {}",
+@@ -310,6 +334,9 @@ bool CDVDVideoCodecDRMPRIME::Open(CDVDSt
+     return false;
+ 
+   m_hints = hints;
++  m_options = options;
++  m_hwFormatOffered = false;
++  m_hwFormatFailed = false;
+ 
+   const AVCodecHWConfig* pConfig = FindHWConfig(pCodec);
+   if (pConfig && (pConfig->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX))
+@@ -942,6 +969,24 @@ std::string CDVDVideoCodecDRMPRIME::GetF
+ 
+ CDVDVideoCodec::VCReturn CDVDVideoCodecDRMPRIME::GetPicture(VideoPicture* pVideoPicture)
+ {
++  if (m_hwFormatFailed)
++  {
++    m_hwFormatFailed = false;
++
++    std::set<std::string> skip = m_skipDecoders;
++    skip.insert(m_pCodecContext->codec->name);
++
++    const AVCodec* next = FindDecoder(m_hints, skip);
++    if (next && FindHWConfig(next))
++    {
++      CLog::Log(LOGINFO,
++                "CDVDVideoCodecDRMPRIME::{} - hwaccel of decoder {} failed, reopening with {}",
++                __FUNCTION__, m_pCodecContext->codec->name, next->name);
++      m_skipDecoders = std::move(skip);
++      return VC_REOPEN;
++    }
++  }
++
+   if (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN)
+     Drain();
+ 
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.h
+@@ -9,10 +9,13 @@
+ #pragma once
+ 
+ #include "cores/VideoPlayer/Buffers/VideoBuffer.h"
++#include "cores/VideoPlayer/DVDCodecs/DVDCodecs.h"
+ #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h"
+ #include "cores/VideoPlayer/DVDStreamInfo.h"
+ 
+ #include <memory>
++#include <set>
++#include <string>
+ 
+ extern "C"
+ {
+@@ -35,6 +38,7 @@ public:
+   bool AddData(const DemuxPacket& packet) override;
+   void Reset() override;
+   CDVDVideoCodec::VCReturn GetPicture(VideoPicture* pVideoPicture) override;
++  void Reopen() override;
+   const char* GetName() override { return m_name.c_str(); }
+   unsigned GetAllowedReferences() override { return 5; }
+   void SetCodecControl(int flags) override;
+@@ -57,6 +61,10 @@ protected:
+   std::string m_filters;
+   int m_codecControlFlags = 0;
+   CDVDStreamInfo m_hints;
++  CDVDCodecOptions m_options;
++  std::set<std::string> m_skipDecoders;
++  bool m_hwFormatOffered = false;
++  bool m_hwFormatFailed = false;
+   double m_DAR = 1.0;
+   bool m_checkedDeinterlace = false;
+   AVCodecContext* m_pCodecContext = nullptr;
