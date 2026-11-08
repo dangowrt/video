@@ -1152,7 +1152,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
     {"kodi.inputstream",                  "", AddonType::INPUTSTREAM,         24048, AddonInstanceSupport::SUPPORT_MANDATORY, "DefaultAddonInputstream.png" },
     {"kodi.vfs",                          "", AddonType::VFS,                 39013, AddonInstanceSupport::SUPPORT_MANDATORY, "DefaultAddonVfs.png" },
     {"kodi.imagedecoder",                 "", AddonType::IMAGEDECODER,        39015, AddonInstanceSupport::SUPPORT_MANDATORY, "DefaultAddonImageDecoder.png" },
-+   {"kodi.webapp",                       "", AddonType::WEBAPP,              40241, AddonInstanceSupport::SUPPORT_NONE,      "DefaultAddonWebSkin.png" },
++   {"kodi.webapp",                       "", AddonType::WEBAPP,              40243, AddonInstanceSupport::SUPPORT_NONE,      "DefaultAddonWebSkin.png" },
    }};
  // clang-format on
  

@@ -76,7 +76,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 @@ -84,6 +84,7 @@ static constexpr const std::array<TypeMa
     {"kodi.vfs",                          "", AddonType::VFS,                 39013, AddonInstanceSupport::SUPPORT_MANDATORY, "DefaultAddonVfs.png" },
     {"kodi.imagedecoder",                 "", AddonType::IMAGEDECODER,        39015, AddonInstanceSupport::SUPPORT_MANDATORY, "DefaultAddonImageDecoder.png" },
-    {"kodi.webapp",                       "", AddonType::WEBAPP,              40241, AddonInstanceSupport::SUPPORT_NONE,      "DefaultAddonWebSkin.png" },
+    {"kodi.webapp",                       "", AddonType::WEBAPP,              40243, AddonInstanceSupport::SUPPORT_NONE,      "DefaultAddonWebSkin.png" },
 +   {"kodi.webapp.module",                "", AddonType::WEBAPP_MODULE,       40259, AddonInstanceSupport::SUPPORT_NONE,      "DefaultAddonLibrary.png" },
    }};
  // clang-format on
