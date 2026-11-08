@@ -13,18 +13,27 @@ opened, and a notification names the missing uplink.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
- .../resources/strings.po                      |  8 ++-
+ .../resources/strings.po                      | 10 +++-
  xbmc/cores/WebPlayer/WebClientManager.cpp     | 50 +++++++++++++++++++
- 2 files changed, 57 insertions(+), 1 deletion(-)
+ 2 files changed, 58 insertions(+), 2 deletions(-)
 
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25800,7 +25800,13 @@ msgctxt "#40253"
- msgid "The content filter list {0:s} is not available."
+@@ -25821,7 +25821,7 @@ msgstr ""
+ #. Help text of the setting that picks the uplink of a web app
+ #: system/settings/webapp.xml
+ msgctxt "#40257"
+-msgid "Leave every connection of this app through a chosen uplink. Give an address, a subnet such as 192.168.5.0/24, or an interface name. An address or a subnet binds each connection to that local source address; an interface name also pins each connection to that interface, so it never leaves through another one, even when the routing or the address changes. A subnet or an interface name is resolved for every connection, so a new DHCP lease is picked up. A connection that cannot be bound fails rather than taking the default route. Empty means the system default route."
++msgid "Leave every connection of this app through a chosen uplink. Give an address, a subnet such as 192.168.5.0/24, or an interface name. An address or a subnet binds each connection to that local source address; an interface name also pins each connection to that interface, so it never leaves through another one, even when the routing or the address changes. A subnet or an interface name is resolved for every connection, so a new DHCP lease is picked up. A connection that cannot be bound fails rather than taking the default route, and the app does not open while nothing matches. Empty means the system default route."
  msgstr ""
  
--#empty strings from id 40254 to 40399
-+#empty strings from id 40254 to 40398
+ #. Notification text when the settings of a web app cannot be loaded
+@@ -25842,7 +25842,13 @@ msgctxt "#40260"
+ msgid "The web app's file {0:s} is missing or cannot be used."
+ msgstr ""
+ 
+-#empty strings from id 40261 to 40399
++#empty strings from id 40261 to 40398
 +
 +#. Notification text when a web app's uplink has no local address
 +#: xbmc/cores/WebPlayer/WebClientManager.cpp
@@ -36,7 +45,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
 --- a/xbmc/cores/WebPlayer/WebClientManager.cpp
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -28,6 +28,7 @@
+@@ -30,6 +30,7 @@
  #include "jobs/JobManager.h"
  #include "kodi-web-audio.h"
  #include "kodi-web-video.h"
@@ -44,7 +53,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "resources/LocalizeStrings.h"
  #include "resources/ResourcesComponent.h"
  #include "settings/Settings.h"
-@@ -57,16 +58,22 @@
+@@ -59,16 +60,22 @@
  
  #include <algorithm>
  #include <cmath>
@@ -67,7 +76,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  using namespace KODI::WEB;
  using namespace KODI::WAYLANDHOST;
  
-@@ -136,6 +143,33 @@ std::string CdmDirectory()
+@@ -138,6 +145,33 @@ std::string CdmDirectory()
    return path.empty() ? path : CSpecialProtocol::TranslatePath(path);
  }
  
@@ -101,7 +110,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  void NotifyOpenError(const std::string& profile, const std::string& reason)
  {
    ADDON::AddonPtr addon;
-@@ -149,6 +183,16 @@ void NotifyOpenError(const std::string&
+@@ -151,6 +185,16 @@ void NotifyOpenError(const std::string&
        CGUIDialogKaiToast::Error, StringUtils::Format(localizeStrings.Get(13329), name), reason);
  }
  
@@ -115,10 +124,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  NotifyOpenError(profile, StringUtils::Format(localizeStrings.Get(40399), uplink));
 +}
 +
- const ADDON::CAddonType* WebAppType(const std::shared_ptr<ADDON::CAddon>& webapp)
+ bool WebAppSettingsLoad(const std::string& profile)
  {
-   return webapp ? webapp->Type(ADDON::AddonType::WEBAPP) : nullptr;
-@@ -482,6 +526,7 @@ void CWebClientManager::Spawn()
+   ADDON::AddonPtr addon;
+@@ -580,6 +624,7 @@ void CWebClientManager::Spawn()
    // pages decrypt with the CDM that inputstream.adaptive installed
    if (const std::string cdm = CdmDirectory(); !cdm.empty())
      env.emplace("KODI_WEB_CDM_DIR", cdm);
@@ -126,7 +135,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_host->SpawnClient({command}, std::move(env));
  }
  
-@@ -504,6 +549,11 @@ bool CWebClientManager::RequestView(cons
+@@ -617,6 +662,11 @@ bool CWebClientManager::RequestView(cons
    }
  
    const std::string uplink = UplinkOf(profile);

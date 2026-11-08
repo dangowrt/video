@@ -1,0 +1,307 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sun, 8 Nov 2026 09:01:45 +0000
+Subject: [PATCH] WebPlayer: let web apps use the files of web app modules
+
+Web apps of one kind share user scripts, such as the HbbTV terminal
+that broadcasters' apps run on, and each app had to ship its own copy.
+A new add-on type, kodi.webapp.module, holds such files: a web app
+imports the module and names a file of it in its manifest as
+<userscript addon="module id">path</userscript>, and likewise in a
+<contentfilter>, so the app keeps the order of its scripts. Modules are
+hidden like other add-on libraries.
+
+The client knows a module's file as "<module id>.<file name>", so files
+of the app and of its modules never replace one another in the client,
+which keys content filters by name. The web player refuses to open an
+app that names a file of an add-on it does not import, a file that does
+not exist, one whose name the client rejects, or two content filters of
+one name.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../resources/strings.po                      |  14 +-
+ xbmc/addons/AddonBuilder.cpp                  |   1 +
+ xbmc/addons/addoninfo/AddonInfo.cpp           |   3 +-
+ xbmc/addons/addoninfo/AddonType.cpp           |   1 +
+ xbmc/addons/addoninfo/AddonType.h             |   1 +
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 134 +++++++++++++++---
+ xbmc/cores/WebPlayer/WebClientManager.h       |   5 +-
+ 7 files changed, 133 insertions(+), 26 deletions(-)
+
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25791,7 +25791,19 @@ msgctxt "#40258"
+ msgid "The settings of the web app cannot be loaded."
+ msgstr ""
+ 
+-#empty strings from id 40259 to 40399
++#. Name of the add-on type that holds files web apps share
++#: xbmc/addons/addoninfo/AddonInfo.cpp
++msgctxt "#40259"
++msgid "Web app modules"
++msgstr ""
++
++#. Notification text when a file a web app names cannot be used
++#: xbmc/cores/WebPlayer/WebClientManager.cpp
++msgctxt "#40260"
++msgid "The web app's file {0:s} is missing or cannot be used."
++msgstr ""
++
++#empty strings from id 40261 to 40399
+ 
+ # Video versions
+ 
+--- a/xbmc/addons/AddonBuilder.cpp
++++ b/xbmc/addons/AddonBuilder.cpp
+@@ -86,6 +86,7 @@ AddonPtr CAddonBuilder::Generate(const A
+     case AddonType::SCRIPT_MODULE:
+     case AddonType::SUBTITLE_MODULE:
+     case AddonType::SCRIPT_WEATHER:
++    case AddonType::WEBAPP_MODULE:
+       return std::make_shared<CAddon>(info, type);
+     case AddonType::WEBAPP:
+       return std::make_shared<CWebApp>(info);
+--- a/xbmc/addons/addoninfo/AddonInfo.cpp
++++ b/xbmc/addons/addoninfo/AddonInfo.cpp
+@@ -39,7 +39,7 @@ struct TypeMapping
+ };
+ 
+ // clang-format off
+-static constexpr const std::array<TypeMapping, 43> types =
++static constexpr const std::array<TypeMapping, 44> types =
+   {{
+    {"unknown",                           "", AddonType::UNKNOWN,                 0, AddonInstanceSupport::SUPPORT_NONE,      "" },
+    {"xbmc.metadata.scraper.albums",      "", AddonType::SCRAPER_ALBUMS,      24016, AddonInstanceSupport::SUPPORT_NONE,      "DefaultAddonAlbumInfo.png" },
+@@ -84,6 +84,7 @@ static constexpr const std::array<TypeMa
+    {"kodi.vfs",                          "", AddonType::VFS,                 39013, AddonInstanceSupport::SUPPORT_MANDATORY, "DefaultAddonVfs.png" },
+    {"kodi.imagedecoder",                 "", AddonType::IMAGEDECODER,        39015, AddonInstanceSupport::SUPPORT_MANDATORY, "DefaultAddonImageDecoder.png" },
+    {"kodi.webapp",                       "", AddonType::WEBAPP,              40241, AddonInstanceSupport::SUPPORT_NONE,      "DefaultAddonWebSkin.png" },
++   {"kodi.webapp.module",                "", AddonType::WEBAPP_MODULE,       40259, AddonInstanceSupport::SUPPORT_NONE,      "DefaultAddonLibrary.png" },
+   }};
+ // clang-format on
+ 
+--- a/xbmc/addons/addoninfo/AddonType.cpp
++++ b/xbmc/addons/addoninfo/AddonType.cpp
+@@ -21,6 +21,7 @@ constexpr CSet dependencyTypes{
+     AddonType::SCRAPER_LIBRARY,
+     AddonType::SCRIPT_LIBRARY,
+     AddonType::SCRIPT_MODULE,
++    AddonType::WEBAPP_MODULE,
+ };
+ }
+ 
+--- a/xbmc/addons/addoninfo/AddonType.h
++++ b/xbmc/addons/addoninfo/AddonType.h
+@@ -57,6 +57,7 @@ enum class AddonType
+   GAME_CONTROLLER,
+   VIDEOCODEC,
+   WEBAPP,
++  WEBAPP_MODULE,
+ 
+   /**
+     * @brief virtual addon types
+--- a/xbmc/cores/WebPlayer/WebClientManager.cpp
++++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
+@@ -17,6 +17,7 @@
+ #include "addons/AddonEvents.h"
+ #include "addons/AddonManager.h"
+ #include "addons/WebApp.h"
++#include "addons/addoninfo/AddonInfo.h"
+ #include "addons/addoninfo/AddonType.h"
+ #include "application/ApplicationComponents.h"
+ #include "dialogs/GUIDialogKaiToast.h"
+@@ -166,6 +167,91 @@ const ADDON::CAddonType* WebAppType(cons
+   return webapp ? webapp->Type(ADDON::AddonType::WEBAPP) : nullptr;
+ }
+ 
++struct WebAppFile
++{
++  std::string path;
++  std::string name;
++  bool script;
++};
++
++ADDON::AddonPtr FileOwnerOf(const ADDON::AddonPtr& webapp, const std::string& id)
++{
++  if (id.empty())
++    return webapp;
++
++  const auto& dependencies = webapp->GetDependencies();
++  if (std::none_of(dependencies.begin(), dependencies.end(),
++                   [&id](const ADDON::DependencyInfo& dependency) { return dependency.id == id; }))
++    return nullptr;
++
++  ADDON::AddonPtr module;
++  if (!CServiceBroker::GetAddonMgr().GetAddon(id, module, ADDON::AddonType::WEBAPP_MODULE,
++                                              ADDON::OnlyEnabled::CHOICE_YES))
++    return nullptr;
++  return module;
++}
++
++std::string WebAppFileError(const ADDON::AddonPtr& owner,
++                            const std::string& path,
++                            const std::string& name,
++                            std::set<std::string>* names)
++{
++  if (!owner)
++    return "is in no web app module the app imports";
++  if (!XFILE::CFile::Exists(path))
++    return "does not exist";
++  if (!CWaylandHost::IsValidWebProfile(name))
++    return "cannot name a file of the web client";
++  // the web client replaces a content filter by one of the same name
++  if (names && !names->insert(name).second)
++    return "has the name of another file of the app";
++  return {};
++}
++
++//! The user scripts and content filter files of a web app, with the names the client knows them by
++bool WebAppFilesOf(const ADDON::AddonPtr& webapp,
++                   const ADDON::CAddonType& type,
++                   std::vector<WebAppFile>& files,
++                   std::string& failed)
++{
++  std::set<std::string> filterNames;
++  for (const auto& [element, values] : type.GetValues())
++  {
++    const bool script = element == "userscript";
++    if (!script && (element != "contentfilter" || !values.GetValue("contentfilter@list").empty()))
++      continue;
++
++    const std::string file = values.GetValue(element).asString();
++    const std::string id = values.GetValue(element + "@addon").asString();
++    const ADDON::AddonPtr owner = FileOwnerOf(webapp, id);
++    const std::string path = owner ? URIUtils::AddFileToFolder(owner->Path(), file) : file;
++    const std::string name =
++        id.empty() ? URIUtils::GetFileName(file) : id + "." + URIUtils::GetFileName(file);
++    const std::string error = WebAppFileError(owner, path, name, script ? nullptr : &filterNames);
++    if (!error.empty())
++    {
++      failed = id.empty() ? file : id + "/" + file;
++      CLog::Log(LOGERROR, "CWebClientManager::{}: {}: {} {}", __FUNCTION__, webapp->ID(), failed,
++                error);
++      return false;
++    }
++    files.push_back({path, name, script});
++  }
++  return true;
++}
++
++bool WebAppFilesUsable(const std::string& profile, std::string& failed)
++{
++  ADDON::AddonPtr addon;
++  if (!CServiceBroker::GetAddonMgr().GetAddon(profile, addon, ADDON::AddonType::WEBAPP,
++                                              ADDON::OnlyEnabled::CHOICE_YES))
++    return true;
++
++  const ADDON::CAddonType* type = WebAppType(std::dynamic_pointer_cast<ADDON::CAddon>(addon));
++  std::vector<WebAppFile> files;
++  return !type || WebAppFilesOf(addon, *type, files, failed);
++}
++
+ void AddFilterListsOf(const ADDON::AddonPtr& addon, std::set<std::string>& lists)
+ {
+   const ADDON::CAddonType* type = WebAppType(std::dynamic_pointer_cast<ADDON::CAddon>(addon));
+@@ -523,6 +609,13 @@ bool CWebClientManager::RequestView(cons
+     return false;
+   }
+ 
++  if (std::string failed; !WebAppFilesUsable(profile, failed))
++  {
++    const auto& localizeStrings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
++    NotifyOpenError(profile, StringUtils::Format(localizeStrings.Get(40260), failed));
++    return false;
++  }
++
+   const std::string uplink = UplinkOf(profile);
+ 
+   std::unique_lock lock(m_lock);
+@@ -803,35 +896,30 @@ bool CWebClientManager::ConfigureViewFro
+   if (!userAgent.empty())
+     m_host->WebViewSetUserAgent(profile, userAgent);
+ 
++  std::vector<WebAppFile> files;
++  std::string failed;
++  if (!WebAppFilesOf(addon, *type, files, failed))
++    files.clear();
++
+   for (const auto& [element, values] : type->GetValues())
+   {
+-    if (element == "userscript")
+-      SendProfileFile(
+-          profile,
+-          URIUtils::AddFileToFolder(webapp->Path(), values.GetValue("userscript").asString()),
+-          true);
+-    else if (element == "viewport")
++    const std::string list = values.GetValue("contentfilter@list").asString();
++    if (element == "viewport")
+       m_host->WebViewSetViewport(profile,
+                                  std::max(values.GetValue("viewport@width").asInteger(), 0),
+                                  std::max(values.GetValue("viewport@height").asInteger(), 0));
+-    else if (element == "contentfilter")
++    else if (element == "contentfilter" && !list.empty())
+     {
+-      const std::string list = values.GetValue("contentfilter@list").asString();
+-      if (!list.empty())
+-      {
+-        std::unique_lock lock(m_lock);
+-        if (m_filterLists)
+-          m_filterLists->Want(list);
+-        lock.unlock();
+-        m_host->WebViewAddContentFilterList(profile, list);
+-      }
+-      else
+-        SendProfileFile(
+-            profile,
+-            URIUtils::AddFileToFolder(webapp->Path(), values.GetValue("contentfilter").asString()),
+-            false);
++      std::unique_lock lock(m_lock);
++      if (m_filterLists)
++        m_filterLists->Want(list);
++      lock.unlock();
++      m_host->WebViewAddContentFilterList(profile, list);
+     }
+   }
++
++  for (const WebAppFile& file : files)
++    SendProfileFile(profile, file.path, file.name, file.script);
+   return true;
+ }
+ 
+@@ -872,11 +960,12 @@ void CWebClientManager::SendProfileFiles
+   std::sort(files.begin(), files.end());
+ 
+   for (const std::string& file : files)
+-    SendProfileFile(profile, file, scripts);
++    SendProfileFile(profile, file, URIUtils::GetFileName(file), scripts);
+ }
+ 
+ void CWebClientManager::SendProfileFile(const std::string& profile,
+                                         const std::string& file,
++                                        const std::string& name,
+                                         bool script)
+ {
+   const int fd = open(CSpecialProtocol::TranslatePath(file).c_str(), O_RDONLY | O_CLOEXEC);
+@@ -889,7 +978,6 @@ void CWebClientManager::SendProfileFile(
+     return;
+   }
+ 
+-  const std::string name = URIUtils::GetFileName(file);
+   const auto size = static_cast<uint32_t>(st.st_size);
+   if (script)
+     m_host->WebViewAddUserScript(profile, name, fd, size);
+--- a/xbmc/cores/WebPlayer/WebClientManager.h
++++ b/xbmc/cores/WebPlayer/WebClientManager.h
+@@ -230,7 +230,10 @@ private:
+                         const std::string& path,
+                         const std::string& extension,
+                         bool scripts);
+-  void SendProfileFile(const std::string& profile, const std::string& file, bool script);
++  void SendProfileFile(const std::string& profile,
++                       const std::string& file,
++                       const std::string& name,
++                       bool script);
+   CObserverCall ObserverOf(const std::string& profile);
+   void CloseView(const std::string& profile);
+   void EnsureCaretVisible();
