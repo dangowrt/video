@@ -1,0 +1,99 @@
+From 7e75c811fd73f6acec9b93a6afc6c40a3859919d Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Mon, 9 Nov 2026 13:24:36 +0000
+Subject: [PATCH] WebPlayer: report whether a page browses, plays or pauses
+
+A web app counted as a playing video from the moment it opened: a page
+without media reported video, Player.OnPlay announced it playing, and
+its media pausing or resuming announced nothing. A client cannot tell
+browsing from playback that way, and stops or keeps alive the wrong
+things, such as an idle page treated as video when the display
+switches off.
+
+A page without media has neither video nor audio, so no media player is
+listed while the user browses. The player starts out paused, announces
+pause and resume whenever the page's media starts or stops playing, and
+a stream change when the page gains or loses video or audio.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/cores/WebPlayer/WebPlayer.cpp | 29 +++++++++++++++++++++++------
+ xbmc/cores/WebPlayer/WebPlayer.h   |  1 +
+ 2 files changed, 24 insertions(+), 6 deletions(-)
+
+--- a/xbmc/cores/WebPlayer/WebPlayer.cpp
++++ b/xbmc/cores/WebPlayer/WebPlayer.cpp
+@@ -238,6 +238,7 @@ bool CWebPlayer::OpenFile(const CFileIte
+   m_shown = false;
+   m_mediaVideo = false;
+   m_mediaAudio = false;
++  m_mediaPlaying = false;
+   m_surface = nullptr;
+   m_url = file.GetDynPath();
+   m_profile = file.GetProperty(PROPERTY_PROFILE).asString(DEFAULT_PROFILE);
+@@ -245,7 +246,7 @@ bool CWebPlayer::OpenFile(const CFileIte
+ 
+   m_processInfo.reset(CProcessInfo::CreateInstance());
+   m_processInfo->SetDataCache(&CServiceBroker::GetDataCacheCore());
+-  m_processInfo->SetSpeed(1.0f);
++  m_processInfo->SetSpeed(0.0f);
+   m_processInfo->SetTempo(1.0f);
+   m_processInfo->SetFrameAdvance(false);
+   m_processInfo->SetStateRealtime(true);
+@@ -298,14 +299,14 @@ bool CWebPlayer::OpenFile(const CFileIte
+   }
+   m_playing = true;
+   m_callback.OnPlayBackStarted(*m_item);
++  if (!m_mediaPlaying)
++    m_callback.OnPlayBackPaused();
+   return true;
+ }
+ 
+-// a page without media is still shown like a video; only audio alone
+-// lets Kodi apply its music rules
+ bool CWebPlayer::HasVideo() const
+ {
+-  return m_mediaVideo || !m_mediaAudio;
++  return m_mediaVideo;
+ }
+ 
+ bool CWebPlayer::HasAudio() const
+@@ -622,10 +623,26 @@ void CWebPlayer::OnWebViewMediaState(con
+ {
+   CLog::Log(LOGDEBUG, "CWebPlayer::{}: {}: video {} audio {} paused {}", __FUNCTION__, profile,
+             video, audio, paused);
++  const bool playing = (video || audio) && !paused;
++
++  std::unique_lock lock(m_playLock);
++  const bool streamsChanged = m_mediaVideo != video || m_mediaAudio != audio;
++  const bool playingChanged = m_mediaPlaying != playing;
+   m_mediaVideo = video;
+   m_mediaAudio = audio;
+-  if (m_playing)
+-    CServiceBroker::GetDataCacheCore().SetSpeed(1.0f, paused ? 0.0f : 1.0f);
++  m_mediaPlaying = playing;
++  if (!m_playing)
++    return;
++
++  CServiceBroker::GetDataCacheCore().SetSpeed(1.0f, playing ? 1.0f : 0.0f);
++  if (streamsChanged)
++    m_callback.OnAVChange();
++  if (!playingChanged)
++    return;
++  if (playing)
++    m_callback.OnPlayBackResumed();
++  else
++    m_callback.OnPlayBackPaused();
+ }
+ 
+ void CWebPlayer::OnWebViewFrame(CWaylandSurface& surface, std::shared_ptr<CWaylandBuffer> buffer)
+--- a/xbmc/cores/WebPlayer/WebPlayer.h
++++ b/xbmc/cores/WebPlayer/WebPlayer.h
+@@ -166,6 +166,7 @@ private:
+   bool m_shown{false};
+   std::atomic<bool> m_mediaVideo{false};
+   std::atomic<bool> m_mediaAudio{false};
++  bool m_mediaPlaying{false};
+   std::set<uint32_t> m_pressedKeys;
+   int m_pointerX{-1};
+   int m_pointerY{-1};
