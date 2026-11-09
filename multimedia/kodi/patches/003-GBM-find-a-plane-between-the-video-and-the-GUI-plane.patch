@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 24b60a2e604b1388fe4d4c19096513c058a88ef6 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Thu, 5 Nov 2026 23:25:35 +0000
 Subject: [PATCH] GBM: find a plane between the video and the GUI plane
@@ -11,15 +11,15 @@ what the planes besides the GUI plane can show, each format in its
 linear layout before any modifier, so that a client taking only the
 first entries still gets every format. MoveOnTopOf() moves two planes to
 the ends of their zpos ranges, which leaves no level in between, so the
-three planes get the lowest, a middle and the highest level instead, or
-must already be in that order where zpos is fixed.
+three planes get the lowest, a middle and the highest level instead,
+around any of them whose zpos is fixed.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
  xbmc/windowing/gbm/drm/DRMPlane.h   |  4 ++
- xbmc/windowing/gbm/drm/DRMUtils.cpp | 85 +++++++++++++++++++++++++++++
+ xbmc/windowing/gbm/drm/DRMUtils.cpp | 84 +++++++++++++++++++++++++++++
  xbmc/windowing/gbm/drm/DRMUtils.h   |  4 ++
- 3 files changed, 93 insertions(+)
+ 3 files changed, 92 insertions(+)
 
 --- a/xbmc/windowing/gbm/drm/DRMPlane.h
 +++ b/xbmc/windowing/gbm/drm/DRMPlane.h
@@ -45,13 +45,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "PlatformDefs.h"
  
  using namespace KODI::WINDOWING::GBM;
-@@ -37,6 +39,29 @@ void DrmFbDestroyCallback(gbm_bo* bo, vo
+@@ -37,6 +39,28 @@ void DrmFbDestroyCallback(gbm_bo* bo, vo
  
    delete fb;
  }
 +
 +// pairwise moves on top of each other leave no level in between, so three
-+// planes get the lowest, a middle and the highest level of their ranges
++// planes get the lowest, a middle and the highest level of their ranges,
++// around any plane whose level is fixed
 +bool StackPlanes(CDRMPlane* bottom, CDRMPlane* middle, CDRMPlane* top)
 +{
 +  const auto level = [](CDRMPlane* plane) { return plane->GetPropertyValue("zpos").value_or(0); };
@@ -60,22 +61,20 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  const auto range = [](CDRMPlane* plane)
 +  { return plane->GetRangePropertyLimits("zpos").value_or(std::pair<uint64_t, uint64_t>(0, 0)); };
 +
-+  if (fixed(bottom) || fixed(middle) || fixed(top))
-+    return level(bottom) < level(middle) && level(middle) < level(top);
-+
-+  const uint64_t low = range(bottom).first;
-+  const uint64_t high = range(top).second;
-+  const uint64_t mid = std::max(range(middle).first, low + 1);
-+  if (mid >= high || mid > range(middle).second)
++  const uint64_t low = fixed(bottom) ? level(bottom) : range(bottom).first;
++  const uint64_t high = fixed(top) ? level(top) : range(top).second;
++  const uint64_t mid = fixed(middle) ? level(middle) : std::max(range(middle).first, low + 1);
++  if (mid <= low || mid >= high || (!fixed(middle) && mid > range(middle).second))
 +    return false;
 +
-+  return bottom->SetProperty("zpos", low) && middle->SetProperty("zpos", mid) &&
-+         top->SetProperty("zpos", high);
++  return (fixed(bottom) || bottom->SetProperty("zpos", low)) &&
++         (fixed(middle) || middle->SetProperty("zpos", mid)) &&
++         (fixed(top) || top->SetProperty("zpos", high));
 +}
  } // namespace
  
  CDRMUtils::~CDRMUtils()
-@@ -368,6 +393,66 @@ bool CDRMUtils::FindVideoAndGuiPlane(uin
+@@ -368,6 +392,66 @@ bool CDRMUtils::FindVideoAndGuiPlane(uin
    return false;
  }
  

@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From f981ae96d287af4528b1852d8fd00b325529eb14 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Tue, 3 Nov 2026 17:07:13 +0000
 Subject: [PATCH] WebPlayer: play web apps through a hosted web browser
@@ -93,7 +93,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/cores/WebPlayer/WebAudioServer.h         |  136 +++
  xbmc/cores/WebPlayer/WebClientManager.cpp     | 1010 +++++++++++++++++
  xbmc/cores/WebPlayer/WebClientManager.h       |  266 +++++
- xbmc/cores/WebPlayer/WebLayerBridge.cpp       |  238 ++++
+ xbmc/cores/WebPlayer/WebLayerBridge.cpp       |  239 ++++
  xbmc/cores/WebPlayer/WebLayerBridge.h         |   90 ++
  xbmc/cores/WebPlayer/WebPlayer.cpp            |  766 +++++++++++++
  xbmc/cores/WebPlayer/WebPlayer.h              |  173 +++
@@ -119,7 +119,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/settings/Settings.h                      |    5 +
  xbmc/utils/ExecString.cpp                     |    2 +
  xbmc/windows/GUIMediaWindow.cpp               |    9 +
- 63 files changed, 6158 insertions(+), 29 deletions(-)
+ 63 files changed, 6159 insertions(+), 29 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -4210,7 +4210,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebLayerBridge.cpp
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,239 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -4367,6 +4367,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    m_clear = false;
 +    HidePage();
 +    m_plane = nullptr;
++    m_stackedOn = nullptr;
 +    if (m_prevPage)
 +      m_prevPage->Release();
 +    m_prevPage = std::exchange(m_page, nullptr);
@@ -4426,8 +4427,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +bool CWebLayerBridge::StackPage()
 +{
 +  CDRMPlane* video = m_DRM->GetVideoPlane();
-+  if (m_plane && m_stackedOn == video)
-+    return true;
++  if (m_stackedOn == video)
++    return m_plane != nullptr;
 +
 +  HidePage();
 +  const AVDRMFrameDescriptor* descriptor = m_page->GetDescriptor();

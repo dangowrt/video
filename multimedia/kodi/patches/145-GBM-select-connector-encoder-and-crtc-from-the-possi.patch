@@ -92,7 +92,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
 --- a/xbmc/windowing/gbm/drm/DRMUtils.cpp
 +++ b/xbmc/windowing/gbm/drm/DRMUtils.cpp
-@@ -736,12 +736,9 @@ bool CDRMUtils::FindConnector()
+@@ -735,12 +735,9 @@ bool CDRMUtils::FindConnector()
    std::string connectorName = settings->GetString(CSettings::SETTING_VIDEOSCREEN_MONITOR);
    if (connectorName != "Default")
    {
@@ -108,7 +108,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
      if (connector == m_connectors.end())
      {
-@@ -752,8 +749,7 @@ bool CDRMUtils::FindConnector()
+@@ -751,8 +748,7 @@ bool CDRMUtils::FindConnector()
  
    if (connectorName == "Default")
    {
@@ -118,7 +118,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    }
  
    if (connector == m_connectors.end())
-@@ -770,41 +766,53 @@ bool CDRMUtils::FindConnector()
+@@ -769,41 +765,53 @@ bool CDRMUtils::FindConnector()
  
  bool CDRMUtils::FindEncoder()
  {
