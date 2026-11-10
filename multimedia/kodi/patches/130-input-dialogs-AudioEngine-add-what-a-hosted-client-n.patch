@@ -1,0 +1,508 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 3 Nov 2026 17:06:39 +0000
+Subject: [PATCH] input, dialogs, AudioEngine: add what a hosted client needs
+
+A Wayland client hosted by Kodi takes keyboard input, may use Kodi's
+on-screen keyboard and may hand Kodi encoded audio. Let a keyboard
+event handler take events before Kodi translates them into actions,
+tell whether a keyboard with letter keys is attached on GBM, let a
+keyboard dialog derived from the generic one choose its own window,
+and unpack the frame of an IEC 61937 burst.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../AudioEngine/Utils/AEPackIEC61937.cpp      | 59 ++++++++++++++++++
+ xbmc/cores/AudioEngine/Utils/AEPackIEC61937.h | 13 ++++
+ xbmc/dialogs/GUIDialogKeyboardGeneric.cpp     | 14 +++--
+ xbmc/dialogs/GUIDialogKeyboardGeneric.h       |  2 +
+ xbmc/input/InputManager.cpp                   | 34 ++++++++++-
+ xbmc/input/InputManager.h                     | 11 ++++
+ xbmc/input/keyboard/interfaces/CMakeLists.txt |  1 +
+ .../interfaces/IKeyboardEventHandler.h        | 45 ++++++++++++++
+ xbmc/platform/linux/input/LibInputHandler.cpp | 60 ++++++++++++++-----
+ xbmc/platform/linux/input/LibInputHandler.h   | 19 ++++--
+ xbmc/windowing/gbm/WinSystemGbm.cpp           |  5 ++
+ xbmc/windowing/gbm/WinSystemGbm.h             |  1 +
+ 12 files changed, 237 insertions(+), 27 deletions(-)
+ create mode 100644 xbmc/input/keyboard/interfaces/IKeyboardEventHandler.h
+
+--- a/xbmc/cores/AudioEngine/Utils/AEPackIEC61937.cpp
++++ b/xbmc/cores/AudioEngine/Utils/AEPackIEC61937.cpp
+@@ -233,3 +233,62 @@ int CAEPackIEC61937::PackPause(uint8_t *
+ 
+   return periodsNeeded * periodInBytes;
+ }
++
++unsigned int CAEPackIEC61937::Unpack(const uint8_t* data,
++                                     unsigned int size,
++                                     unsigned int* offset,
++                                     uint8_t* frame)
++{
++  unsigned int pos = *offset & ~1u;
++
++  for (; pos + IEC61937_DATA_OFFSET <= size; pos += 2)
++  {
++    uint16_t header[IEC61937_DATA_OFFSET / 2];
++    memcpy(header, data + pos, sizeof(header));
++    if (header[0] != IEC61937_PREAMBLE1 || header[1] != IEC61937_PREAMBLE2)
++      continue;
++
++    unsigned int length;
++    switch (header[2] & 0x1f)
++    {
++      case IEC61937_TYPE_AC3:
++      case IEC61937_TYPE_DTS1:
++      case IEC61937_TYPE_DTS2:
++      case IEC61937_TYPE_DTS3:
++        length = header[3] >> 3;
++        break;
++      case IEC61937_TYPE_EAC3:
++        length = header[3];
++        break;
++      default:
++        pos += IEC61937_DATA_OFFSET - 2;
++        continue;
++    }
++
++    const unsigned int stored = length + (length & 0x1);
++    if (stored > MAX_IEC61937_PACKET - IEC61937_DATA_OFFSET)
++    {
++      pos += IEC61937_DATA_OFFSET - 2;
++      continue;
++    }
++
++    if (pos + IEC61937_DATA_OFFSET + stored > size)
++      break;
++
++#ifdef __BIG_ENDIAN__
++    memcpy(frame, data + pos + IEC61937_DATA_OFFSET, stored);
++#else
++    for (unsigned int i = 0; i < stored; i += 2)
++    {
++      frame[i] = data[pos + IEC61937_DATA_OFFSET + i + 1];
++      frame[i + 1] = data[pos + IEC61937_DATA_OFFSET + i];
++    }
++#endif
++
++    *offset = pos + IEC61937_DATA_OFFSET + stored;
++    return length;
++  }
++
++  *offset = pos;
++  return 0;
++}
+--- a/xbmc/cores/AudioEngine/Utils/AEPackIEC61937.h
++++ b/xbmc/cores/AudioEngine/Utils/AEPackIEC61937.h
+@@ -39,6 +39,19 @@ public:
+   static int PackTrueHD(const uint8_t* data, unsigned int size, uint8_t* dest);
+   static int PackDTSHD(uint8_t* data, unsigned int size, uint8_t* dest, unsigned int period);
+   static int PackPause(uint8_t *dest, unsigned int millis, unsigned int framesize, unsigned int samplerate, unsigned int rep_period, unsigned int encodedRate);
++
++  /*!
++   * \brief Copies the AC3, E-AC3 or DTS frame out of the first complete burst at or after
++   * *offset in a stream of bursts as the Pack functions write them
++   * \param frame receives the frame, room for MAX_IEC61937_PACKET bytes
++   * \return the frame size, 0 while no complete burst is there; *offset moves past the
++   * burst, or to where an incomplete one starts
++   */
++  static unsigned int Unpack(const uint8_t* data,
++                             unsigned int size,
++                             unsigned int* offset,
++                             uint8_t* frame);
++
+ private:
+ 
+   static int PackDTS(uint8_t *data, unsigned int size, uint8_t *dest, bool littleEndian,
+--- a/xbmc/dialogs/GUIDialogKeyboardGeneric.cpp
++++ b/xbmc/dialogs/GUIDialogKeyboardGeneric.cpp
+@@ -123,9 +123,14 @@ private:
+ };
+ 
+ CGUIDialogKeyboardGeneric::CGUIDialogKeyboardGeneric()
+-: CGUIDialog(WINDOW_DIALOG_KEYBOARD, "DialogKeyboard.xml")
+-, CGUIKeyboard()
+-, m_pCharCallback(NULL)
++  : CGUIDialogKeyboardGeneric(WINDOW_DIALOG_KEYBOARD, "DialogKeyboard.xml")
++{
++}
++
++CGUIDialogKeyboardGeneric::CGUIDialogKeyboardGeneric(int id, const std::string& xmlFile)
++  : CGUIDialog(id, xmlFile),
++    CGUIKeyboard(),
++    m_pCharCallback(NULL)
+ {
+   m_bIsConfirmed = false;
+   m_bShift = false;
+@@ -704,7 +709,8 @@ void CGUIDialogKeyboardGeneric::Cancel()
+ 
+ bool CGUIDialogKeyboardGeneric::ShowAndGetInput(char_callback_t pCallback, const std::string &initialString, std::string &typedString, const std::string &heading, bool bHiddenInput)
+ {
+-  CGUIDialogKeyboardGeneric *pKeyboard = CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogKeyboardGeneric>(WINDOW_DIALOG_KEYBOARD);
++  CGUIDialogKeyboardGeneric* pKeyboard =
++      CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogKeyboardGeneric>(GetID());
+ 
+   if (!pKeyboard)
+     return false;
+--- a/xbmc/dialogs/GUIDialogKeyboardGeneric.h
++++ b/xbmc/dialogs/GUIDialogKeyboardGeneric.h
+@@ -45,6 +45,8 @@ class CGUIDialogKeyboardGeneric : public
+     bool IsInputHidden() const { return m_hiddenInput; }
+ 
+   protected:
++    CGUIDialogKeyboardGeneric(int id, const std::string& xmlFile);
++
+     void OnWindowLoaded() override;
+     void OnInitWindow() override;
+     bool OnAction(const CAction &action) override;
+--- a/xbmc/input/InputManager.cpp
++++ b/xbmc/input/InputManager.cpp
+@@ -25,6 +25,7 @@
+ #include "input/keyboard/KeyboardEasterEgg.h"
+ #include "input/keyboard/XBMC_vkeys.h"
+ #include "input/keyboard/interfaces/IKeyboardDriverHandler.h"
++#include "input/keyboard/interfaces/IKeyboardEventHandler.h"
+ #include "input/keymaps/ButtonTranslator.h"
+ #include "input/keymaps/KeymapEnvironment.h"
+ #include "input/keymaps/joysticks/JoystickMapper.h"
+@@ -370,6 +371,30 @@ bool CInputManager::Process(int windowId
+   return true;
+ }
+ 
++void CInputManager::RegisterKeyboardEventHandler(KEYBOARD::IKeyboardEventHandler* handler)
++{
++  if (handler == nullptr)
++    return;
++
++  if (std::ranges::find(m_keyboardEventHandlers, handler) == m_keyboardEventHandlers.end())
++    m_keyboardEventHandlers.insert(m_keyboardEventHandlers.begin(), handler);
++}
++
++void CInputManager::UnregisterKeyboardEventHandler(KEYBOARD::IKeyboardEventHandler* handler)
++{
++  std::erase(m_keyboardEventHandlers, handler);
++}
++
++bool CInputManager::OnKeyboardEvent(const XBMC_keysym& keysym, const CKey& key, bool pressed)
++{
++  for (auto* handler : m_keyboardEventHandlers)
++  {
++    if (handler->OnKeyboardEvent(keysym, key, pressed))
++      return true;
++  }
++  return false;
++}
++
+ bool CInputManager::OnEvent(XBMC_Event& newEvent)
+ {
+   switch (newEvent.type)
+@@ -378,13 +403,20 @@ bool CInputManager::OnEvent(XBMC_Event&
+     {
+       m_Keyboard.ProcessKeyDown(newEvent.key.keysym);
+       CKey key = m_Keyboard.TranslateKey(newEvent.key.keysym);
++      if (OnKeyboardEvent(newEvent.key.keysym, key, true))
++        break;
+       OnKey(key);
+       break;
+     }
+     case XBMC_KEYUP:
++    {
+       m_Keyboard.ProcessKeyUp();
+-      OnKeyUp(m_Keyboard.TranslateKey(newEvent.key.keysym));
++      CKey key = m_Keyboard.TranslateKey(newEvent.key.keysym);
++      if (OnKeyboardEvent(newEvent.key.keysym, key, false))
++        break;
++      OnKeyUp(key);
+       break;
++    }
+     case XBMC_KEYCOMPOSING_COMPOSING:
+     case XBMC_KEYCOMPOSING_CANCELLED:
+     case XBMC_KEYCOMPOSING_FINISHED:
+--- a/xbmc/input/InputManager.h
++++ b/xbmc/input/InputManager.h
+@@ -37,6 +37,7 @@ class ICecInputProvider;
+ namespace KEYBOARD
+ {
+ class IKeyboardDriverHandler;
++class IKeyboardEventHandler;
+ }
+ 
+ namespace KEYMAP
+@@ -239,6 +240,9 @@ public:
+   void RegisterKeyboardDriverHandler(KODI::KEYBOARD::IKeyboardDriverHandler* handler);
+   void UnregisterKeyboardDriverHandler(KODI::KEYBOARD::IKeyboardDriverHandler* handler);
+ 
++  void RegisterKeyboardEventHandler(KODI::KEYBOARD::IKeyboardEventHandler* handler);
++  void UnregisterKeyboardEventHandler(KODI::KEYBOARD::IKeyboardEventHandler* handler);
++
+   virtual void RegisterMouseDriverHandler(KODI::MOUSE::IMouseDriverHandler* handler);
+   virtual void UnregisterMouseDriverHandler(KODI::MOUSE::IMouseDriverHandler* handler);
+ 
+@@ -248,6 +252,12 @@ public:
+ private:
+   friend class TestInputManager;
+ 
++  /*! \brief Offer a keyboard event to the registered event handlers
++   *
++   * \return True if a handler consumed the event
++   */
++  bool OnKeyboardEvent(const XBMC_keysym& keysym, const CKey& key, bool pressed);
++
+   /*! \brief Process keyboard event and translate into an action
+    *
+    * \param key keypress details
+@@ -319,6 +329,7 @@ private:
+   std::unique_ptr<KODI::KEYMAP::CJoystickMapper> m_joystickTranslator;
+ 
+   std::vector<KODI::KEYBOARD::IKeyboardDriverHandler*> m_keyboardHandlers;
++  std::vector<KODI::KEYBOARD::IKeyboardEventHandler*> m_keyboardEventHandlers;
+   std::vector<KODI::MOUSE::IMouseDriverHandler*> m_mouseHandlers;
+   std::vector<KODI::CEC::ICecInputProvider*> m_cecInputProviders;
+ 
+--- a/xbmc/input/keyboard/interfaces/CMakeLists.txt
++++ b/xbmc/input/keyboard/interfaces/CMakeLists.txt
+@@ -1,4 +1,5 @@
+ set(HEADERS IKeyboardDriverHandler.h
++            IKeyboardEventHandler.h
+             IKeyboardInputHandler.h
+             IKeyboardInputProvider.h
+ )
+--- /dev/null
++++ b/xbmc/input/keyboard/interfaces/IKeyboardEventHandler.h
+@@ -0,0 +1,45 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++class CKey;
++struct XBMC_keysym;
++
++namespace KODI
++{
++namespace KEYBOARD
++{
++
++/*!
++ * \ingroup keyboard
++ *
++ * \brief Interface for handling keyboard events before Kodi acts on them
++ *
++ * The event still carries the driver's scan code, which is what a handler
++ * that forwards keys to another process needs.
++ */
++class IKeyboardEventHandler
++{
++public:
++  virtual ~IKeyboardEventHandler() = default;
++
++  /*!
++   * \brief A key was pressed or released
++   *
++   * \param keysym The event as delivered by the windowing system
++   * \param key The key as Kodi's keymaps see it
++   * \param pressed True on press, false on release
++   *
++   * \return True if the event was handled and Kodi must not act on it
++   */
++  virtual bool OnKeyboardEvent(const XBMC_keysym& keysym, const CKey& key, bool pressed) = 0;
++};
++
++} // namespace KEYBOARD
++} // namespace KODI
+--- a/xbmc/platform/linux/input/LibInputHandler.cpp
++++ b/xbmc/platform/linux/input/LibInputHandler.cpp
+@@ -27,7 +27,7 @@
+ #include <sys/ioctl.h>
+ #include <unistd.h>
+ 
+-static int open_restricted(const char *path, int flags, void __attribute__((unused)) *user_data)
++static int open_restricted(const char* path, int flags, void __attribute__((unused)) * user_data)
+ {
+   int fd = open(path, flags);
+ 
+@@ -47,18 +47,20 @@ static int open_restricted(const char *p
+   return fd;
+ }
+ 
+-static void close_restricted(int fd, void  __attribute__((unused)) *user_data)
++static void close_restricted(int fd, void __attribute__((unused)) * user_data)
+ {
+   close(fd);
+ }
+ 
+-static const struct libinput_interface m_interface =
+-{
+-  open_restricted,
+-  close_restricted,
++static const struct libinput_interface m_interface = {
++    open_restricted,
++    close_restricted,
+ };
+ 
+-static void LogHandler(libinput  __attribute__((unused)) *libinput, libinput_log_priority priority, const char *format, va_list args)
++static void LogHandler(libinput __attribute__((unused)) * libinput,
++                       libinput_log_priority priority,
++                       const char* format,
++                       va_list args)
+ {
+   if (priority == LIBINPUT_LOG_PRIORITY_DEBUG)
+   {
+@@ -181,7 +183,7 @@ void CLibInputHandler::Process()
+       return;
+     }
+ 
+-    libinput_event *ev;
++    libinput_event* ev;
+     while ((ev = libinput_get_event(m_li)) != nullptr)
+     {
+       ProcessEvent(ev);
+@@ -198,10 +200,10 @@ void CLibInputHandler::Process()
+   }
+ }
+ 
+-void CLibInputHandler::ProcessEvent(libinput_event *ev)
++void CLibInputHandler::ProcessEvent(libinput_event* ev)
+ {
+   libinput_event_type type = libinput_event_get_type(ev);
+-  libinput_device *dev = libinput_event_get_device(ev);
++  libinput_device* dev = libinput_event_get_device(ev);
+ 
+   switch (type)
+   {
+@@ -248,10 +250,32 @@ void CLibInputHandler::ProcessEvent(libi
+   }
+ }
+ 
+-void CLibInputHandler::DeviceAdded(libinput_device *dev)
++namespace
++{
++
++// udev calls a device a keyboard when it has the letter keys; a remote
++// control reports the keyboard capability without them
++bool HasLetterKeys(libinput_device* dev)
++{
++  for (uint32_t key = KEY_Q; key <= KEY_P; ++key)
++  {
++    if (!libinput_device_keyboard_has_key(dev, key))
++      return false;
++  }
++  for (uint32_t key = KEY_A; key <= KEY_L; ++key)
++  {
++    if (!libinput_device_keyboard_has_key(dev, key))
++      return false;
++  }
++  return true;
++}
++
++} // unnamed namespace
++
++void CLibInputHandler::DeviceAdded(libinput_device* dev)
+ {
+-  const char *sysname = libinput_device_get_sysname(dev);
+-  const char *name = libinput_device_get_name(dev);
++  const char* sysname = libinput_device_get_sysname(dev);
++  const char* name = libinput_device_get_name(dev);
+ 
+   if (libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_TOUCH))
+   {
+@@ -273,13 +297,15 @@ void CLibInputHandler::DeviceAdded(libin
+               name, sysname);
+     m_devices.push_back(libinput_device_ref(dev));
+     m_keyboard->GetRepeat(dev);
++    if (HasLetterKeys(dev))
++      ++m_keyboards;
+   }
+ }
+ 
+-void CLibInputHandler::DeviceRemoved(libinput_device *dev)
++void CLibInputHandler::DeviceRemoved(libinput_device* dev)
+ {
+-  const char *sysname = libinput_device_get_sysname(dev);
+-  const char *name = libinput_device_get_name(dev);
++  const char* sysname = libinput_device_get_sysname(dev);
++  const char* name = libinput_device_get_name(dev);
+ 
+   if (libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_TOUCH))
+   {
+@@ -301,6 +327,8 @@ void CLibInputHandler::DeviceRemoved(lib
+   {
+     CLog::Log(LOGDEBUG, "CLibInputHandler::{} - keyboard type device removed: {} ({})",
+               __FUNCTION__, name, sysname);
++    if (HasLetterKeys(dev))
++      --m_keyboards;
+     auto device = std::ranges::find(m_devices, libinput_device_unref(dev));
+     m_devices.erase(device);
+   }
+--- a/xbmc/platform/linux/input/LibInputHandler.h
++++ b/xbmc/platform/linux/input/LibInputHandler.h
+@@ -11,6 +11,7 @@
+ #include "interfaces/IAnnouncer.h"
+ #include "threads/Thread.h"
+ 
++#include <atomic>
+ #include <memory>
+ #include <vector>
+ 
+@@ -37,14 +38,20 @@ public:
+ 
+   bool SetKeymap(const std::string& layout);
+ 
++  /*!
++   * \brief Whether a keyboard with letter keys is attached, as opposed
++   * to a remote or a media key device; any thread
++   */
++  bool HasKeyboard() const { return m_keyboards.load() > 0; }
++
+ private:
+   void Process() override;
+-  void ProcessEvent(libinput_event *ev);
+-  void DeviceAdded(libinput_device *dev);
+-  void DeviceRemoved(libinput_device *dev);
++  void ProcessEvent(libinput_event* ev);
++  void DeviceAdded(libinput_device* dev);
++  void DeviceRemoved(libinput_device* dev);
+ 
+-  udev *m_udev;
+-  libinput *m_li;
++  udev* m_udev;
++  libinput* m_li;
+   int m_liFd;
+ 
+   std::unique_ptr<CLibInputKeyboard> m_keyboard;
+@@ -52,5 +59,5 @@ private:
+   std::unique_ptr<CLibInputSettings> m_settings;
+   std::unique_ptr<CLibInputTouch> m_touch;
+   std::vector<libinput_device*> m_devices;
++  std::atomic<int> m_keyboards{0};
+ };
+-
+--- a/xbmc/windowing/gbm/WinSystemGbm.cpp
++++ b/xbmc/windowing/gbm/WinSystemGbm.cpp
+@@ -342,6 +342,11 @@ bool CWinSystemGbm::UseLimitedColor()
+       CSettings::SETTING_VIDEOSCREEN_LIMITEDRANGE);
+ }
+ 
++bool CWinSystemGbm::HasKeyboard() const
++{
++  return m_libinput && m_libinput->HasKeyboard();
++}
++
+ bool CWinSystemGbm::Hide()
+ {
+   bool ret = m_DRM->SetActive(false);
+--- a/xbmc/windowing/gbm/WinSystemGbm.h
++++ b/xbmc/windowing/gbm/WinSystemGbm.h
+@@ -57,6 +57,7 @@ public:
+   bool UseLimitedColor() override;
+ 
+   bool Hide() override;
++  bool HasKeyboard() const;
+   bool Show(bool raise = true) override;
+   void Register(IDispResource* resource) override;
+   void Unregister(IDispResource* resource) override;

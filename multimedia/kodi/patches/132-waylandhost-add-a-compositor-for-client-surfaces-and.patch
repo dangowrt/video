@@ -1,0 +1,3661 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 3 Nov 2026 17:06:40 +0000
+Subject: [PATCH] waylandhost: add a compositor for client surfaces and
+ kodi_web_v1
+
+CWaylandHost is a Wayland compositor without a screen of its own. It
+spawns its clients with an inherited socket and serves wl_compositor,
+xdg_wm_base, linux-dmabuf, wp_presentation, a seat that forwards Kodi's
+input, and text-input-v3 so that Kodi's keyboard can type into a client.
+Committed client buffers are handed to an observer, which shows them
+through Kodi's renderers, and the observer learns when a surface goes
+away. When the host stops, its clients get SIGTERM and their exit is
+awaited; a client still running 90 s later, for instance one blocked on
+a stale network mount, is killed. A client that cannot be started, or
+whose exit cannot be watched, is reported as ended. Clients learn the
+screen's mode, and when the display is reset for a new mode every output
+gets the new mode and every surface a configure for the new size.
+
+The host also serves kodi_web_v1, a protocol through which Kodi drives a
+web browser it hosts: the browser creates one view per profile, a
+hermetic set of cookies and storage, only when Kodi asks for it. Kodi
+configures each view with a user agent, the viewport its pages are
+written for, user scripts and content filters before it loads a URL,
+navigates it, learns its URL, title, load progress, errors, media state
+and requests to leave, and closes it when done. Content filters use the
+Adblock Plus filter syntax, so that one maintained list serves any
+engine. The browser reports when it has prepared a shared list, and a
+view loads no page before the lists it was given are prepared.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../optional/common/waylandserver.txt         |    1 +
+ .../platform/linux/waylandhost/CMakeLists.txt |   34 +
+ .../linux/waylandhost/WaylandBuffer.cpp       |   64 +
+ .../linux/waylandhost/WaylandBuffer.h         |   96 +
+ .../linux/waylandhost/WaylandHost.cpp         | 2218 +++++++++++++++++
+ xbmc/platform/linux/waylandhost/WaylandHost.h |  401 +++
+ .../linux/waylandhost/WaylandSurface.cpp      |  245 ++
+ .../linux/waylandhost/WaylandSurface.h        |  101 +
+ .../waylandhost/protocol/kodi-web-v1.xml      |  422 ++++
+ 9 files changed, 3582 insertions(+)
+ create mode 100644 cmake/treedata/optional/common/waylandserver.txt
+ create mode 100644 xbmc/platform/linux/waylandhost/CMakeLists.txt
+ create mode 100644 xbmc/platform/linux/waylandhost/WaylandBuffer.cpp
+ create mode 100644 xbmc/platform/linux/waylandhost/WaylandBuffer.h
+ create mode 100644 xbmc/platform/linux/waylandhost/WaylandHost.cpp
+ create mode 100644 xbmc/platform/linux/waylandhost/WaylandHost.h
+ create mode 100644 xbmc/platform/linux/waylandhost/WaylandSurface.cpp
+ create mode 100644 xbmc/platform/linux/waylandhost/WaylandSurface.h
+ create mode 100644 xbmc/platform/linux/waylandhost/protocol/kodi-web-v1.xml
+
+--- /dev/null
++++ b/cmake/treedata/optional/common/waylandserver.txt
+@@ -0,0 +1 @@
++xbmc/platform/linux/waylandhost platform/linux/waylandhost # WAYLANDSERVER
+--- /dev/null
++++ b/xbmc/platform/linux/waylandhost/CMakeLists.txt
+@@ -0,0 +1,34 @@
++if(TARGET ${APP_NAME_LC}::WaylandServer)
++  set(PROTOCOLS ${WAYLAND_SERVER_PROTOCOLS}
++                kodi-web-v1:${CMAKE_CURRENT_SOURCE_DIR}/protocol/kodi-web-v1.xml)
++
++  set(SOURCES WaylandBuffer.cpp
++              WaylandHost.cpp
++              WaylandSurface.cpp)
++
++  set(HEADERS WaylandBuffer.h
++              WaylandHost.h
++              WaylandSurface.h)
++
++  foreach(protocol ${PROTOCOLS})
++    string(REPLACE ":" ";" protocol ${protocol})
++    list(GET protocol 0 name)
++    list(GET protocol 1 xml)
++    set(header ${CMAKE_CURRENT_BINARY_DIR}/${name}-server-protocol.h)
++    set(code ${CMAKE_CURRENT_BINARY_DIR}/${name}-protocol.c)
++    add_custom_command(OUTPUT ${header}
++                       COMMAND ${WAYLAND_SCANNER_EXECUTABLE} server-header ${xml} ${header}
++                       DEPENDS ${xml}
++                       COMMENT "Generating ${name} server header")
++    add_custom_command(OUTPUT ${code}
++                       COMMAND ${WAYLAND_SCANNER_EXECUTABLE} private-code ${xml} ${code}
++                       DEPENDS ${xml} ${header}
++                       COMMENT "Generating ${name} protocol code")
++    list(APPEND SOURCES ${code})
++    list(APPEND HEADERS ${header})
++  endforeach()
++
++  include_directories(${CMAKE_CURRENT_BINARY_DIR})
++
++  core_add_library(platform_linux_waylandhost)
++endif()
+--- /dev/null
++++ b/xbmc/platform/linux/waylandhost/WaylandBuffer.cpp
+@@ -0,0 +1,64 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "WaylandBuffer.h"
++
++#include "WaylandHost.h"
++
++#include <unistd.h>
++#include <wayland-server-core.h>
++#include <wayland-server-protocol.h>
++
++using namespace KODI::WAYLANDHOST;
++
++CWaylandBuffer::CWaylandBuffer(CWaylandHost& host,
++                               uint32_t width,
++                               uint32_t height,
++                               uint32_t format,
++                               uint64_t modifier,
++                               const std::array<DmaBufPlane, MAX_PLANES>& planes,
++                               unsigned int planeCount)
++  : m_host(host),
++    m_width(width),
++    m_height(height),
++    m_format(format),
++    m_modifier(modifier),
++    m_planes(planes),
++    m_planeCount(planeCount)
++{
++}
++
++CWaylandBuffer::~CWaylandBuffer()
++{
++  for (unsigned int i = 0; i < m_planeCount; ++i)
++  {
++    if (m_planes[i].fd >= 0)
++      close(m_planes[i].fd);
++  }
++}
++
++void CWaylandBuffer::Lock()
++{
++  ++m_locks;
++}
++
++void CWaylandBuffer::Unlock()
++{
++  if (--m_locks > 0)
++    return;
++
++  m_host.Post([buffer = shared_from_this()]() { buffer->SendRelease(); });
++}
++
++void CWaylandBuffer::SendRelease()
++{
++  if (m_current || IsLocked() || !m_resource)
++    return;
++
++  wl_buffer_send_release(m_resource);
++}
+--- /dev/null
++++ b/xbmc/platform/linux/waylandhost/WaylandBuffer.h
+@@ -0,0 +1,96 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include <array>
++#include <atomic>
++#include <cstdint>
++#include <memory>
++
++struct wl_resource;
++
++namespace KODI
++{
++namespace WAYLANDHOST
++{
++
++class CWaylandHost;
++
++struct DmaBufPlane
++{
++  int fd{-1};
++  uint32_t offset{0};
++  uint32_t stride{0};
++};
++
++/*!
++ * \brief A dmabuf-backed wl_buffer a client attached to one of its surfaces.
++ *
++ * The host keeps the planes' file descriptors open for as long as the object
++ * lives, so a consumer may hold the buffer after the client destroyed the
++ * wl_buffer. wl_buffer.release is sent once the surface no longer shows the
++ * buffer and no consumer holds a lock on it.
++ */
++class CWaylandBuffer : public std::enable_shared_from_this<CWaylandBuffer>
++{
++public:
++  static constexpr unsigned int MAX_PLANES = 4;
++
++  CWaylandBuffer(CWaylandHost& host,
++                 uint32_t width,
++                 uint32_t height,
++                 uint32_t format,
++                 uint64_t modifier,
++                 const std::array<DmaBufPlane, MAX_PLANES>& planes,
++                 unsigned int planeCount);
++  ~CWaylandBuffer();
++
++  CWaylandBuffer(const CWaylandBuffer&) = delete;
++  CWaylandBuffer& operator=(const CWaylandBuffer&) = delete;
++
++  uint32_t GetWidth() const { return m_width; }
++  uint32_t GetHeight() const { return m_height; }
++  uint32_t GetFormat() const { return m_format; }
++  uint64_t GetModifier() const { return m_modifier; }
++  unsigned int GetPlaneCount() const { return m_planeCount; }
++  const DmaBufPlane& GetPlane(unsigned int index) const { return m_planes[index]; }
++
++  /*!
++   * \brief Keep the buffer from being released to the client; any thread
++   */
++  void Lock();
++
++  /*!
++   * \brief Drop a lock taken with Lock(); any thread
++   */
++  void Unlock();
++
++  // host thread only
++  void SetResource(wl_resource* resource) { m_resource = resource; }
++  wl_resource* GetResource() const { return m_resource; }
++  void SetCurrent(bool current) { m_current = current; }
++  bool IsCurrent() const { return m_current; }
++  bool IsLocked() const { return m_locks.load() > 0; }
++  void SendRelease();
++
++private:
++  CWaylandHost& m_host;
++  const uint32_t m_width;
++  const uint32_t m_height;
++  const uint32_t m_format;
++  const uint64_t m_modifier;
++  std::array<DmaBufPlane, MAX_PLANES> m_planes;
++  const unsigned int m_planeCount;
++  wl_resource* m_resource{nullptr};
++  bool m_current{false};
++  std::atomic<int> m_locks{0};
++};
++
++} // namespace WAYLANDHOST
++} // namespace KODI
+--- /dev/null
++++ b/xbmc/platform/linux/waylandhost/WaylandHost.cpp
+@@ -0,0 +1,2218 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "WaylandHost.h"
++
++#include "WaylandBuffer.h"
++#include "WaylandSurface.h"
++#include "utils/log.h"
++
++#include <algorithm>
++#include <cerrno>
++#include <chrono>
++#include <cstring>
++#include <mutex>
++#include <signal.h>
++
++#include <drm_fourcc.h>
++#include <fcntl.h>
++#include <kodi-web-v1-server-protocol.h>
++#include <linux-dmabuf-v1-server-protocol.h>
++#include <poll.h>
++#include <presentation-time-server-protocol.h>
++#include <sys/eventfd.h>
++#include <sys/mman.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <sys/wait.h>
++#include <text-input-unstable-v3-server-protocol.h>
++#include <unistd.h>
++#include <wayland-server-core.h>
++#include <wayland-server-protocol.h>
++#include <xdg-shell-server-protocol.h>
++#include <xkbcommon/xkbcommon.h>
++
++extern char** environ;
++
++using namespace KODI::WAYLANDHOST;
++
++namespace
++{
++
++constexpr uint32_t COMPOSITOR_VERSION = 5;
++constexpr uint32_t OUTPUT_VERSION = 2;
++constexpr uint32_t SEAT_VERSION = 7;
++constexpr uint32_t XDG_WM_BASE_VERSION = 1;
++constexpr uint32_t LINUX_DMABUF_VERSION = 4;
++constexpr uint32_t PRESENTATION_VERSION = 1;
++constexpr uint32_t TEXT_INPUT_VERSION = 1;
++constexpr uint32_t WEB_MANAGER_VERSION = 1;
++// kodi_web_manager_v1: a profile identifier is 1 to 255 bytes
++constexpr size_t WEB_PROFILE_MAX = 255;
++// a client blocked in teardown, e.g. on a stale network mount, is killed after this
++constexpr std::chrono::seconds CLIENT_EXIT_TIMEOUT{90};
++
++// evdev key codes map to xkb key codes with this offset (xkbcommon convention)
++constexpr uint32_t XKB_KEYCODE_OFFSET = 8;
++
++// one wheel click is 120 in axis_value120 units and 15 on the wl_pointer axis
++// (the libinput convention every compositor follows)
++constexpr int32_t AXIS_UNITS_PER_VALUE120 = 8;
++
++constexpr uint32_t DMABUF_FORMATS[] = {DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888,
++                                       DRM_FORMAT_ABGR8888, DRM_FORMAT_XBGR8888};
++
++struct FormatTableEntry
++{
++  uint32_t format;
++  uint32_t padding;
++  uint64_t modifier;
++};
++
++timespec Now()
++{
++  timespec now{};
++  clock_gettime(CLOCK_MONOTONIC, &now);
++  return now;
++}
++
++uint32_t Milliseconds(const timespec& now)
++{
++  return static_cast<uint32_t>(now.tv_sec * 1000 + now.tv_nsec / 1000000);
++}
++
++CWaylandHost& HostOf(wl_resource* resource)
++{
++  return *static_cast<CWaylandHost*>(wl_resource_get_user_data(resource));
++}
++
++CWaylandSurface* SurfaceOf(wl_resource* resource)
++{
++  return static_cast<CWaylandSurface*>(wl_resource_get_user_data(resource));
++}
++
++void DestroyResource(wl_client*, wl_resource* resource)
++{
++  wl_resource_destroy(resource);
++}
++
++void Ignore(wl_client*, wl_resource*)
++{
++}
++
++void Ignore(wl_client*, wl_resource*, uint32_t)
++{
++}
++
++void Ignore(wl_client*, wl_resource*, int32_t)
++{
++}
++
++void Ignore(wl_client*, wl_resource*, int32_t, int32_t)
++{
++}
++
++void Ignore(wl_client*, wl_resource*, wl_resource*)
++{
++}
++
++void Ignore(wl_client*, wl_resource*, const char*)
++{
++}
++
++void Ignore(wl_client*, wl_resource*, int32_t, int32_t, int32_t, int32_t)
++{
++}
++
++void Ignore(wl_client*, wl_resource*, wl_resource*, uint32_t)
++{
++}
++
++void Ignore(wl_client*, wl_resource*, wl_resource*, uint32_t, uint32_t)
++{
++}
++
++void Ignore(wl_client*, wl_resource*, wl_resource*, uint32_t, int32_t, int32_t)
++{
++}
++
++void Ignore(wl_client*, wl_resource*, uint32_t, wl_resource*, int32_t, int32_t)
++{
++}
++
++// wl_surface
++
++void SurfaceAttach(wl_client*, wl_resource* resource, wl_resource* buffer, int32_t, int32_t)
++{
++  if (auto* surface = SurfaceOf(resource))
++    surface->Attach(buffer);
++}
++
++void SurfaceFrame(wl_client* client, wl_resource* resource, uint32_t id)
++{
++  wl_resource* callback = wl_resource_create(client, &wl_callback_interface, 1, id);
++  if (!callback)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  if (auto* surface = SurfaceOf(resource))
++    surface->Frame(callback);
++  else
++    wl_resource_destroy(callback);
++}
++
++void SurfaceCommit(wl_client*, wl_resource* resource)
++{
++  if (auto* surface = SurfaceOf(resource))
++    surface->Commit();
++}
++
++// filled by name: newer protocol headers add requests above the version advertised
++constexpr struct wl_surface_interface SURFACE_IMPL = []
++{
++  struct wl_surface_interface impl = {};
++  impl.destroy = DestroyResource;
++  impl.attach = SurfaceAttach;
++  impl.damage = Ignore;
++  impl.frame = SurfaceFrame;
++  impl.set_opaque_region = Ignore;
++  impl.set_input_region = Ignore;
++  impl.commit = SurfaceCommit;
++  impl.set_buffer_transform = Ignore;
++  impl.set_buffer_scale = Ignore;
++  impl.damage_buffer = Ignore;
++  impl.offset = Ignore;
++  return impl;
++}();
++
++void SurfaceResourceDestroyed(wl_resource* resource)
++{
++  auto* surface = SurfaceOf(resource);
++  if (!surface)
++    return;
++
++  surface->OnResourceDestroyed();
++  delete surface;
++}
++
++const struct wl_region_interface REGION_IMPL = {
++    DestroyResource,
++    Ignore,
++    Ignore,
++};
++
++// wl_compositor
++
++void CompositorCreateSurface(wl_client* client, wl_resource* resource, uint32_t id)
++{
++  wl_resource* surfaceResource =
++      wl_resource_create(client, &wl_surface_interface, wl_resource_get_version(resource), id);
++  if (!surfaceResource)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  auto* surface = new CWaylandSurface(HostOf(resource), surfaceResource);
++  wl_resource_set_implementation(surfaceResource, &SURFACE_IMPL, surface, SurfaceResourceDestroyed);
++}
++
++void CompositorCreateRegion(wl_client* client, wl_resource* resource, uint32_t id)
++{
++  wl_resource* region =
++      wl_resource_create(client, &wl_region_interface, wl_resource_get_version(resource), id);
++  if (!region)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  wl_resource_set_implementation(region, &REGION_IMPL, nullptr, nullptr);
++}
++
++constexpr struct wl_compositor_interface COMPOSITOR_IMPL = []
++{
++  struct wl_compositor_interface impl = {};
++  impl.create_surface = CompositorCreateSurface;
++  impl.create_region = CompositorCreateRegion;
++  return impl;
++}();
++
++// xdg_wm_base
++
++const struct xdg_positioner_interface POSITIONER_IMPL = {
++    DestroyResource, Ignore, Ignore, Ignore, Ignore, Ignore, Ignore, Ignore, Ignore, Ignore,
++};
++
++void ToplevelSetTitle(wl_client*, wl_resource* resource, const char* title)
++{
++  if (auto* surface = SurfaceOf(resource))
++    surface->SetTitle(title ? title : "");
++}
++
++const struct xdg_toplevel_interface TOPLEVEL_IMPL = {
++    DestroyResource, Ignore, ToplevelSetTitle, Ignore, Ignore, Ignore, Ignore,
++    Ignore,          Ignore, Ignore,           Ignore, Ignore, Ignore, Ignore,
++};
++
++void ToplevelResourceDestroyed(wl_resource* resource)
++{
++  if (auto* surface = SurfaceOf(resource))
++    surface->SetXdgToplevel(nullptr);
++}
++
++void XdgSurfaceGetToplevel(wl_client* client, wl_resource* resource, uint32_t id)
++{
++  auto* surface = SurfaceOf(resource);
++  wl_resource* toplevel =
++      wl_resource_create(client, &xdg_toplevel_interface, wl_resource_get_version(resource), id);
++  if (!toplevel)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  wl_resource_set_implementation(toplevel, &TOPLEVEL_IMPL, surface, ToplevelResourceDestroyed);
++  if (surface)
++    surface->SetXdgToplevel(toplevel);
++}
++
++void XdgSurfaceGetPopup(wl_client*, wl_resource* resource, uint32_t, wl_resource*, wl_resource*)
++{
++  wl_resource_post_error(resource, XDG_WM_BASE_ERROR_ROLE, "popups are not supported");
++}
++
++void XdgSurfaceAckConfigure(wl_client*, wl_resource* resource, uint32_t serial)
++{
++  if (auto* surface = SurfaceOf(resource))
++    surface->AckConfigure(serial);
++}
++
++const struct xdg_surface_interface XDG_SURFACE_IMPL = {
++    DestroyResource, XdgSurfaceGetToplevel, XdgSurfaceGetPopup, Ignore, XdgSurfaceAckConfigure,
++};
++
++void XdgSurfaceResourceDestroyed(wl_resource* resource)
++{
++  if (auto* surface = SurfaceOf(resource))
++    surface->SetXdgSurface(nullptr);
++}
++
++void WmBaseCreatePositioner(wl_client* client, wl_resource* resource, uint32_t id)
++{
++  wl_resource* positioner =
++      wl_resource_create(client, &xdg_positioner_interface, wl_resource_get_version(resource), id);
++  if (!positioner)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  wl_resource_set_implementation(positioner, &POSITIONER_IMPL, nullptr, nullptr);
++}
++
++void WmBaseGetXdgSurface(wl_client* client,
++                         wl_resource* resource,
++                         uint32_t id,
++                         wl_resource* surfaceResource)
++{
++  auto* surface = SurfaceOf(surfaceResource);
++  wl_resource* xdgSurface =
++      wl_resource_create(client, &xdg_surface_interface, wl_resource_get_version(resource), id);
++  if (!xdgSurface)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  wl_resource_set_implementation(xdgSurface, &XDG_SURFACE_IMPL, surface,
++                                 XdgSurfaceResourceDestroyed);
++  if (surface)
++    surface->SetXdgSurface(xdgSurface);
++}
++
++const struct xdg_wm_base_interface WM_BASE_IMPL = {
++    DestroyResource,
++    WmBaseCreatePositioner,
++    WmBaseGetXdgSurface,
++    Ignore,
++};
++
++// zwp_linux_dmabuf_v1
++
++struct BufferParams
++{
++  CWaylandHost* host{nullptr};
++  std::array<DmaBufPlane, CWaylandBuffer::MAX_PLANES> planes;
++  uint64_t modifier{DRM_FORMAT_MOD_INVALID};
++  unsigned int planeCount{0};
++  bool used{false};
++};
++
++void BufferResourceDestroyed(wl_resource* resource)
++{
++  auto* holder = static_cast<std::shared_ptr<CWaylandBuffer>*>(wl_resource_get_user_data(resource));
++  if (!holder)
++    return;
++
++  (*holder)->SetResource(nullptr);
++  delete holder;
++}
++
++const struct wl_buffer_interface BUFFER_IMPL = {
++    DestroyResource,
++};
++
++void ParamsAdd(wl_client*,
++               wl_resource* resource,
++               int32_t fd,
++               uint32_t planeIdx,
++               uint32_t offset,
++               uint32_t stride,
++               uint32_t modifierHi,
++               uint32_t modifierLo)
++{
++  auto* params = static_cast<BufferParams*>(wl_resource_get_user_data(resource));
++  if (params->used)
++  {
++    close(fd);
++    wl_resource_post_error(resource, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
++                           "params were already used to create a wl_buffer");
++    return;
++  }
++  if (planeIdx >= CWaylandBuffer::MAX_PLANES)
++  {
++    close(fd);
++    wl_resource_post_error(resource, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_IDX,
++                           "plane index %u is too large", planeIdx);
++    return;
++  }
++  if (params->planes[planeIdx].fd >= 0)
++  {
++    close(fd);
++    wl_resource_post_error(resource, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_SET,
++                           "plane %u was already set", planeIdx);
++    return;
++  }
++
++  params->planes[planeIdx] = {fd, offset, stride};
++  params->modifier = (static_cast<uint64_t>(modifierHi) << 32) | modifierLo;
++  if (planeIdx >= params->planeCount)
++    params->planeCount = planeIdx + 1;
++}
++
++bool FormatSupported(uint32_t format)
++{
++  return std::find(std::begin(DMABUF_FORMATS), std::end(DMABUF_FORMATS), format) !=
++         std::end(DMABUF_FORMATS);
++}
++
++wl_resource* ParamsCreateBuffer(wl_client* client,
++                                wl_resource* resource,
++                                uint32_t bufferId,
++                                int32_t width,
++                                int32_t height,
++                                uint32_t format,
++                                uint32_t flags)
++{
++  auto* params = static_cast<BufferParams*>(wl_resource_get_user_data(resource));
++  if (params->used)
++  {
++    wl_resource_post_error(resource, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
++                           "params were already used to create a wl_buffer");
++    return nullptr;
++  }
++  params->used = true;
++
++  for (unsigned int i = 0; i < params->planeCount; ++i)
++  {
++    if (params->planes[i].fd < 0)
++    {
++      wl_resource_post_error(resource, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE,
++                             "plane %u is missing", i);
++      return nullptr;
++    }
++  }
++  if (params->planeCount == 0)
++  {
++    wl_resource_post_error(resource, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE,
++                           "no planes were added");
++    return nullptr;
++  }
++  if (width <= 0 || height <= 0)
++  {
++    wl_resource_post_error(resource, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_DIMENSIONS,
++                           "invalid buffer size %dx%d", width, height);
++    return nullptr;
++  }
++  if (!FormatSupported(format) || flags != 0)
++  {
++    zwp_linux_buffer_params_v1_send_failed(resource);
++    return nullptr;
++  }
++
++  wl_resource* buffer = wl_resource_create(client, &wl_buffer_interface, 1, bufferId);
++  if (!buffer)
++  {
++    wl_client_post_no_memory(client);
++    return nullptr;
++  }
++
++  auto* holder = new std::shared_ptr<CWaylandBuffer>(std::make_shared<CWaylandBuffer>(
++      *params->host, width, height, format, params->modifier, params->planes, params->planeCount));
++  for (auto& plane : params->planes)
++    plane.fd = -1;
++  (*holder)->SetResource(buffer);
++  wl_resource_set_implementation(buffer, &BUFFER_IMPL, holder, BufferResourceDestroyed);
++  return buffer;
++}
++
++void ParamsCreate(wl_client* client,
++                  wl_resource* resource,
++                  int32_t width,
++                  int32_t height,
++                  uint32_t format,
++                  uint32_t flags)
++{
++  wl_resource* buffer = ParamsCreateBuffer(client, resource, 0, width, height, format, flags);
++  if (buffer)
++    zwp_linux_buffer_params_v1_send_created(resource, buffer);
++}
++
++void ParamsCreateImmed(wl_client* client,
++                       wl_resource* resource,
++                       uint32_t bufferId,
++                       int32_t width,
++                       int32_t height,
++                       uint32_t format,
++                       uint32_t flags)
++{
++  ParamsCreateBuffer(client, resource, bufferId, width, height, format, flags);
++}
++
++constexpr struct zwp_linux_buffer_params_v1_interface PARAMS_IMPL = []
++{
++  struct zwp_linux_buffer_params_v1_interface impl = {};
++  impl.destroy = DestroyResource;
++  impl.add = ParamsAdd;
++  impl.create = ParamsCreate;
++  impl.create_immed = ParamsCreateImmed;
++  return impl;
++}();
++
++void ParamsResourceDestroyed(wl_resource* resource)
++{
++  auto* params = static_cast<BufferParams*>(wl_resource_get_user_data(resource));
++  for (auto& plane : params->planes)
++  {
++    if (plane.fd >= 0)
++      close(plane.fd);
++  }
++  delete params;
++}
++
++void DmabufCreateParams(wl_client* client, wl_resource* resource, uint32_t id)
++{
++  wl_resource* params = wl_resource_create(client, &zwp_linux_buffer_params_v1_interface,
++                                           wl_resource_get_version(resource), id);
++  if (!params)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  auto* state = new BufferParams;
++  state->host = &HostOf(resource);
++  wl_resource_set_implementation(params, &PARAMS_IMPL, state, ParamsResourceDestroyed);
++}
++
++const struct zwp_linux_dmabuf_feedback_v1_interface FEEDBACK_IMPL = {
++    DestroyResource,
++};
++
++void DmabufGetFeedback(wl_client* client, wl_resource* resource, uint32_t id, wl_resource*)
++{
++  wl_resource* feedback = wl_resource_create(client, &zwp_linux_dmabuf_feedback_v1_interface,
++                                             wl_resource_get_version(resource), id);
++  if (!feedback)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  wl_resource_set_implementation(feedback, &FEEDBACK_IMPL, nullptr, nullptr);
++  HostOf(resource).SendDmabufFeedback(feedback);
++}
++
++void DmabufGetDefaultFeedback(wl_client* client, wl_resource* resource, uint32_t id)
++{
++  DmabufGetFeedback(client, resource, id, nullptr);
++}
++
++const struct zwp_linux_dmabuf_v1_interface DMABUF_IMPL = {
++    DestroyResource,
++    DmabufCreateParams,
++    DmabufGetDefaultFeedback,
++    DmabufGetFeedback,
++};
++
++// wl_seat
++
++const struct wl_pointer_interface POINTER_IMPL = {
++    Ignore,
++    DestroyResource,
++};
++
++const struct wl_keyboard_interface KEYBOARD_IMPL = {
++    DestroyResource,
++};
++
++const struct wl_touch_interface TOUCH_IMPL = {
++    DestroyResource,
++};
++
++void PointerResourceDestroyed(wl_resource* resource)
++{
++  HostOf(resource).RemovePointer(resource);
++}
++
++void KeyboardResourceDestroyed(wl_resource* resource)
++{
++  HostOf(resource).RemoveKeyboard(resource);
++}
++
++void SeatGetPointer(wl_client* client, wl_resource* resource, uint32_t id)
++{
++  HostOf(resource).AddPointer(client, wl_resource_get_version(resource), id);
++}
++
++void SeatGetKeyboard(wl_client* client, wl_resource* resource, uint32_t id)
++{
++  HostOf(resource).AddKeyboard(client, wl_resource_get_version(resource), id);
++}
++
++void SeatGetTouch(wl_client* client, wl_resource* resource, uint32_t id)
++{
++  wl_resource* touch =
++      wl_resource_create(client, &wl_touch_interface, wl_resource_get_version(resource), id);
++  if (!touch)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  wl_resource_set_implementation(touch, &TOUCH_IMPL, nullptr, nullptr);
++}
++
++const struct wl_seat_interface SEAT_IMPL = {
++    SeatGetPointer,
++    SeatGetKeyboard,
++    SeatGetTouch,
++    DestroyResource,
++};
++
++// wp_presentation
++
++void PresentationFeedback(wl_client* client,
++                          wl_resource* resource,
++                          wl_resource* surfaceResource,
++                          uint32_t id)
++{
++  wl_resource* feedback = wl_resource_create(client, &wp_presentation_feedback_interface,
++                                             wl_resource_get_version(resource), id);
++  if (!feedback)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  auto* surface = SurfaceOf(surfaceResource);
++  if (surface)
++    surface->AddPresentationFeedback(feedback);
++  else
++  {
++    wp_presentation_feedback_send_discarded(feedback);
++    wl_resource_destroy(feedback);
++  }
++}
++
++const struct wp_presentation_interface PRESENTATION_IMPL = {
++    DestroyResource,
++    PresentationFeedback,
++};
++
++// zwp_text_input_v3
++
++CWaylandHost::TextInput* TextInputOf(wl_resource* resource)
++{
++  return static_cast<CWaylandHost::TextInput*>(wl_resource_get_user_data(resource));
++}
++
++void TextInputEnable(wl_client*, wl_resource* resource)
++{
++  if (auto* input = TextInputOf(resource))
++    input->host->OnTextInputEnable(*input, true);
++}
++
++void TextInputDisable(wl_client*, wl_resource* resource)
++{
++  if (auto* input = TextInputOf(resource))
++    input->host->OnTextInputEnable(*input, false);
++}
++
++void TextInputSetSurroundingText(
++    wl_client*, wl_resource* resource, const char* text, int32_t cursor, int32_t)
++{
++  if (auto* input = TextInputOf(resource))
++    input->host->OnTextInputSurroundingText(*input, text, cursor);
++}
++
++void TextInputSetContentType(wl_client*, wl_resource* resource, uint32_t hint, uint32_t purpose)
++{
++  if (auto* input = TextInputOf(resource))
++    input->host->OnTextInputContentType(*input, hint, purpose);
++}
++
++void TextInputSetCursorRectangle(
++    wl_client*, wl_resource* resource, int32_t x, int32_t y, int32_t width, int32_t height)
++{
++  if (auto* input = TextInputOf(resource))
++    input->host->OnTextInputCursorRectangle(*input, x, y, width, height);
++}
++
++void TextInputCommit(wl_client*, wl_resource* resource)
++{
++  if (auto* input = TextInputOf(resource))
++    input->host->OnTextInputCommit(*input);
++}
++
++constexpr struct zwp_text_input_v3_interface TEXT_INPUT_IMPL = []
++{
++  struct zwp_text_input_v3_interface impl = {};
++  impl.destroy = DestroyResource;
++  impl.enable = TextInputEnable;
++  impl.disable = TextInputDisable;
++  impl.set_surrounding_text = TextInputSetSurroundingText;
++  impl.set_text_change_cause = Ignore;
++  impl.set_content_type = TextInputSetContentType;
++  impl.set_cursor_rectangle = TextInputSetCursorRectangle;
++  impl.commit = TextInputCommit;
++  return impl;
++}();
++
++void TextInputResourceDestroyed(wl_resource* resource)
++{
++  if (auto* input = TextInputOf(resource))
++    input->host->OnTextInputResourceDestroyed(*input);
++}
++
++void TextInputManagerGetTextInput(wl_client* client,
++                                  wl_resource* resource,
++                                  uint32_t id,
++                                  wl_resource*)
++{
++  HostOf(resource).AddTextInput(client, wl_resource_get_version(resource), id);
++}
++
++const struct zwp_text_input_manager_v3_interface TEXT_INPUT_MANAGER_IMPL = {
++    DestroyResource,
++    TextInputManagerGetTextInput,
++};
++
++// kodi_web_v1
++
++CWaylandHost::WebView* ViewOf(wl_resource* resource)
++{
++  return static_cast<CWaylandHost::WebView*>(wl_resource_get_user_data(resource));
++}
++
++void WebViewUrlChanged(wl_client*, wl_resource* resource, const char* url)
++{
++  if (auto* view = ViewOf(resource))
++    view->host->OnWebViewUrl(*view, url);
++}
++
++void WebViewTitleChanged(wl_client*, wl_resource* resource, const char* title)
++{
++  if (auto* view = ViewOf(resource))
++    view->host->OnWebViewTitle(*view, title);
++}
++
++void WebViewFavicon(wl_client*, wl_resource* resource, wl_resource* buffer)
++{
++  if (auto* view = ViewOf(resource))
++    view->host->OnWebViewFavicon(*view, buffer);
++}
++
++void WebViewLoadProgress(wl_client*, wl_resource* resource, uint32_t percent)
++{
++  if (auto* view = ViewOf(resource))
++    view->host->OnWebViewProgress(*view, percent);
++}
++
++void WebViewNavigationState(wl_client*,
++                            wl_resource* resource,
++                            uint32_t canGoBack,
++                            uint32_t canGoForward)
++{
++  if (auto* view = ViewOf(resource))
++    view->host->OnWebViewNavigationState(*view, canGoBack, canGoForward);
++}
++
++void WebViewError(wl_client*, wl_resource* resource, uint32_t code, const char* message)
++{
++  if (auto* view = ViewOf(resource))
++    view->host->OnWebViewError(*view, code, message);
++}
++
++void WebViewExit(wl_client*, wl_resource* resource)
++{
++  if (auto* view = ViewOf(resource))
++    view->host->OnWebViewExit(*view);
++}
++
++void WebViewMediaState(
++    wl_client*, wl_resource* resource, uint32_t video, uint32_t audio, uint32_t paused)
++{
++  if (auto* view = ViewOf(resource))
++    view->host->OnWebViewMediaState(*view, video != 0, audio != 0, paused != 0);
++}
++
++const struct kodi_web_view_v1_interface WEB_VIEW_IMPL = {
++    DestroyResource, WebViewUrlChanged,   WebViewTitleChanged,
++    WebViewFavicon,  WebViewLoadProgress, WebViewNavigationState,
++    WebViewError,    WebViewExit,         WebViewMediaState,
++};
++
++void WebViewResourceDestroyed(wl_resource* resource)
++{
++  if (auto* view = ViewOf(resource))
++    view->host->OnWebViewResourceDestroyed(*view);
++}
++
++void WebManagerCreateView(wl_client* client,
++                          wl_resource* resource,
++                          uint32_t id,
++                          const char* profile,
++                          wl_resource* surface)
++{
++  HostOf(resource).OnWebViewCreate(client, resource, id, profile, surface);
++}
++
++void WebManagerReady(wl_client*, wl_resource* resource)
++{
++  HostOf(resource).OnWebClientReady();
++}
++
++void WebManagerViewUnavailable(wl_client*,
++                               wl_resource* resource,
++                               const char* profile,
++                               const char* message)
++{
++  HostOf(resource).OnWebViewUnavailable(profile, message);
++}
++
++void WebManagerContentFilterListPrepared(wl_client*,
++                                         wl_resource* resource,
++                                         const char* name,
++                                         uint32_t prepared)
++{
++  HostOf(resource).OnWebFilterListPrepared(name, prepared != 0);
++}
++
++const struct kodi_web_manager_v1_interface WEB_MANAGER_IMPL = {
++    DestroyResource,
++    WebManagerCreateView,
++    WebManagerReady,
++    WebManagerViewUnavailable,
++    WebManagerContentFilterListPrepared,
++};
++
++void WebManagerResourceDestroyed(wl_resource* resource)
++{
++  HostOf(resource).OnWebManagerUnbound(resource);
++}
++
++wl_resource* BindGlobal(wl_client* client,
++                        const wl_interface& interface,
++                        uint32_t version,
++                        uint32_t maxVersion,
++                        uint32_t id,
++                        const void* implementation,
++                        void* data)
++{
++  wl_resource* resource = wl_resource_create(client, &interface, std::min(version, maxVersion), id);
++  if (!resource)
++  {
++    wl_client_post_no_memory(client);
++    return nullptr;
++  }
++
++  wl_resource_set_implementation(resource, implementation, data, nullptr);
++  return resource;
++}
++
++} // unnamed namespace
++
++CWaylandHost::CWaylandHost(IWaylandHostObserver& observer, WaylandHostConfig config)
++  : CThread("waylandhost"),
++    m_observer(observer),
++    m_config(std::move(config))
++{
++}
++
++CWaylandHost::~CWaylandHost()
++{
++  Stop();
++}
++
++bool CWaylandHost::Start()
++{
++  if (m_display)
++    return true;
++
++  m_display = wl_display_create();
++  if (!m_display)
++  {
++    CLog::Log(LOGERROR, "CWaylandHost::{}: failed to create the display", __FUNCTION__);
++    return false;
++  }
++  m_loop = wl_display_get_event_loop(m_display);
++
++  m_wakeFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
++  if (m_wakeFd < 0)
++  {
++    CLog::Log(LOGERROR, "CWaylandHost::{}: eventfd failed: {}", __FUNCTION__, strerror(errno));
++    DestroyAll();
++    return false;
++  }
++  m_wakeSource = wl_event_loop_add_fd(m_loop, m_wakeFd, WL_EVENT_READABLE, OnWake, this);
++
++  if (!CreateKeymap() || !CreateFormatTable() || !CreateGlobals())
++  {
++    DestroyAll();
++    return false;
++  }
++
++  Create();
++  return true;
++}
++
++void CWaylandHost::Stop()
++{
++  if (!m_display)
++    return;
++
++  m_bStop = true;
++  Post([]() {});
++  StopThread(true);
++  DestroyAll();
++}
++
++void CWaylandHost::Post(std::function<void()> task)
++{
++  {
++    std::unique_lock lock(m_taskLock);
++    m_tasks.push_back(std::move(task));
++  }
++
++  const uint64_t one = 1;
++  if (m_wakeFd >= 0 && write(m_wakeFd, &one, sizeof(one)) != sizeof(one))
++    CLog::Log(LOGERROR, "CWaylandHost::{}: wake failed: {}", __FUNCTION__, strerror(errno));
++}
++
++void CWaylandHost::SpawnClient(std::vector<std::string> argv,
++                               std::map<std::string, std::string> env)
++{
++  Post([this, argv = std::move(argv), env = std::move(env)]() { DoSpawnClient(argv, env); });
++}
++
++void CWaylandHost::TerminateClients()
++{
++  Post([this]() { DoTerminateClients(); });
++}
++
++void CWaylandHost::KeyboardKey(uint32_t evdevCode, bool pressed)
++{
++  Post([this, evdevCode, pressed]() { DoKeyboardKey(evdevCode, pressed); });
++}
++
++void CWaylandHost::PointerMotion(int32_t x, int32_t y)
++{
++  Post([this, x, y]() { DoPointerMotion(x, y); });
++}
++
++void CWaylandHost::PointerButton(uint32_t evdevButton, bool pressed)
++{
++  Post([this, evdevButton, pressed]() { DoPointerButton(evdevButton, pressed); });
++}
++
++void CWaylandHost::PointerAxis(int32_t value120)
++{
++  Post([this, value120]() { DoPointerAxis(value120); });
++}
++
++void CWaylandHost::PointerScroll(int32_t x, int32_t y, int32_t pixels)
++{
++  Post([this, x, y, pixels]() { DoPointerScroll(x, y, pixels); });
++}
++
++void CWaylandHost::FrameDone()
++{
++  Post([this]() { DoFrameDone(); });
++}
++
++uint32_t CWaylandHost::NextSerial()
++{
++  return ++m_serial;
++}
++
++void CWaylandHost::Process()
++{
++  while (!m_bStop)
++  {
++    wl_display_flush_clients(m_display);
++    if (wl_event_loop_dispatch(m_loop, -1) < 0 && errno != EINTR)
++    {
++      CLog::Log(LOGERROR, "CWaylandHost::{}: event loop failed: {}", __FUNCTION__, strerror(errno));
++      break;
++    }
++  }
++}
++
++int CWaylandHost::OnWake(int fd, uint32_t, void* data)
++{
++  uint64_t count;
++  while (read(fd, &count, sizeof(count)) == sizeof(count))
++  {
++  }
++
++  static_cast<CWaylandHost*>(data)->RunTasks();
++  return 0;
++}
++
++void CWaylandHost::RunTasks()
++{
++  std::list<std::function<void()>> tasks;
++  {
++    std::unique_lock lock(m_taskLock);
++    tasks.swap(m_tasks);
++  }
++
++  for (auto& task : tasks)
++    task();
++}
++
++bool CWaylandHost::CreateKeymap()
++{
++  m_xkbContext = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
++  if (!m_xkbContext)
++    return false;
++
++  xkb_rule_names names{};
++  names.layout = m_config.keyboardLayout.empty() ? nullptr : m_config.keyboardLayout.c_str();
++  m_xkbKeymap = xkb_keymap_new_from_names(m_xkbContext, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
++  if (!m_xkbKeymap)
++  {
++    CLog::Log(LOGERROR, "CWaylandHost::{}: no keymap for layout \"{}\"", __FUNCTION__,
++              m_config.keyboardLayout);
++    return false;
++  }
++  m_xkbState = xkb_state_new(m_xkbKeymap);
++
++  char* keymapString = xkb_keymap_get_as_string(m_xkbKeymap, XKB_KEYMAP_FORMAT_TEXT_V1);
++  if (!keymapString)
++    return false;
++
++  m_keymapSize = strlen(keymapString) + 1;
++  m_keymapFd = SealedMemfd("kodi-keymap", keymapString, m_keymapSize);
++  free(keymapString);
++  return m_keymapFd >= 0;
++}
++
++bool CWaylandHost::CreateFormatTable()
++{
++  struct stat st = {};
++  if (stat(m_config.renderDevicePath.c_str(), &st) != 0)
++  {
++    CLog::Log(LOGERROR, "CWaylandHost::{}: cannot stat render device {}: {}", __FUNCTION__,
++              m_config.renderDevicePath, strerror(errno));
++    return false;
++  }
++  m_renderDevice = st.st_rdev;
++
++  std::vector<FormatTableEntry> table;
++  for (uint32_t format : DMABUF_FORMATS)
++    table.push_back({format, 0, DRM_FORMAT_MOD_LINEAR});
++  m_formatTableSize = table.size() * sizeof(FormatTableEntry);
++  m_formatTableFd = SealedMemfd("kodi-dmabuf-formats", table.data(), m_formatTableSize);
++  return m_formatTableFd >= 0;
++}
++
++int CWaylandHost::SealedMemfd(const char* name, const void* data, size_t size)
++{
++  const int fd = memfd_create(name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
++  if (fd >= 0 && write(fd, data, size) == static_cast<ssize_t>(size) &&
++      fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL) == 0)
++    return fd;
++
++  CLog::Log(LOGERROR, "CWaylandHost::{}: {} memfd failed: {}", __FUNCTION__, name, strerror(errno));
++  if (fd >= 0)
++    close(fd);
++  return -1;
++}
++
++bool CWaylandHost::CreateGlobals()
++{
++  if (wl_display_init_shm(m_display) != 0)
++    return false;
++
++  m_globals.push_back(wl_global_create(m_display, &wl_compositor_interface, COMPOSITOR_VERSION,
++                                       this, BindCompositor));
++  m_globals.push_back(
++      wl_global_create(m_display, &wl_output_interface, OUTPUT_VERSION, this, BindOutput));
++  m_globals.push_back(
++      wl_global_create(m_display, &wl_seat_interface, SEAT_VERSION, this, BindSeat));
++  m_globals.push_back(wl_global_create(m_display, &xdg_wm_base_interface, XDG_WM_BASE_VERSION, this,
++                                       BindXdgWmBase));
++  m_globals.push_back(wl_global_create(m_display, &zwp_linux_dmabuf_v1_interface,
++                                       LINUX_DMABUF_VERSION, this, BindLinuxDmabuf));
++  m_globals.push_back(wl_global_create(m_display, &wp_presentation_interface, PRESENTATION_VERSION,
++                                       this, BindPresentation));
++  m_globals.push_back(wl_global_create(m_display, &zwp_text_input_manager_v3_interface,
++                                       TEXT_INPUT_VERSION, this, BindTextInputManager));
++  m_globals.push_back(wl_global_create(m_display, &kodi_web_manager_v1_interface,
++                                       WEB_MANAGER_VERSION, this, BindWebManager));
++
++  return std::all_of(m_globals.begin(), m_globals.end(), [](wl_global* g) { return g; });
++}
++
++void CWaylandHost::DestroyAll()
++{
++  DoTerminateClients();
++  if (m_display)
++    wl_display_destroy_clients(m_display);
++  for (Client& client : m_clients)
++  {
++    if (client.exitSource)
++      wl_event_source_remove(client.exitSource);
++    if (client.pid > 0)
++      ReapClient(client);
++    if (client.pidfd >= 0)
++      close(client.pidfd);
++  }
++  m_clients.clear();
++  m_views.clear();
++  m_textInputs.clear();
++  m_webManager = nullptr;
++
++  for (wl_global* global : m_globals)
++  {
++    if (global)
++      wl_global_destroy(global);
++  }
++  m_globals.clear();
++  if (m_wakeSource)
++  {
++    wl_event_source_remove(m_wakeSource);
++    m_wakeSource = nullptr;
++  }
++  if (m_display)
++  {
++    wl_display_destroy(m_display);
++    m_display = nullptr;
++    m_loop = nullptr;
++  }
++  for (int* fd : {&m_wakeFd, &m_keymapFd, &m_formatTableFd})
++  {
++    if (*fd >= 0)
++      close(*fd);
++    *fd = -1;
++  }
++  if (m_xkbState)
++    xkb_state_unref(m_xkbState);
++  if (m_xkbKeymap)
++    xkb_keymap_unref(m_xkbKeymap);
++  if (m_xkbContext)
++    xkb_context_unref(m_xkbContext);
++  m_xkbState = nullptr;
++  m_xkbKeymap = nullptr;
++  m_xkbContext = nullptr;
++}
++
++void CWaylandHost::DoSpawnClient(const std::vector<std::string>& argv,
++                                 const std::map<std::string, std::string>& env)
++{
++  if (argv.empty())
++    return;
++
++  int fds[2];
++  if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) != 0)
++  {
++    CLog::Log(LOGERROR, "CWaylandHost::{}: socketpair failed: {}", __FUNCTION__, strerror(errno));
++    m_observer.OnClientExited(-1, -1);
++    return;
++  }
++
++  // everything the child needs is prepared before fork(), only
++  // async-signal-safe calls happen between fork() and exec
++  std::vector<std::string> envStrings;
++  for (char** entry = environ; entry && *entry; ++entry)
++  {
++    std::string pair = *entry;
++    const std::string name = pair.substr(0, pair.find('='));
++    if (name == "WAYLAND_DISPLAY" || name == "WAYLAND_SOCKET" || env.count(name))
++      continue;
++    envStrings.push_back(std::move(pair));
++  }
++  for (const auto& [name, value] : env)
++    envStrings.push_back(name + "=" + value);
++  envStrings.push_back("WAYLAND_SOCKET=3");
++
++  std::vector<char*> envp;
++  for (auto& entry : envStrings)
++    envp.push_back(entry.data());
++  envp.push_back(nullptr);
++
++  std::vector<std::string> argStrings = argv;
++  std::vector<char*> args;
++  for (auto& entry : argStrings)
++    args.push_back(entry.data());
++  args.push_back(nullptr);
++
++  const pid_t pid = fork();
++  if (pid < 0)
++  {
++    CLog::Log(LOGERROR, "CWaylandHost::{}: fork failed: {}", __FUNCTION__, strerror(errno));
++    close(fds[0]);
++    close(fds[1]);
++    m_observer.OnClientExited(-1, -1);
++    return;
++  }
++  if (pid == 0)
++  {
++    if (dup2(fds[1], 3) == 3)
++      execvpe(args[0], args.data(), envp.data());
++    _exit(127);
++  }
++
++  close(fds[1]);
++
++  m_clients.emplace_back();
++  Client& client = m_clients.back();
++  client.host = this;
++  client.pid = pid;
++  client.client = wl_client_create(m_display, fds[0]);
++  if (!client.client)
++  {
++    CLog::Log(LOGERROR, "CWaylandHost::{}: wl_client_create failed", __FUNCTION__);
++    close(fds[0]);
++    kill(pid, SIGTERM);
++  }
++
++  client.pidfd = static_cast<int>(syscall(SYS_pidfd_open, pid, 0));
++  if (client.pidfd < 0)
++  {
++    // a client whose exit goes unnoticed could never be replaced
++    CLog::Log(LOGERROR, "CWaylandHost::{}: pidfd_open failed: {}", __FUNCTION__, strerror(errno));
++    kill(pid, SIGKILL);
++    waitpid(pid, nullptr, 0);
++    m_clients.pop_back();
++    m_observer.OnClientExited(-1, -1);
++    return;
++  }
++  client.exitSource =
++      wl_event_loop_add_fd(m_loop, client.pidfd, WL_EVENT_READABLE, OnClientExitStatic, &client);
++
++  CLog::Log(LOGINFO, "CWaylandHost::{}: started {} as pid {}", __FUNCTION__, argv[0], pid);
++}
++
++int CWaylandHost::OnClientExitStatic(int, uint32_t, void* data)
++{
++  auto* client = static_cast<Client*>(data);
++  client->host->OnClientExit(*client);
++  return 0;
++}
++
++void CWaylandHost::OnClientExit(Client& client)
++{
++  int status = -1;
++  pid_t reaped;
++  do
++    reaped = waitpid(client.pid, &status, WNOHANG);
++  while (reaped < 0 && errno == EINTR);
++  if (reaped == 0)
++    return;
++  // a readable pidfd means the client has ended; another waitpid() may have
++  // reaped it, which leaves its status unknown
++  if (reaped < 0)
++    status = -1;
++
++  CLog::Log(LOGINFO, "CWaylandHost::{}: client pid {} exited with status {}", __FUNCTION__,
++            client.pid, status);
++  wl_event_source_remove(client.exitSource);
++  close(client.pidfd);
++  const pid_t pid = client.pid;
++  m_clients.remove_if([&client](const Client& entry) { return &entry == &client; });
++  m_observer.OnClientExited(pid, status);
++}
++
++void CWaylandHost::ReapClient(const Client& client)
++{
++  struct pollfd exited = {client.pidfd, POLLIN, 0};
++  const int timeout = static_cast<int>(std::chrono::milliseconds(CLIENT_EXIT_TIMEOUT).count());
++
++  if (client.pidfd < 0 || poll(&exited, 1, timeout) <= 0)
++  {
++    CLog::Log(LOGWARNING, "CWaylandHost::{}: client pid {} did not exit, killing it", __FUNCTION__,
++              client.pid);
++    kill(client.pid, SIGKILL);
++  }
++  waitpid(client.pid, nullptr, 0);
++}
++
++void CWaylandHost::DoTerminateClients()
++{
++  for (Client& client : m_clients)
++  {
++    if (client.pid > 0)
++      kill(client.pid, SIGTERM);
++  }
++}
++
++void CWaylandHost::BindCompositor(wl_client* client, void* data, uint32_t version, uint32_t id)
++{
++  BindGlobal(client, wl_compositor_interface, version, COMPOSITOR_VERSION, id, &COMPOSITOR_IMPL,
++             data);
++}
++
++void CWaylandHost::BindOutput(wl_client* client, void* data, uint32_t version, uint32_t id)
++{
++  auto* host = static_cast<CWaylandHost*>(data);
++  wl_resource* resource =
++      BindGlobal(client, wl_output_interface, version, OUTPUT_VERSION, id, nullptr, data);
++  if (!resource)
++    return;
++
++  wl_resource_set_destructor(resource, OutputDestroyed);
++  host->m_outputs.push_back(resource);
++  wl_output_send_geometry(resource, 0, 0, 0, 0, WL_OUTPUT_SUBPIXEL_UNKNOWN, "Kodi", "Kodi",
++                          WL_OUTPUT_TRANSFORM_NORMAL);
++  host->SendOutputMode(resource);
++}
++
++void CWaylandHost::OutputDestroyed(wl_resource* resource)
++{
++  static_cast<CWaylandHost*>(wl_resource_get_user_data(resource))->m_outputs.remove(resource);
++}
++
++void CWaylandHost::SendOutputMode(wl_resource* output) const
++{
++  wl_output_send_mode(output, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED, m_config.width,
++                      m_config.height, m_config.refreshMilliHz);
++  if (wl_resource_get_version(output) >= WL_OUTPUT_SCALE_SINCE_VERSION)
++    wl_output_send_scale(output, 1);
++  if (wl_resource_get_version(output) >= WL_OUTPUT_DONE_SINCE_VERSION)
++    wl_output_send_done(output);
++}
++
++void CWaylandHost::SetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz)
++{
++  Post([this, width, height, refreshMilliHz] { DoSetOutputMode(width, height, refreshMilliHz); });
++}
++
++void CWaylandHost::DoSetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz)
++{
++  if (width == m_config.width && height == m_config.height &&
++      refreshMilliHz == m_config.refreshMilliHz)
++    return;
++
++  CLog::Log(LOGINFO, "CWaylandHost::{}: {}x{} at {} mHz", __FUNCTION__, width, height,
++            refreshMilliHz);
++  m_config.width = width;
++  m_config.height = height;
++  m_config.refreshMilliHz = refreshMilliHz;
++  for (wl_resource* output : m_outputs)
++    SendOutputMode(output);
++  for (CWaylandSurface* surface : m_surfaces)
++    surface->SendConfigure(width, height);
++  wl_display_flush_clients(m_display);
++}
++
++void CWaylandHost::BindSeat(wl_client* client, void* data, uint32_t version, uint32_t id)
++{
++  wl_resource* resource =
++      BindGlobal(client, wl_seat_interface, version, SEAT_VERSION, id, &SEAT_IMPL, data);
++  if (!resource)
++    return;
++
++  wl_seat_send_capabilities(resource, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
++  if (wl_resource_get_version(resource) >= WL_SEAT_NAME_SINCE_VERSION)
++    wl_seat_send_name(resource, "seat0");
++}
++
++void CWaylandHost::BindXdgWmBase(wl_client* client, void* data, uint32_t version, uint32_t id)
++{
++  BindGlobal(client, xdg_wm_base_interface, version, XDG_WM_BASE_VERSION, id, &WM_BASE_IMPL, data);
++}
++
++void CWaylandHost::BindLinuxDmabuf(wl_client* client, void* data, uint32_t version, uint32_t id)
++{
++  wl_resource* resource = BindGlobal(client, zwp_linux_dmabuf_v1_interface, version,
++                                     LINUX_DMABUF_VERSION, id, &DMABUF_IMPL, data);
++  if (!resource)
++    return;
++
++  if (wl_resource_get_version(resource) < ZWP_LINUX_DMABUF_V1_GET_DEFAULT_FEEDBACK_SINCE_VERSION)
++  {
++    for (uint32_t format : DMABUF_FORMATS)
++      zwp_linux_dmabuf_v1_send_format(resource, format);
++  }
++}
++
++void CWaylandHost::BindPresentation(wl_client* client, void* data, uint32_t version, uint32_t id)
++{
++  wl_resource* resource = BindGlobal(client, wp_presentation_interface, version,
++                                     PRESENTATION_VERSION, id, &PRESENTATION_IMPL, data);
++  if (resource)
++    wp_presentation_send_clock_id(resource, CLOCK_MONOTONIC);
++}
++
++void CWaylandHost::BindTextInputManager(wl_client* client,
++                                        void* data,
++                                        uint32_t version,
++                                        uint32_t id)
++{
++  BindGlobal(client, zwp_text_input_manager_v3_interface, version, TEXT_INPUT_VERSION, id,
++             &TEXT_INPUT_MANAGER_IMPL, data);
++}
++
++void CWaylandHost::BindWebManager(wl_client* client, void* data, uint32_t version, uint32_t id)
++{
++  wl_resource* resource = BindGlobal(client, kodi_web_manager_v1_interface, version,
++                                     WEB_MANAGER_VERSION, id, &WEB_MANAGER_IMPL, data);
++  if (!resource)
++    return;
++
++  wl_resource_set_destructor(resource, WebManagerResourceDestroyed);
++  static_cast<CWaylandHost*>(data)->OnWebManagerBound(resource);
++}
++
++void CWaylandHost::OnWebManagerBound(wl_resource* manager)
++{
++  if (m_webManager)
++    CLog::Log(LOGWARNING, "CWaylandHost::{}: a second web client bound the manager", __FUNCTION__);
++  m_webManager = manager;
++  for (const auto& [name, path] : m_filterLists)
++    SendContentFilterList(name, path);
++}
++
++void CWaylandHost::OnWebManagerUnbound(wl_resource* manager)
++{
++  if (m_webManager == manager)
++    m_webManager = nullptr;
++}
++
++void CWaylandHost::OnWebClientReady()
++{
++  CLog::Log(LOGINFO, "CWaylandHost::{}: the web client is ready", __FUNCTION__);
++  m_observer.OnWebClientReady();
++}
++
++void CWaylandHost::OnWebViewCreate(wl_client* client,
++                                   wl_resource* manager,
++                                   uint32_t id,
++                                   const char* profile,
++                                   wl_resource* surfaceResource)
++{
++  if (!IsValidWebProfile(profile))
++  {
++    wl_resource_post_error(manager, KODI_WEB_MANAGER_V1_ERROR_INVALID_PROFILE,
++                           "invalid profile identifier");
++    return;
++  }
++
++  if (FindWebView(profile))
++  {
++    wl_resource_post_error(manager, KODI_WEB_MANAGER_V1_ERROR_DUPLICATE_PROFILE,
++                           "a view for profile %s exists", profile);
++    return;
++  }
++
++  auto* surface = SurfaceOf(surfaceResource);
++  if (!surface || WebViewOf(surface))
++  {
++    wl_resource_post_error(manager, KODI_WEB_MANAGER_V1_ERROR_INVALID_SURFACE,
++                           "the surface belongs to another view");
++    return;
++  }
++
++  wl_resource* resource =
++      wl_resource_create(client, &kodi_web_view_v1_interface, wl_resource_get_version(manager), id);
++  if (!resource)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  m_views.push_back({this, resource, profile, surface});
++  wl_resource_set_implementation(resource, &WEB_VIEW_IMPL, &m_views.back(),
++                                 WebViewResourceDestroyed);
++  CLog::Log(LOGINFO, "CWaylandHost::{}: view for profile \"{}\" created", __FUNCTION__, profile);
++  m_observer.OnWebViewCreated(profile, *surface);
++}
++
++void CWaylandHost::OnWebViewUnavailable(const char* profile, const char* message)
++{
++  CLog::Log(LOGWARNING, "CWaylandHost::{}: no view for profile \"{}\": {}", __FUNCTION__, profile,
++            message);
++  m_observer.OnWebViewUnavailable(profile, message);
++}
++
++void CWaylandHost::OnWebFilterListPrepared(const char* name, bool prepared)
++{
++  CLog::Log(prepared ? LOGINFO : LOGWARNING, "CWaylandHost::{}: content filter list {} {}",
++            __FUNCTION__, name, prepared ? "is prepared" : "cannot be prepared");
++  m_observer.OnWebFilterListPrepared(name, prepared);
++}
++
++void CWaylandHost::OnWebViewUrl(WebView& view, const char* url)
++{
++  m_observer.OnWebViewUrl(view.profile, url);
++}
++
++void CWaylandHost::OnWebViewTitle(WebView& view, const char* title)
++{
++  m_observer.OnWebViewTitle(view.profile, title);
++}
++
++void CWaylandHost::OnWebViewFavicon(WebView& view, wl_resource* buffer)
++{
++  wl_shm_buffer* shm = wl_shm_buffer_get(buffer);
++  CLog::Log(LOGDEBUG, "CWaylandHost::{}: profile \"{}\" icon {}x{}", __FUNCTION__, view.profile,
++            shm ? wl_shm_buffer_get_width(shm) : 0, shm ? wl_shm_buffer_get_height(shm) : 0);
++  // the icon pixels are not consumed yet; give the buffer straight back
++  wl_buffer_send_release(buffer);
++}
++
++void CWaylandHost::OnWebViewProgress(WebView& view, uint32_t percent)
++{
++  m_observer.OnWebViewProgress(view.profile, percent);
++}
++
++void CWaylandHost::OnWebViewNavigationState(WebView& view,
++                                            uint32_t canGoBack,
++                                            uint32_t canGoForward)
++{
++  m_observer.OnWebViewNavigationState(view.profile, canGoBack != 0, canGoForward != 0);
++}
++
++void CWaylandHost::OnWebViewError(WebView& view, uint32_t code, const char* message)
++{
++  CLog::Log(LOGERROR, "CWaylandHost::{}: view for profile \"{}\" failed with code {}: {}",
++            __FUNCTION__, view.profile, code, message);
++  m_observer.OnWebViewError(view.profile, code, message);
++}
++
++void CWaylandHost::OnWebViewExit(WebView& view)
++{
++  CLog::Log(LOGINFO, "CWaylandHost::{}: the page of profile \"{}\" asks to leave", __FUNCTION__,
++            view.profile);
++  m_observer.OnWebViewExit(view.profile);
++}
++
++void CWaylandHost::OnWebViewMediaState(WebView& view, bool video, bool audio, bool paused)
++{
++  m_observer.OnWebViewMediaState(view.profile, video, audio, paused);
++}
++
++void CWaylandHost::OnWebViewResourceDestroyed(WebView& view)
++{
++  const std::string profile = view.profile;
++  m_views.remove_if([&view](const WebView& entry) { return &entry == &view; });
++  m_observer.OnWebViewDestroyed(profile);
++}
++
++CWaylandHost::WebView* CWaylandHost::FindWebView(const std::string& profile)
++{
++  auto it = std::find_if(m_views.begin(), m_views.end(),
++                         [&profile](const WebView& view) { return view.profile == profile; });
++  return it == m_views.end() ? nullptr : &*it;
++}
++
++CWaylandHost::WebView* CWaylandHost::WebViewOf(const CWaylandSurface* surface)
++{
++  auto it = std::find_if(m_views.begin(), m_views.end(),
++                         [surface](const WebView& view) { return view.surface == surface; });
++  return it == m_views.end() ? nullptr : &*it;
++}
++
++void CWaylandHost::WebWantView(std::string profile, std::string uplink)
++{
++  Post(
++      [this, profile = std::move(profile), uplink = std::move(uplink)]()
++      {
++        if (m_webManager)
++          kodi_web_manager_v1_send_want_view(m_webManager, profile.c_str(), uplink.c_str());
++        else
++          m_observer.OnWebViewUnavailable(profile, "no web client is connected");
++      });
++}
++
++void CWaylandHost::WebViewLoadUrl(std::string profile, std::string url)
++{
++  Post(
++      [this, profile = std::move(profile), url = std::move(url)]()
++      {
++        if (auto* view = FindWebView(profile))
++          kodi_web_view_v1_send_load_url(view->resource, url.c_str());
++      });
++}
++
++void CWaylandHost::WebViewNavigate(std::string profile, WebNavigation action)
++{
++  Post(
++      [this, profile = std::move(profile), action]()
++      {
++        if (auto* view = FindWebView(profile))
++          kodi_web_view_v1_send_navigate(view->resource, static_cast<uint32_t>(action));
++      });
++}
++
++void CWaylandHost::WebViewSetActive(std::string profile, bool active)
++{
++  Post(
++      [this, profile = std::move(profile), active]()
++      {
++        if (auto* view = FindWebView(profile))
++          DoWebViewSetActive(*view, active);
++      });
++}
++
++void CWaylandHost::DoWebViewSetActive(WebView& view, bool active)
++{
++  view.active = active;
++  kodi_web_view_v1_send_set_active(view.resource, active ? 1 : 0);
++  if (!view.surface)
++    return;
++
++  if (active && view.surface->IsMapped())
++    SetKeyboardFocus(view.surface);
++  else if (!active && m_keyboardFocus == view.surface)
++    SetKeyboardFocus(nullptr);
++}
++
++void CWaylandHost::WebViewClose(std::string profile)
++{
++  Post(
++      [this, profile = std::move(profile)]()
++      {
++        if (auto* view = FindWebView(profile))
++          kodi_web_view_v1_send_close(view->resource);
++      });
++}
++
++void CWaylandHost::WebViewSetUserAgent(std::string profile, std::string userAgent)
++{
++  Post(
++      [this, profile = std::move(profile), userAgent = std::move(userAgent)]()
++      {
++        if (auto* view = FindWebView(profile))
++          kodi_web_view_v1_send_set_user_agent(view->resource, userAgent.c_str());
++      });
++}
++
++void CWaylandHost::WebViewSetViewport(std::string profile, uint32_t width, uint32_t height)
++{
++  Post(
++      [this, profile = std::move(profile), width, height]()
++      {
++        auto* view = FindWebView(profile);
++        if (view)
++          kodi_web_view_v1_send_set_viewport(view->resource, width, height);
++      });
++}
++
++void CWaylandHost::WebViewAddUserScript(std::string profile,
++                                        std::string name,
++                                        int fd,
++                                        uint32_t size)
++{
++  Post([this, profile = std::move(profile), name = std::move(name), fd, size]()
++       { SendWebViewFile(profile, name, fd, size, true); });
++}
++
++void CWaylandHost::WebViewAddContentFilter(std::string profile,
++                                           std::string name,
++                                           int fd,
++                                           uint32_t size)
++{
++  Post([this, profile = std::move(profile), name = std::move(name), fd, size]()
++       { SendWebViewFile(profile, name, fd, size, false); });
++}
++
++void CWaylandHost::WebViewAddContentFilterList(std::string profile, std::string name)
++{
++  Post(
++      [this, profile = std::move(profile), name = std::move(name)]()
++      {
++        if (auto* view = FindWebView(profile))
++          kodi_web_view_v1_send_add_content_filter_list(view->resource, name.c_str());
++      });
++}
++
++void CWaylandHost::WebSetContentFilterList(std::string name, std::string path)
++{
++  Post(
++      [this, name = std::move(name), path = std::move(path)]()
++      {
++        if (path.empty())
++        {
++          if (m_filterLists.erase(name) && m_webManager)
++            kodi_web_manager_v1_send_remove_content_filter_list(m_webManager, name.c_str());
++          return;
++        }
++        m_filterLists[name] = path;
++        if (m_webManager)
++          SendContentFilterList(name, path);
++      });
++}
++
++void CWaylandHost::SendContentFilterList(const std::string& name, const std::string& path)
++{
++  const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
++  struct stat st = {};
++  if (fd < 0 || fstat(fd, &st) != 0)
++  {
++    CLog::Log(LOGERROR, "CWaylandHost::{}: cannot read {}", __FUNCTION__, path);
++    if (fd >= 0)
++      close(fd);
++    return;
++  }
++
++  kodi_web_manager_v1_send_content_filter_list(m_webManager, name.c_str(), fd,
++                                               static_cast<uint32_t>(st.st_size));
++  close(fd);
++}
++
++bool CWaylandHost::IsValidWebProfile(const std::string& profile)
++{
++  if (profile.empty() || profile.size() > WEB_PROFILE_MAX || profile == "." || profile == "..")
++    return false;
++  return std::all_of(profile.begin(), profile.end(),
++                     [](char c)
++                     {
++                       return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
++                              (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
++                     });
++}
++
++void CWaylandHost::SendWebViewFile(
++    const std::string& profile, const std::string& name, int fd, uint32_t size, bool script)
++{
++  if (auto* view = FindWebView(profile))
++  {
++    if (script)
++      kodi_web_view_v1_send_add_user_script(view->resource, name.c_str(), fd, size);
++    else
++      kodi_web_view_v1_send_add_content_filter(view->resource, name.c_str(), fd, size);
++  }
++  close(fd);
++}
++
++void CWaylandHost::SendDmabufFeedback(wl_resource* feedback)
++{
++  zwp_linux_dmabuf_feedback_v1_send_format_table(feedback, m_formatTableFd, m_formatTableSize);
++
++  wl_array device;
++  wl_array_init(&device);
++  memcpy(wl_array_add(&device, sizeof(m_renderDevice)), &m_renderDevice, sizeof(m_renderDevice));
++  zwp_linux_dmabuf_feedback_v1_send_main_device(feedback, &device);
++  zwp_linux_dmabuf_feedback_v1_send_tranche_target_device(feedback, &device);
++  wl_array_release(&device);
++
++  zwp_linux_dmabuf_feedback_v1_send_tranche_flags(
++      feedback, ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT);
++
++  wl_array indices;
++  wl_array_init(&indices);
++  const size_t count = m_formatTableSize / sizeof(FormatTableEntry);
++  auto* index = static_cast<uint16_t*>(wl_array_add(&indices, count * sizeof(uint16_t)));
++  for (size_t i = 0; i < count; ++i)
++    index[i] = static_cast<uint16_t>(i);
++  zwp_linux_dmabuf_feedback_v1_send_tranche_formats(feedback, &indices);
++  wl_array_release(&indices);
++
++  zwp_linux_dmabuf_feedback_v1_send_tranche_done(feedback);
++  zwp_linux_dmabuf_feedback_v1_send_done(feedback);
++}
++
++void CWaylandHost::AddKeyboard(wl_client* client, uint32_t version, uint32_t id)
++{
++  wl_resource* keyboard = wl_resource_create(client, &wl_keyboard_interface, version, id);
++  if (!keyboard)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  wl_resource_set_implementation(keyboard, &KEYBOARD_IMPL, this, KeyboardResourceDestroyed);
++  m_keyboards.push_back(keyboard);
++
++  wl_keyboard_send_keymap(keyboard, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, m_keymapFd, m_keymapSize);
++  // Kodi delivers its own key repeats, the client must not add any
++  if (version >= WL_KEYBOARD_REPEAT_INFO_SINCE_VERSION)
++    wl_keyboard_send_repeat_info(keyboard, 0, 0);
++
++  if (m_keyboardFocus && wl_resource_get_client(m_keyboardFocus->GetResource()) == client)
++    SendKeyboardEnterTo(keyboard, *m_keyboardFocus);
++}
++
++void CWaylandHost::RemoveKeyboard(wl_resource* keyboard)
++{
++  m_keyboards.remove(keyboard);
++}
++
++void CWaylandHost::AddPointer(wl_client* client, uint32_t version, uint32_t id)
++{
++  wl_resource* pointer = wl_resource_create(client, &wl_pointer_interface, version, id);
++  if (!pointer)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  wl_resource_set_implementation(pointer, &POINTER_IMPL, this, PointerResourceDestroyed);
++  m_pointers.push_back(pointer);
++
++  if (m_pointerFocus && wl_resource_get_client(m_pointerFocus->GetResource()) == client)
++    SendPointerEnterTo(pointer, *m_pointerFocus);
++}
++
++void CWaylandHost::RemovePointer(wl_resource* pointer)
++{
++  m_pointers.remove(pointer);
++}
++
++void CWaylandHost::OnSurfaceCreated(CWaylandSurface* surface)
++{
++  m_surfaces.push_back(surface);
++}
++
++void CWaylandHost::OnSurfaceDestroyed(CWaylandSurface* surface)
++{
++  m_surfaces.remove(surface);
++  for (WebView& view : m_views)
++  {
++    if (view.surface == surface)
++      view.surface = nullptr;
++  }
++  if (m_keyboardFocus == surface)
++    m_keyboardFocus = nullptr;
++  if (m_pointerFocus == surface)
++    m_pointerFocus = nullptr;
++}
++
++void CWaylandHost::OnSurfaceMapped(CWaylandSurface& surface)
++{
++  const WebView* view = WebViewOf(&surface);
++  if (!view || view->active)
++    SetKeyboardFocus(&surface);
++  m_observer.OnSurfaceMapped(surface);
++}
++
++void CWaylandHost::OnSurfaceUnmapped(CWaylandSurface& surface)
++{
++  if (m_keyboardFocus == &surface)
++    SetKeyboardFocus(nullptr);
++  if (m_pointerFocus == &surface)
++    SendPointerLeave();
++  m_observer.OnSurfaceUnmapped(surface);
++}
++
++void CWaylandHost::OnSurfaceReleased(CWaylandSurface& surface)
++{
++  m_observer.OnSurfaceDestroyed(surface);
++}
++
++void CWaylandHost::OnSurfaceFrame(CWaylandSurface& surface, std::shared_ptr<CWaylandBuffer> buffer)
++{
++  m_observer.OnSurfaceFrame(surface, std::move(buffer));
++}
++
++void CWaylandHost::SetKeyboardFocus(CWaylandSurface* surface)
++{
++  if (surface == m_keyboardFocus)
++    return;
++
++  if (m_keyboardFocus)
++    SendKeyboardLeave(*m_keyboardFocus);
++  // the pointer follows the keyboard focus on its next motion
++  SendPointerLeave();
++  m_keyboardFocus = surface;
++  if (surface)
++    SendKeyboardEnter(*surface);
++}
++
++void CWaylandHost::SendKeyboardEnter(CWaylandSurface& surface)
++{
++  wl_client* client = wl_resource_get_client(surface.GetResource());
++  for (wl_resource* keyboard : m_keyboards)
++  {
++    if (wl_resource_get_client(keyboard) == client)
++      SendKeyboardEnterTo(keyboard, surface);
++  }
++  SendTextInputFocus(&surface, true);
++}
++
++void CWaylandHost::SendTextInputFocus(CWaylandSurface* surface, bool entered)
++{
++  if (!surface)
++    return;
++
++  wl_client* client = wl_resource_get_client(surface->GetResource());
++  for (TextInput& input : m_textInputs)
++  {
++    if (wl_resource_get_client(input.resource) != client)
++      continue;
++    if (entered)
++      zwp_text_input_v3_send_enter(input.resource, surface->GetResource());
++    else
++      zwp_text_input_v3_send_leave(input.resource, surface->GetResource());
++  }
++}
++
++void CWaylandHost::AddTextInput(wl_client* client, uint32_t version, uint32_t id)
++{
++  wl_resource* resource = wl_resource_create(client, &zwp_text_input_v3_interface, version, id);
++  if (!resource)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  TextInput input;
++  input.host = this;
++  input.resource = resource;
++  m_textInputs.push_back(std::move(input));
++  wl_resource_set_implementation(resource, &TEXT_INPUT_IMPL, &m_textInputs.back(),
++                                 TextInputResourceDestroyed);
++  if (m_keyboardFocus && wl_resource_get_client(m_keyboardFocus->GetResource()) == client)
++    zwp_text_input_v3_send_enter(resource, m_keyboardFocus->GetResource());
++}
++
++void CWaylandHost::OnTextInputEnable(TextInput& input, bool enable)
++{
++  input.pending.enabled = enable;
++  if (!enable)
++  {
++    input.enableRequests = 0;
++    return;
++  }
++
++  ++input.enableRequests;
++  input.pending.surrounding.clear();
++  input.pending.cursor = 0;
++  input.pending.hint = 0;
++  input.pending.purpose = 0;
++  input.pending.caretX = 0;
++  input.pending.caretY = 0;
++  input.pending.caretWidth = 0;
++  input.pending.caretHeight = 0;
++}
++
++void CWaylandHost::OnTextInputSurroundingText(TextInput& input, const char* text, int32_t cursor)
++{
++  input.pending.surrounding = text ? text : "";
++  input.pending.cursor = cursor;
++}
++
++void CWaylandHost::OnTextInputContentType(TextInput& input, uint32_t hint, uint32_t purpose)
++{
++  input.pending.hint = hint;
++  input.pending.purpose = purpose;
++}
++
++void CWaylandHost::OnTextInputCursorRectangle(
++    TextInput& input, int32_t x, int32_t y, int32_t width, int32_t height)
++{
++  input.pending.caretX = x;
++  input.pending.caretY = y;
++  input.pending.caretWidth = width;
++  input.pending.caretHeight = height;
++}
++
++void CWaylandHost::OnTextInputCommit(TextInput& input)
++{
++  input.current = input.pending;
++  ++input.serial;
++  CLog::Log(LOGDEBUG,
++            "CWaylandHost::{}: text input {} after {} enable requests, caret {},{} {}x{}, "
++            "cursor {} in \"{}\"",
++            __FUNCTION__, input.current.enabled ? "enabled" : "disabled", input.enableRequests,
++            input.current.caretX, input.current.caretY, input.current.caretWidth,
++            input.current.caretHeight, input.current.cursor, input.current.surrounding);
++  if (!input.current.enabled)
++  {
++    if (input.keyboardShown)
++      m_observer.OnTextInputDisabled();
++    input.keyboardShown = false;
++    return;
++  }
++
++  // a page drawing its own keyboard enables the text input once; one that
++  // wants the compositor's keyboard enables it again, as Mutter expects
++  if (input.keyboardShown)
++    m_observer.OnTextInputUpdated(input.current);
++  else if (input.enableRequests >= 2)
++  {
++    input.keyboardShown = true;
++    m_observer.OnTextInputEnabled(input.current);
++  }
++}
++
++void CWaylandHost::OnTextInputResourceDestroyed(TextInput& input)
++{
++  const bool keyboardShown = input.keyboardShown;
++  m_textInputs.remove_if([&input](const TextInput& entry) { return &entry == &input; });
++  if (keyboardShown)
++    m_observer.OnTextInputDisabled();
++}
++
++bool TextInputState::IsHidden() const
++{
++  return (hint & ZWP_TEXT_INPUT_V3_CONTENT_HINT_HIDDEN_TEXT) != 0 ||
++         purpose == ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_PASSWORD ||
++         purpose == ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_PIN;
++}
++
++void CWaylandHost::TextInputCommit(std::string text, uint32_t deleteBefore, uint32_t deleteAfter)
++{
++  Post(
++      [this, text = std::move(text), deleteBefore, deleteAfter]()
++      {
++        for (TextInput& input : m_textInputs)
++        {
++          if (!input.current.enabled)
++            continue;
++          if (deleteBefore || deleteAfter)
++            zwp_text_input_v3_send_delete_surrounding_text(input.resource, deleteBefore,
++                                                           deleteAfter);
++          zwp_text_input_v3_send_commit_string(input.resource, text.c_str());
++          zwp_text_input_v3_send_done(input.resource, input.serial);
++        }
++      });
++}
++
++void CWaylandHost::SendKeyboardEnterTo(wl_resource* keyboard, CWaylandSurface& surface)
++{
++  wl_array keys;
++  wl_array_init(&keys);
++  wl_keyboard_send_enter(keyboard, NextSerial(), surface.GetResource(), &keys);
++  wl_array_release(&keys);
++  wl_keyboard_send_modifiers(keyboard, NextSerial(), m_modsDepressed, m_modsLatched, m_modsLocked,
++                             m_modsGroup);
++}
++
++void CWaylandHost::SendKeyboardLeave(CWaylandSurface& surface)
++{
++  wl_client* client = wl_resource_get_client(surface.GetResource());
++  const uint32_t serial = NextSerial();
++  for (wl_resource* keyboard : m_keyboards)
++  {
++    if (wl_resource_get_client(keyboard) == client)
++      wl_keyboard_send_leave(keyboard, serial, surface.GetResource());
++  }
++  SendTextInputFocus(&surface, false);
++}
++
++void CWaylandHost::SendPointerEnter(CWaylandSurface& surface)
++{
++  m_pointerFocus = &surface;
++  wl_client* client = wl_resource_get_client(surface.GetResource());
++  for (wl_resource* pointer : m_pointers)
++  {
++    if (wl_resource_get_client(pointer) == client)
++      SendPointerEnterTo(pointer, surface);
++  }
++}
++
++void CWaylandHost::SendPointerEnterTo(wl_resource* pointer, CWaylandSurface& surface)
++{
++  wl_pointer_send_enter(pointer, NextSerial(), surface.GetResource(), wl_fixed_from_int(m_pointerX),
++                        wl_fixed_from_int(m_pointerY));
++  if (wl_resource_get_version(pointer) >= WL_POINTER_FRAME_SINCE_VERSION)
++    wl_pointer_send_frame(pointer);
++}
++
++void CWaylandHost::SendPointerLeave()
++{
++  if (!m_pointerFocus)
++    return;
++
++  wl_client* client = wl_resource_get_client(m_pointerFocus->GetResource());
++  const uint32_t serial = NextSerial();
++  for (wl_resource* pointer : m_pointers)
++  {
++    if (wl_resource_get_client(pointer) != client)
++      continue;
++    wl_pointer_send_leave(pointer, serial, m_pointerFocus->GetResource());
++    if (wl_resource_get_version(pointer) >= WL_POINTER_FRAME_SINCE_VERSION)
++      wl_pointer_send_frame(pointer);
++  }
++  m_pointerFocus = nullptr;
++}
++
++void CWaylandHost::SendModifiers()
++{
++  const uint32_t depressed = xkb_state_serialize_mods(m_xkbState, XKB_STATE_MODS_DEPRESSED);
++  const uint32_t latched = xkb_state_serialize_mods(m_xkbState, XKB_STATE_MODS_LATCHED);
++  const uint32_t locked = xkb_state_serialize_mods(m_xkbState, XKB_STATE_MODS_LOCKED);
++  const uint32_t group = xkb_state_serialize_layout(m_xkbState, XKB_STATE_LAYOUT_EFFECTIVE);
++  if (depressed == m_modsDepressed && latched == m_modsLatched && locked == m_modsLocked &&
++      group == m_modsGroup)
++    return;
++
++  m_modsDepressed = depressed;
++  m_modsLatched = latched;
++  m_modsLocked = locked;
++  m_modsGroup = group;
++  if (!m_keyboardFocus)
++    return;
++
++  wl_client* client = wl_resource_get_client(m_keyboardFocus->GetResource());
++  const uint32_t serial = NextSerial();
++  for (wl_resource* keyboard : m_keyboards)
++  {
++    if (wl_resource_get_client(keyboard) == client)
++      wl_keyboard_send_modifiers(keyboard, serial, depressed, latched, locked, group);
++  }
++}
++
++void CWaylandHost::DoKeyboardKey(uint32_t evdevCode, bool pressed)
++{
++  xkb_state_update_key(m_xkbState, evdevCode + XKB_KEYCODE_OFFSET,
++                       pressed ? XKB_KEY_DOWN : XKB_KEY_UP);
++  if (m_keyboardFocus)
++  {
++    wl_client* client = wl_resource_get_client(m_keyboardFocus->GetResource());
++    const uint32_t serial = NextSerial();
++    const uint32_t time = Milliseconds(Now());
++    const uint32_t state = pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED;
++    for (wl_resource* keyboard : m_keyboards)
++    {
++      if (wl_resource_get_client(keyboard) == client)
++        wl_keyboard_send_key(keyboard, serial, time, evdevCode, state);
++    }
++  }
++  SendModifiers();
++}
++
++void CWaylandHost::DoPointerMotion(int32_t x, int32_t y)
++{
++  m_pointerX = x;
++  m_pointerY = y;
++  if (!m_keyboardFocus)
++    return;
++
++  if (m_pointerFocus != m_keyboardFocus)
++  {
++    SendPointerEnter(*m_keyboardFocus);
++    return;
++  }
++
++  wl_client* client = wl_resource_get_client(m_pointerFocus->GetResource());
++  const uint32_t time = Milliseconds(Now());
++  for (wl_resource* pointer : m_pointers)
++  {
++    if (wl_resource_get_client(pointer) != client)
++      continue;
++    wl_pointer_send_motion(pointer, time, wl_fixed_from_int(x), wl_fixed_from_int(y));
++    if (wl_resource_get_version(pointer) >= WL_POINTER_FRAME_SINCE_VERSION)
++      wl_pointer_send_frame(pointer);
++  }
++}
++
++void CWaylandHost::DoPointerButton(uint32_t evdevButton, bool pressed)
++{
++  if (!m_pointerFocus)
++    return;
++
++  wl_client* client = wl_resource_get_client(m_pointerFocus->GetResource());
++  const uint32_t serial = NextSerial();
++  const uint32_t time = Milliseconds(Now());
++  const uint32_t state =
++      pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED;
++  for (wl_resource* pointer : m_pointers)
++  {
++    if (wl_resource_get_client(pointer) != client)
++      continue;
++    wl_pointer_send_button(pointer, serial, time, evdevButton, state);
++    if (wl_resource_get_version(pointer) >= WL_POINTER_FRAME_SINCE_VERSION)
++      wl_pointer_send_frame(pointer);
++  }
++}
++
++void CWaylandHost::DoPointerAxis(int32_t value120)
++{
++  if (!m_pointerFocus)
++    return;
++
++  wl_client* client = wl_resource_get_client(m_pointerFocus->GetResource());
++  const uint32_t time = Milliseconds(Now());
++  for (wl_resource* pointer : m_pointers)
++  {
++    if (wl_resource_get_client(pointer) != client)
++      continue;
++    const uint32_t version = wl_resource_get_version(pointer);
++    if (version >= WL_POINTER_AXIS_SOURCE_SINCE_VERSION)
++      wl_pointer_send_axis_source(pointer, WL_POINTER_AXIS_SOURCE_WHEEL);
++    if (version >= WL_POINTER_AXIS_DISCRETE_SINCE_VERSION)
++      wl_pointer_send_axis_discrete(pointer, WL_POINTER_AXIS_VERTICAL_SCROLL, value120 / 120);
++    wl_pointer_send_axis(pointer, time, WL_POINTER_AXIS_VERTICAL_SCROLL,
++                         wl_fixed_from_int(value120 / AXIS_UNITS_PER_VALUE120));
++    if (version >= WL_POINTER_FRAME_SINCE_VERSION)
++      wl_pointer_send_frame(pointer);
++  }
++}
++
++void CWaylandHost::DoPointerScroll(int32_t x, int32_t y, int32_t pixels)
++{
++  DoPointerMotion(x, y);
++  if (!m_pointerFocus)
++    return;
++
++  wl_client* client = wl_resource_get_client(m_pointerFocus->GetResource());
++  const uint32_t time = Milliseconds(Now());
++  for (wl_resource* pointer : m_pointers)
++  {
++    if (wl_resource_get_client(pointer) != client)
++      continue;
++    const uint32_t version = wl_resource_get_version(pointer);
++    // without a discrete step the client takes the value as pixels
++    if (version >= WL_POINTER_AXIS_SOURCE_SINCE_VERSION)
++      wl_pointer_send_axis_source(pointer, WL_POINTER_AXIS_SOURCE_FINGER);
++    wl_pointer_send_axis(pointer, time, WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_int(pixels));
++    if (version >= WL_POINTER_FRAME_SINCE_VERSION)
++      wl_pointer_send_frame(pointer);
++  }
++}
++
++void CWaylandHost::DoFrameDone()
++{
++  const timespec now = Now();
++  const uint32_t time = Milliseconds(now);
++  const uint32_t refreshNs = m_config.refreshMilliHz > 0
++                                 ? static_cast<uint32_t>(1000000000000ULL / m_config.refreshMilliHz)
++                                 : 0;
++  for (CWaylandSurface* surface : m_surfaces)
++    surface->FrameDone(time, now, refreshNs);
++}
+--- /dev/null
++++ b/xbmc/platform/linux/waylandhost/WaylandHost.h
+@@ -0,0 +1,401 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "threads/CriticalSection.h"
++#include "threads/Thread.h"
++
++#include <cstdint>
++#include <ctime>
++#include <functional>
++#include <list>
++#include <map>
++#include <memory>
++#include <string>
++#include <vector>
++
++#include <sys/types.h>
++
++struct wl_client;
++struct wl_display;
++struct wl_event_loop;
++struct wl_event_source;
++struct wl_global;
++struct wl_resource;
++struct xkb_context;
++struct xkb_keymap;
++struct xkb_state;
++
++namespace KODI
++{
++namespace WAYLANDHOST
++{
++
++class CWaylandBuffer;
++class CWaylandSurface;
++
++/*!
++ * \brief What the focused page tells about its text input: the text around
++ * the caret with the caret's byte offset, the content type and the caret
++ * rectangle in surface coordinates
++ */
++struct TextInputState
++{
++  bool enabled{false};
++  std::string surrounding;
++  int32_t cursor{0};
++  uint32_t hint{0};
++  uint32_t purpose{0};
++  int32_t caretX{0};
++  int32_t caretY{0};
++  int32_t caretWidth{0};
++  int32_t caretHeight{0};
++
++  bool IsHidden() const;
++};
++
++/*!
++ * \brief Receives what the clients do. All methods run on the host thread.
++ */
++class IWaylandHostObserver
++{
++public:
++  virtual ~IWaylandHostObserver() = default;
++
++  virtual void OnSurfaceMapped(CWaylandSurface& surface) = 0;
++  virtual void OnSurfaceUnmapped(CWaylandSurface& surface) = 0;
++  virtual void OnSurfaceDestroyed(CWaylandSurface& surface) = 0;
++
++  /*!
++   * \brief The surface shows new content; the buffer is locked for the
++   * observer, which unlocks it when it no longer needs the pixels
++   */
++  virtual void OnSurfaceFrame(CWaylandSurface& surface, std::shared_ptr<CWaylandBuffer> buffer) = 0;
++
++  /*!
++   * \brief A client ended, or could not be started (pid -1); status is -1
++   * when it is unknown
++   */
++  virtual void OnClientExited(pid_t pid, int status) = 0;
++
++  // kodi_web_v1, what the web client reports; an observer may ignore any of it
++  virtual void OnWebClientReady() {}
++  virtual void OnWebViewCreated(const std::string& profile, CWaylandSurface& surface) {}
++  virtual void OnWebViewUnavailable(const std::string& profile, const std::string& message) {}
++  virtual void OnWebFilterListPrepared(const std::string& name, bool prepared) {}
++  virtual void OnWebViewUrl(const std::string& profile, const std::string& url) {}
++  virtual void OnWebViewTitle(const std::string& profile, const std::string& title) {}
++  virtual void OnWebViewProgress(const std::string& profile, uint32_t percent) {}
++  virtual void OnWebViewNavigationState(const std::string& profile,
++                                        bool canGoBack,
++                                        bool canGoForward)
++  {
++  }
++  virtual void OnWebViewError(const std::string& profile, uint32_t code, const std::string& message)
++  {
++  }
++  virtual void OnWebViewExit(const std::string& profile) {}
++  virtual void OnWebViewMediaState(const std::string& profile, bool video, bool audio, bool paused)
++  {
++  }
++  virtual void OnWebViewDestroyed(const std::string& profile) {}
++
++  // zwp_text_input_v3: the focused page asks for an on-screen keyboard,
++  // then reports its text and caret after every change
++  virtual void OnTextInputEnabled(const TextInputState& state) {}
++  virtual void OnTextInputUpdated(const TextInputState& state) {}
++  virtual void OnTextInputDisabled() {}
++};
++
++enum class WebNavigation
++{
++  BACK,
++  FORWARD,
++  RELOAD,
++  STOP,
++};
++
++enum class WebViewError
++{
++  LOAD_FAILED,
++  TLS_FAILED,
++  ENGINE_CRASHED,
++  UNRESPONSIVE,
++  CONFIG_FAILED,
++};
++
++struct WaylandHostConfig
++{
++  int32_t width{0};
++  int32_t height{0};
++  int32_t refreshMilliHz{0};
++  std::string renderDevicePath;
++  std::string keyboardLayout;
++};
++
++/*!
++ * \brief A Wayland compositor without a screen of its own: clients connect
++ * through socket pairs handed to processes the host spawns, their buffers
++ * are passed to the observer, and input comes from Kodi.
++ */
++class CWaylandHost : private CThread
++{
++public:
++  CWaylandHost(IWaylandHostObserver& observer, WaylandHostConfig config);
++  ~CWaylandHost() override;
++
++  bool Start();
++  void Stop();
++
++  /*!
++   * \brief Run a function on the host thread; any thread
++   */
++  void Post(std::function<void()> task);
++
++  /*!
++   * \brief Start a client process connected to this host; any thread
++   */
++  void SpawnClient(std::vector<std::string> argv, std::map<std::string, std::string> env);
++
++  /*!
++   * \brief Ask every client process to terminate; any thread
++   */
++  void TerminateClients();
++
++  /*!
++   * \brief Tell the clients the output's new mode and resize their surfaces
++   * to it; any thread
++   */
++  void SetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz);
++
++  // input injection; any thread
++  void KeyboardKey(uint32_t evdevCode, bool pressed);
++  void PointerMotion(int32_t x, int32_t y);
++  void PointerButton(uint32_t evdevButton, bool pressed);
++  void PointerAxis(int32_t value120);
++
++  /*!
++   * \brief Scroll the content under a point of the focused surface by a
++   * number of pixels, as a touchpad would; any thread
++   */
++  void PointerScroll(int32_t x, int32_t y, int32_t pixels);
++
++  /*!
++   * \brief A display refresh has passed; any thread
++   */
++  void FrameDone();
++
++  // kodi_web_v1, what Kodi asks of the web client; any thread
++  void WebWantView(std::string profile, std::string uplink);
++  void WebViewLoadUrl(std::string profile, std::string url);
++  void WebViewNavigate(std::string profile, WebNavigation action);
++  void WebViewSetActive(std::string profile, bool active);
++  void WebViewClose(std::string profile);
++  void WebViewSetUserAgent(std::string profile, std::string userAgent);
++  void WebViewSetViewport(std::string profile, uint32_t width, uint32_t height);
++
++  /*!
++   * \brief Replace the text around the cursor of the enabled text input;
++   * any thread
++   */
++  void TextInputCommit(std::string text, uint32_t deleteBefore, uint32_t deleteAfter);
++
++  /*!
++   * \brief Hand the client a script or filter; the host owns the descriptor
++   * from here on and closes it once sent
++   */
++  void WebViewAddUserScript(std::string profile, std::string name, int fd, uint32_t size);
++  void WebViewAddContentFilter(std::string profile, std::string name, int fd, uint32_t size);
++
++  /*!
++   * \brief Apply a shared content filter list to a view; any thread
++   */
++  void WebViewAddContentFilterList(std::string profile, std::string name);
++
++  /*!
++   * \brief Keep a shared content filter list, in Adblock Plus syntax, for
++   * the web client, which gets it now and whenever it binds again; an empty
++   * path drops the list; any thread
++   */
++  void WebSetContentFilterList(std::string name, std::string path);
++
++  static bool IsValidWebProfile(const std::string& profile);
++
++  struct WebView
++  {
++    CWaylandHost* host{nullptr};
++    wl_resource* resource{nullptr};
++    std::string profile;
++    CWaylandSurface* surface{nullptr};
++    bool active{false};
++  };
++
++  struct TextInput
++  {
++    CWaylandHost* host{nullptr};
++    wl_resource* resource{nullptr};
++    TextInputState current;
++    TextInputState pending;
++    uint32_t serial{0};
++    uint32_t enableRequests{0};
++    bool keyboardShown{false};
++  };
++
++  // host thread only
++  wl_display* GetDisplay() const { return m_display; }
++  void OnWebManagerBound(wl_resource* manager);
++  void OnWebManagerUnbound(wl_resource* manager);
++  void OnWebClientReady();
++  void OnWebViewCreate(wl_client* client,
++                       wl_resource* manager,
++                       uint32_t id,
++                       const char* profile,
++                       wl_resource* surfaceResource);
++  void OnWebViewUnavailable(const char* profile, const char* message);
++  void OnWebFilterListPrepared(const char* name, bool prepared);
++  void OnWebViewUrl(WebView& view, const char* url);
++  void OnWebViewTitle(WebView& view, const char* title);
++  void OnWebViewFavicon(WebView& view, wl_resource* buffer);
++  void OnWebViewProgress(WebView& view, uint32_t percent);
++  void OnWebViewNavigationState(WebView& view, uint32_t canGoBack, uint32_t canGoForward);
++  void OnWebViewError(WebView& view, uint32_t code, const char* message);
++  void OnWebViewExit(WebView& view);
++  void OnWebViewMediaState(WebView& view, bool video, bool audio, bool paused);
++  void OnWebViewResourceDestroyed(WebView& view);
++  void AddTextInput(wl_client* client, uint32_t version, uint32_t id);
++  void OnTextInputEnable(TextInput& input, bool enable);
++  void OnTextInputSurroundingText(TextInput& input, const char* text, int32_t cursor);
++  void OnTextInputContentType(TextInput& input, uint32_t hint, uint32_t purpose);
++  void OnTextInputCursorRectangle(
++      TextInput& input, int32_t x, int32_t y, int32_t width, int32_t height);
++  void OnTextInputCommit(TextInput& input);
++  void OnTextInputResourceDestroyed(TextInput& input);
++  const WaylandHostConfig& GetConfig() const { return m_config; }
++  uint32_t NextSerial();
++  void OnSurfaceCreated(CWaylandSurface* surface);
++  void OnSurfaceDestroyed(CWaylandSurface* surface);
++  void OnSurfaceMapped(CWaylandSurface& surface);
++  void OnSurfaceUnmapped(CWaylandSurface& surface);
++  void OnSurfaceReleased(CWaylandSurface& surface);
++  void OnSurfaceFrame(CWaylandSurface& surface, std::shared_ptr<CWaylandBuffer> buffer);
++  void SendDmabufFeedback(wl_resource* feedback);
++  void AddKeyboard(wl_client* client, uint32_t version, uint32_t id);
++  void RemoveKeyboard(wl_resource* keyboard);
++  void AddPointer(wl_client* client, uint32_t version, uint32_t id);
++  void RemovePointer(wl_resource* pointer);
++
++protected:
++  void Process() override;
++
++private:
++  struct Client
++  {
++    CWaylandHost* host{nullptr};
++    pid_t pid{-1};
++    int pidfd{-1};
++    wl_client* client{nullptr};
++    wl_event_source* exitSource{nullptr};
++  };
++
++  bool CreateGlobals();
++  bool CreateKeymap();
++  bool CreateFormatTable();
++  static int SealedMemfd(const char* name, const void* data, size_t size);
++  void DestroyAll();
++  void RunTasks();
++  void DoSpawnClient(const std::vector<std::string>& argv,
++                     const std::map<std::string, std::string>& env);
++  void DoTerminateClients();
++  static void ReapClient(const Client& client);
++  void DoKeyboardKey(uint32_t evdevCode, bool pressed);
++  void DoPointerMotion(int32_t x, int32_t y);
++  void DoPointerButton(uint32_t evdevButton, bool pressed);
++  void DoPointerAxis(int32_t value120);
++  void DoPointerScroll(int32_t x, int32_t y, int32_t pixels);
++  void DoFrameDone();
++  void DoSetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz);
++  void SendOutputMode(wl_resource* output) const;
++  void SetKeyboardFocus(CWaylandSurface* surface);
++  void SendKeyboardEnter(CWaylandSurface& surface);
++  void SendKeyboardEnterTo(wl_resource* keyboard, CWaylandSurface& surface);
++  void SendKeyboardLeave(CWaylandSurface& surface);
++  void SendPointerEnter(CWaylandSurface& surface);
++  void SendPointerEnterTo(wl_resource* pointer, CWaylandSurface& surface);
++  void SendPointerLeave();
++  void SendModifiers();
++  void OnClientExit(Client& client);
++
++  static int OnWake(int fd, uint32_t mask, void* data);
++  static int OnClientExitStatic(int fd, uint32_t mask, void* data);
++
++  // globals
++  static void BindCompositor(wl_client* client, void* data, uint32_t version, uint32_t id);
++  static void BindOutput(wl_client* client, void* data, uint32_t version, uint32_t id);
++  static void OutputDestroyed(wl_resource* resource);
++  static void BindSeat(wl_client* client, void* data, uint32_t version, uint32_t id);
++  static void BindXdgWmBase(wl_client* client, void* data, uint32_t version, uint32_t id);
++  static void BindLinuxDmabuf(wl_client* client, void* data, uint32_t version, uint32_t id);
++  static void BindPresentation(wl_client* client, void* data, uint32_t version, uint32_t id);
++  static void BindTextInputManager(wl_client* client, void* data, uint32_t version, uint32_t id);
++  static void BindWebManager(wl_client* client, void* data, uint32_t version, uint32_t id);
++
++  WebView* FindWebView(const std::string& profile);
++  WebView* WebViewOf(const CWaylandSurface* surface);
++  void DoWebViewSetActive(WebView& view, bool active);
++  void SendTextInputFocus(CWaylandSurface* surface, bool entered);
++  void SendWebViewFile(
++      const std::string& profile, const std::string& name, int fd, uint32_t size, bool script);
++  void SendContentFilterList(const std::string& name, const std::string& path);
++
++  IWaylandHostObserver& m_observer;
++  // changed only on the host thread
++  WaylandHostConfig m_config;
++
++  wl_display* m_display{nullptr};
++  wl_event_loop* m_loop{nullptr};
++  int m_wakeFd{-1};
++  wl_event_source* m_wakeSource{nullptr};
++  std::vector<wl_global*> m_globals;
++
++  CCriticalSection m_taskLock;
++  std::list<std::function<void()>> m_tasks;
++
++  std::list<Client> m_clients;
++  std::list<CWaylandSurface*> m_surfaces;
++  wl_resource* m_webManager{nullptr};
++  std::list<WebView> m_views;
++  std::map<std::string, std::string> m_filterLists;
++  std::list<TextInput> m_textInputs;
++  std::list<wl_resource*> m_outputs;
++  std::list<wl_resource*> m_keyboards;
++  std::list<wl_resource*> m_pointers;
++  CWaylandSurface* m_keyboardFocus{nullptr};
++  CWaylandSurface* m_pointerFocus{nullptr};
++  int32_t m_pointerX{0};
++  int32_t m_pointerY{0};
++
++  xkb_context* m_xkbContext{nullptr};
++  xkb_keymap* m_xkbKeymap{nullptr};
++  xkb_state* m_xkbState{nullptr};
++  int m_keymapFd{-1};
++  size_t m_keymapSize{0};
++  uint32_t m_modsDepressed{0};
++  uint32_t m_modsLatched{0};
++  uint32_t m_modsLocked{0};
++  uint32_t m_modsGroup{0};
++
++  int m_formatTableFd{-1};
++  size_t m_formatTableSize{0};
++  dev_t m_renderDevice{0};
++
++  uint32_t m_serial{0};
++};
++
++} // namespace WAYLANDHOST
++} // namespace KODI
+--- /dev/null
++++ b/xbmc/platform/linux/waylandhost/WaylandSurface.cpp
+@@ -0,0 +1,245 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "WaylandSurface.h"
++
++#include "WaylandBuffer.h"
++#include "WaylandHost.h"
++#include "utils/log.h"
++
++#include <presentation-time-server-protocol.h>
++#include <wayland-server-core.h>
++#include <wayland-server-protocol.h>
++#include <xdg-shell-server-protocol.h>
++
++using namespace KODI::WAYLANDHOST;
++
++namespace
++{
++
++// the client may destroy these on its own, on disconnect even before the surface
++void FrameResourceDestroyed(wl_resource* resource)
++{
++  if (auto* surface = static_cast<CWaylandSurface*>(wl_resource_get_user_data(resource)))
++    surface->Forget(resource);
++}
++
++// destroyed by the surface: detached first, so their destructor leaves it alone
++void FrameResourcesDestroy(std::list<wl_resource*>& resources)
++{
++  for (wl_resource* resource : resources)
++  {
++    wl_resource_set_user_data(resource, nullptr);
++    wl_resource_destroy(resource);
++  }
++  resources.clear();
++}
++
++} // unnamed namespace
++
++CWaylandSurface::CWaylandSurface(CWaylandHost& host, wl_resource* resource)
++  : m_host(host),
++    m_resource(resource)
++{
++  m_host.OnSurfaceCreated(this);
++}
++
++CWaylandSurface::~CWaylandSurface()
++{
++  // forgotten before unmapping: a destroyed surface is sent no leave events
++  m_host.OnSurfaceDestroyed(this);
++  Unmap();
++  m_host.OnSurfaceReleased(*this);
++
++  if (m_xdgToplevel)
++    wl_resource_set_user_data(m_xdgToplevel, nullptr);
++  if (m_xdgSurface)
++    wl_resource_set_user_data(m_xdgSurface, nullptr);
++
++  if (m_current)
++  {
++    m_current->SetCurrent(false);
++    m_current->SendRelease();
++  }
++
++  FrameResourcesDestroy(m_pendingCallbacks);
++  FrameResourcesDestroy(m_frameCallbacks);
++  for (wl_resource* feedback : m_presentationFeedback)
++    wp_presentation_feedback_send_discarded(feedback);
++  FrameResourcesDestroy(m_presentationFeedback);
++}
++
++void CWaylandSurface::Attach(wl_resource* buffer)
++{
++  m_pendingAttach = true;
++  m_pending.reset();
++  m_pendingDetach = (buffer == nullptr);
++  if (!buffer)
++    return;
++
++  if (wl_shm_buffer_get(buffer))
++  {
++    // only dmabuf content reaches the screen; give shm buffers straight back
++    wl_buffer_send_release(buffer);
++    m_pendingDetach = true;
++    return;
++  }
++
++  auto* holder = static_cast<std::shared_ptr<CWaylandBuffer>*>(wl_resource_get_user_data(buffer));
++  if (holder)
++    m_pending = *holder;
++}
++
++void CWaylandSurface::Frame(wl_resource* callback)
++{
++  wl_resource_set_implementation(callback, nullptr, this, FrameResourceDestroyed);
++  m_pendingCallbacks.push_back(callback);
++}
++
++void CWaylandSurface::Commit()
++{
++  bool newContent = false;
++
++  if (m_pendingAttach)
++  {
++    std::shared_ptr<CWaylandBuffer> previous = std::move(m_current);
++    m_current = std::move(m_pending);
++    m_pendingAttach = false;
++    m_pendingDetach = false;
++
++    if (m_current)
++    {
++      m_current->SetCurrent(true);
++      newContent = true;
++    }
++    if (previous && previous != m_current)
++    {
++      previous->SetCurrent(false);
++      previous->SendRelease();
++    }
++  }
++
++  m_frameCallbacks.splice(m_frameCallbacks.end(), m_pendingCallbacks);
++
++  if (m_xdgToplevel && !m_configured)
++    SendConfigure(m_host.GetConfig().width, m_host.GetConfig().height);
++
++  if (!m_current)
++  {
++    Unmap();
++    return;
++  }
++
++  if (!m_mapped && m_xdgToplevel && m_acked)
++    Map();
++
++  if (m_mapped && newContent)
++  {
++    m_current->Lock();
++    m_host.OnSurfaceFrame(*this, m_current);
++  }
++}
++
++void CWaylandSurface::OnResourceDestroyed()
++{
++  m_resource = nullptr;
++}
++
++void CWaylandSurface::SetXdgSurface(wl_resource* resource)
++{
++  m_xdgSurface = resource;
++  if (resource)
++    return;
++
++  // the toplevel may outlive its xdg_surface and must not reach this surface
++  if (m_xdgToplevel)
++    wl_resource_set_user_data(m_xdgToplevel, nullptr);
++  SetXdgToplevel(nullptr);
++}
++
++void CWaylandSurface::SetXdgToplevel(wl_resource* resource)
++{
++  m_xdgToplevel = resource;
++  if (resource)
++    return;
++
++  Unmap();
++  m_configured = false;
++  m_acked = false;
++}
++
++void CWaylandSurface::AckConfigure(uint32_t serial)
++{
++  if (serial == m_configureSerial)
++    m_acked = true;
++}
++
++void CWaylandSurface::SendConfigure(int32_t width, int32_t height)
++{
++  if (!m_xdgSurface || !m_xdgToplevel)
++    return;
++
++  wl_array states;
++  wl_array_init(&states);
++  auto* state = static_cast<uint32_t*>(wl_array_add(&states, 2 * sizeof(uint32_t)));
++  state[0] = XDG_TOPLEVEL_STATE_FULLSCREEN;
++  state[1] = XDG_TOPLEVEL_STATE_ACTIVATED;
++  xdg_toplevel_send_configure(m_xdgToplevel, width, height, &states);
++  wl_array_release(&states);
++
++  m_configureSerial = m_host.NextSerial();
++  m_configured = true;
++  m_acked = false;
++  xdg_surface_send_configure(m_xdgSurface, m_configureSerial);
++}
++
++void CWaylandSurface::AddPresentationFeedback(wl_resource* feedback)
++{
++  wl_resource_set_implementation(feedback, nullptr, this, FrameResourceDestroyed);
++  m_presentationFeedback.push_back(feedback);
++}
++
++void CWaylandSurface::Forget(wl_resource* resource)
++{
++  m_pendingCallbacks.remove(resource);
++  m_frameCallbacks.remove(resource);
++  m_presentationFeedback.remove(resource);
++}
++
++void CWaylandSurface::FrameDone(uint32_t timeMs, const timespec& presented, uint32_t refreshNs)
++{
++  for (wl_resource* callback : m_frameCallbacks)
++    wl_callback_send_done(callback, timeMs);
++  FrameResourcesDestroy(m_frameCallbacks);
++
++  const auto seconds = static_cast<uint64_t>(presented.tv_sec);
++  for (wl_resource* feedback : m_presentationFeedback)
++  {
++    wp_presentation_feedback_send_presented(
++        feedback, static_cast<uint32_t>(seconds >> 32), static_cast<uint32_t>(seconds),
++        static_cast<uint32_t>(presented.tv_nsec), refreshNs, 0, 0,
++        WP_PRESENTATION_FEEDBACK_KIND_VSYNC | WP_PRESENTATION_FEEDBACK_KIND_HW_CLOCK);
++  }
++  FrameResourcesDestroy(m_presentationFeedback);
++}
++
++void CWaylandSurface::Map()
++{
++  m_mapped = true;
++  CLog::Log(LOGDEBUG, "CWaylandSurface::{}: surface mapped, title \"{}\"", __FUNCTION__, m_title);
++  m_host.OnSurfaceMapped(*this);
++}
++
++void CWaylandSurface::Unmap()
++{
++  if (!m_mapped)
++    return;
++
++  m_mapped = false;
++  m_host.OnSurfaceUnmapped(*this);
++}
+--- /dev/null
++++ b/xbmc/platform/linux/waylandhost/WaylandSurface.h
+@@ -0,0 +1,101 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include <cstdint>
++#include <ctime>
++#include <list>
++#include <memory>
++#include <string>
++
++struct wl_resource;
++
++namespace KODI
++{
++namespace WAYLANDHOST
++{
++
++class CWaylandBuffer;
++class CWaylandHost;
++
++/*!
++ * \brief A client's wl_surface together with its xdg-shell toplevel role.
++ *
++ * Every method runs on the host thread. The surface is mapped once the
++ * client has acknowledged the fullscreen configure and committed a buffer.
++ */
++class CWaylandSurface
++{
++public:
++  CWaylandSurface(CWaylandHost& host, wl_resource* resource);
++  ~CWaylandSurface();
++
++  CWaylandSurface(const CWaylandSurface&) = delete;
++  CWaylandSurface& operator=(const CWaylandSurface&) = delete;
++
++  wl_resource* GetResource() const { return m_resource; }
++  wl_resource* GetToplevel() const { return m_xdgToplevel; }
++  bool IsMapped() const { return m_mapped; }
++  const std::string& GetTitle() const { return m_title; }
++  std::shared_ptr<CWaylandBuffer> GetCurrentBuffer() const { return m_current; }
++
++  // wl_surface requests
++  void Attach(wl_resource* buffer);
++  void Frame(wl_resource* callback);
++  void Commit();
++  void OnResourceDestroyed();
++
++  // xdg_surface and xdg_toplevel
++  void SetXdgSurface(wl_resource* resource);
++  void SetXdgToplevel(wl_resource* resource);
++  void AckConfigure(uint32_t serial);
++  void SetTitle(std::string title) { m_title = std::move(title); }
++  void SendConfigure(int32_t width, int32_t height);
++
++  // wp_presentation
++  void AddPresentationFeedback(wl_resource* feedback);
++
++  /*!
++   * \brief A frame callback or presentation feedback is gone
++   */
++  void Forget(wl_resource* resource);
++
++  /*!
++   * \brief The last committed content has been shown: complete the frame
++   * callbacks and presentation feedback the client asked for
++   */
++  void FrameDone(uint32_t timeMs, const timespec& presented, uint32_t refreshNs);
++
++private:
++  void Map();
++  void Unmap();
++
++  CWaylandHost& m_host;
++  wl_resource* m_resource;
++  wl_resource* m_xdgSurface{nullptr};
++  wl_resource* m_xdgToplevel{nullptr};
++  std::string m_title;
++
++  std::shared_ptr<CWaylandBuffer> m_pending;
++  bool m_pendingAttach{false};
++  bool m_pendingDetach{false};
++  std::list<wl_resource*> m_pendingCallbacks;
++
++  std::shared_ptr<CWaylandBuffer> m_current;
++  std::list<wl_resource*> m_frameCallbacks;
++  std::list<wl_resource*> m_presentationFeedback;
++
++  uint32_t m_configureSerial{0};
++  bool m_configured{false};
++  bool m_acked{false};
++  bool m_mapped{false};
++};
++
++} // namespace WAYLANDHOST
++} // namespace KODI
+--- /dev/null
++++ b/xbmc/platform/linux/waylandhost/protocol/kodi-web-v1.xml
+@@ -0,0 +1,422 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<protocol name="kodi_web_v1">
++
++  <copyright>
++    Copyright (C) 2026 Team Kodi
++
++    Permission is hereby granted, free of charge, to any person obtaining a
++    copy of this software and associated documentation files (the "Software"),
++    to deal in the Software without restriction, including without limitation
++    the rights to use, copy, modify, merge, publish, distribute, sublicense,
++    and/or sell copies of the Software, and to permit persons to whom the
++    Software is furnished to do so, subject to the following conditions:
++
++    The above copyright notice and this permission notice (including the next
++    paragraph) shall be included in all copies or substantial portions of the
++    Software.
++
++    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++    DEALINGS IN THE SOFTWARE.
++  </copyright>
++
++  <description summary="web views hosted by a media centre compositor">
++    This protocol lets a compositor that hosts a web browser as one of its
++    clients drive the browser's views and learn their state, so that the
++    compositor can present a page as part of its own user interface: open
++    a URL on the user's behalf, navigate, show the title and favicon,
++    offer bookmarks, and hand input to the page while it is in front.
++
++    The compositor spawns the browser itself and the browser connects over
++    an inherited socket. The browser is the Wayland client: requests are
++    what the browser tells the compositor, events are what the compositor
++    asks of the browser.
++
++    Views are grouped by profile. A profile names a hermetic set of
++    cookies, storage and credentials kept by the browser; views of
++    different profiles never share them. The compositor decides which
++    profile a URL opens in and what that profile looks like to the web:
++    user agent, user scripts and content filters are configured per view
++    before the first page loads, as file descriptors the browser reads.
++
++    Content filters use the Adblock Plus filter syntax, the format
++    maintained ad and tracker lists such as EasyList are published in, so
++    that one list serves any engine. The browser applies the filters its
++    engine can express and ignores the others.
++
++    Warning! The protocol described in this file is experimental and
++    backward incompatible changes may be made. Backward compatible changes
++    may be added together with the corresponding interface version bump.
++    Backward incompatible changes are done by bumping the version number in
++    the protocol and interface names and resetting the interface version.
++  </description>
++
++  <interface name="kodi_web_manager_v1" version="1">
++    <description summary="create and announce web views">
++      The global through which the browser announces itself and creates
++      views. A browser binds it once.
++
++      The compositor asks for a view of a profile with the want_view
++      event; the browser answers with a create_view request for that
++      profile and creates no view on its own. One view per profile: a
++      second create_view for a profile the compositor already knows is a
++      protocol error. The browser keeps running without views.
++
++      A profile identifier is 1 to 255 bytes of ASCII letters, digits,
++      '.', '_' and '-', other than "." and "..", compared case-sensitively.
++      The browser may use it verbatim as a file name. The profile
++      "default" keeps nothing across runs; the compositor opens pages that
++      belong to no other profile in it.
++    </description>
++
++    <enum name="error">
++      <entry name="duplicate_profile" value="0"
++             summary="a view for this profile already exists"/>
++      <entry name="invalid_surface" value="1"
++             summary="the surface already belongs to another view"/>
++      <entry name="invalid_profile" value="2"
++             summary="the profile identifier is not valid"/>
++    </enum>
++
++    <request name="destroy" type="destructor">
++      <description summary="destroy the manager">
++        Destroy the manager. Existing views are unaffected.
++      </description>
++    </request>
++
++    <request name="create_view">
++      <description summary="create a view for a profile">
++        Create a view that renders into the given surface and associate
++        the view with it. The browser makes the surface an xdg_toplevel
++        through xdg_wm_base as usual; the compositor configures it
++        fullscreen at its own resolution.
++
++        The profile names the hermetic storage this view uses. The
++        compositor configures the view with set_user_agent,
++        add_user_script, add_content_filter and add_content_filter_list
++        events before its first load_url, so the browser loads nothing
++        into a fresh view on its own.
++      </description>
++      <arg name="id" type="new_id" interface="kodi_web_view_v1"/>
++      <arg name="profile" type="string" summary="profile identifier"/>
++      <arg name="surface" type="object" interface="wl_surface"
++           summary="the surface the view renders into"/>
++    </request>
++
++    <request name="ready">
++      <description summary="the browser is ready to serve views">
++        Sent once the browser is connected and can create and load
++        views. The compositor shows no web entry point as available
++        before it.
++      </description>
++    </request>
++
++    <event name="want_view">
++      <description summary="the compositor wants a view for a profile">
++        The compositor needs a view for the given profile and none exists.
++        The browser answers with create_view for that profile. If it
++        cannot, or the profile identifier is not valid, it answers with a
++        view_unavailable request.
++
++        The uplink names the local source address every connection of
++        the profile's view is bound to, so that a host with more than one
++        uplink can choose the one a profile leaves through. It is an IPv4
++        address, an IPv4 subnet such as 192.168.5.0/24, or an interface
++        name; a subnet or an interface name is resolved for every new
++        connection, so it survives a new DHCP lease. A connection whose
++        uplink does not resolve fails rather than leaving through another
++        uplink. An empty string leaves the connections to the system's
++        routing. A browser that cannot bind connections answers a
++        non-empty uplink with view_unavailable.
++      </description>
++      <arg name="profile" type="string" summary="profile identifier"/>
++      <arg name="uplink" type="string" summary="source address, subnet or interface, or empty"/>
++    </event>
++
++    <request name="view_unavailable">
++      <description summary="a wanted view cannot be created">
++        The browser cannot create the view asked for by want_view, for
++        example because the profile's storage is unusable.
++      </description>
++      <arg name="profile" type="string" summary="profile identifier"/>
++      <arg name="message" type="string" summary="reason, for the log"/>
++    </request>
++
++    <event name="content_filter_list">
++      <description summary="a shared content filter list">
++        A content filter list the compositor keeps for every view, such as
++        a maintained ad or tracker list, in Adblock Plus filter syntax as
++        UTF-8 text. The compositor sends every list it holds after the
++        browser binds the manager, and a list again whenever its content
++        changes; a list sent under a name the browser already has
++        replaces it. Views apply a list once they ask for it with
++        add_content_filter_list.
++
++        The browser prepares the list at once, independently of any view,
++        and reports the outcome with content_filter_list_prepared. A list
++        the browser cannot prepare leaves the version it prepared before
++        in place. The fd holds exactly size bytes; the browser closes it.
++      </description>
++      <arg name="name" type="string" summary="list identifier, same syntax as a profile identifier"/>
++      <arg name="fd" type="fd" summary="the filter list"/>
++      <arg name="size" type="uint" summary="list size in bytes"/>
++    </event>
++
++    <event name="remove_content_filter_list">
++      <description summary="a shared content filter list is gone">
++        The compositor no longer keeps the named list. Views that applied
++        it drop it.
++      </description>
++      <arg name="name" type="string" summary="list identifier"/>
++    </event>
++
++    <request name="content_filter_list_prepared">
++      <description summary="a shared content filter list is prepared">
++        The browser has prepared the list of this name a
++        content_filter_list event handed it, so that views can apply it,
++        or it could not and holds no earlier version of the list (prepared
++        0). A list the browser kept prepared from an earlier run is
++        reported as prepared as soon as it is handed again.
++      </description>
++      <arg name="name" type="string" summary="list identifier"/>
++      <arg name="prepared" type="uint" summary="1 if views can apply the list, 0 if not"/>
++    </request>
++  </interface>
++
++  <interface name="kodi_web_view_v1" version="1">
++    <description summary="one web view of one profile">
++      A view is one page container bound to one surface. The compositor
++      drives it with events and learns its state through requests.
++
++      Configuration events (set_user_agent, set_viewport, add_user_script,
++      add_content_filter, add_content_filter_list) apply to this view
++      only and take effect from the next navigation. They arrive before
++      the first load_url of a view the compositor asked for, and the
++      browser holds that load until it has applied them. A shared list
++      the browser does not have yet, or has not finished preparing, does
++      not hold the load; it applies once it is there.
++
++      An inactive view keeps its page alive: media keeps playing and
++      scripts keep running, so that the user can leave the page and come
++      back to it. The browser may lower an inactive view's rendering
++      frequency. The compositor stops a view's media by loading
++      about:blank, and discards a view with the close event.
++    </description>
++
++    <enum name="navigation">
++      <entry name="back" value="0" summary="go back in history"/>
++      <entry name="forward" value="1" summary="go forward in history"/>
++      <entry name="reload" value="2" summary="reload the current page"/>
++      <entry name="stop" value="3" summary="stop the current load"/>
++    </enum>
++
++    <enum name="error_code">
++      <description summary="what went wrong with a view">
++        Reported by the error request. The message carries the engine's
++        own text for the log; the code is what the compositor acts on.
++      </description>
++      <entry name="load_failed" value="0"
++             summary="the page could not be loaded"/>
++      <entry name="tls_failed" value="1"
++             summary="the TLS handshake or certificate check failed"/>
++      <entry name="engine_crashed" value="2"
++             summary="the engine process rendering this view terminated"/>
++      <entry name="unresponsive" value="3"
++             summary="the page stopped responding"/>
++      <entry name="config_failed" value="4"
++             summary="a user script or content filter could not be applied"/>
++    </enum>
++
++    <request name="destroy" type="destructor">
++      <description summary="destroy the view">
++        The browser is done with the view. Sent in answer to the close
++        event, or on its own when the view can no longer be served, after
++        an error request. The association with the surface ends; the
++        browser destroys the surface or its role object afterwards.
++      </description>
++    </request>
++
++    <request name="url_changed">
++      <description summary="the view's URL changed">
++        Sent whenever the committed URL of the view changes, including
++        fragment navigation within the page.
++      </description>
++      <arg name="url" type="string" summary="the current URL"/>
++    </request>
++
++    <request name="title_changed">
++      <description summary="the page title changed">
++        Sent whenever the document title changes. An empty string means
++        the page has no title.
++      </description>
++      <arg name="title" type="string" summary="the current title"/>
++    </request>
++
++    <request name="favicon">
++      <description summary="the page favicon is available">
++        Hands the compositor the page's favicon as an ARGB8888 wl_shm
++        buffer. The compositor copies what it needs and releases the
++        buffer with wl_buffer.release; the browser destroys it after the
++        release. A view sends a new favicon request whenever the icon
++        changes.
++      </description>
++      <arg name="buffer" type="object" interface="wl_buffer"
++           summary="the icon pixels"/>
++    </request>
++
++    <request name="load_progress">
++      <description summary="load progress of the current page">
++        Progress of the current load in percent, 0 at the start of a
++        navigation and 100 when the load finished.
++      </description>
++      <arg name="percent" type="uint" summary="progress from 0 to 100"/>
++    </request>
++
++    <request name="navigation_state">
++      <description summary="history availability changed">
++        Whether the view can go back or forward in its history.
++      </description>
++      <arg name="can_go_back" type="uint" summary="1 if back is possible"/>
++      <arg name="can_go_forward" type="uint" summary="1 if forward is possible"/>
++    </request>
++
++    <request name="error">
++      <description summary="the view failed">
++        Something went wrong with the view. After engine_crashed the
++        browser either recovers the view, in which case it follows up
++        with url_changed, or destroys it.
++
++        After config_failed the browser loads nothing into the view; a
++        later load_url fails the same way. The message names the script
++        or filter.
++      </description>
++      <arg name="code" type="uint" enum="error_code" summary="what went wrong"/>
++      <arg name="message" type="string" summary="engine text, for the log"/>
++    </request>
++
++    <request name="exit">
++      <description summary="the page asks to leave">
++        The page asks to leave the app and return to the compositor's own
++        interface, for example from its Quit menu entry. The compositor
++        decides what follows, usually closing the view. Sent at most once
++        per load_url.
++      </description>
++    </request>
++
++    <request name="media_state">
++      <description summary="what the page's media is doing">
++        Whether the media of the view's current page has video, has
++        audio, and is paused. paused is 1 unless some media of the view is
++        potentially playing; buffering counts as playing. A page without
++        media reports video 0, audio 0, paused 1. Sent when any of the
++        three changes, and after each committed load.
++      </description>
++      <arg name="video" type="uint" summary="1 if the media has video"/>
++      <arg name="audio" type="uint" summary="1 if the media has audio"/>
++      <arg name="paused" type="uint" summary="1 unless media is playing"/>
++    </request>
++
++    <event name="set_user_agent">
++      <description summary="set the user agent of this view">
++        The user agent string this view presents. Takes effect from the
++        next navigation. A view configured without it uses the browser's
++        default.
++      </description>
++      <arg name="user_agent" type="string" summary="user agent string"/>
++    </event>
++
++    <event name="add_user_script">
++      <description summary="inject a user script into this view">
++        A script the browser injects into every document of this view at
++        document start, in the main world, before any page script runs.
++        The script is read from the file descriptor, which holds exactly
++        size bytes and which the browser closes; fewer bytes is
++        config_failed. Scripts apply in the order they are added.
++      </description>
++      <arg name="name" type="string" summary="name, for the log"/>
++      <arg name="fd" type="fd" summary="the script source, UTF-8"/>
++      <arg name="size" type="uint" summary="script size in bytes"/>
++    </event>
++
++    <event name="add_content_filter">
++      <description summary="apply a content filter to this view">
++        Filters the browser applies to every load of this view, in
++        Adblock Plus filter syntax as UTF-8 text. The fd holds exactly
++        size bytes; the browser closes it. A filter sent again under the
++        same name replaces the earlier one.
++
++        A filter that cannot be read in full, is not UTF-8, holds no
++        filter the engine can apply, or holds more than the engine
++        accepts, is config_failed.
++      </description>
++      <arg name="name" type="string" summary="filter identifier"/>
++      <arg name="fd" type="fd" summary="the filter list"/>
++      <arg name="size" type="uint" summary="list size in bytes"/>
++    </event>
++
++    <event name="add_content_filter_list">
++      <description summary="apply a shared content filter list to this view">
++        Apply the shared list of this name, as sent by the
++        content_filter_list event of the manager. The view loads nothing
++        before the list is prepared: load_url waits for a list that is not
++        there yet, and a list that cannot be prepared, with no earlier
++        version to keep, or that is removed before it is, is
++        config_failed. A list replaced later is applied to this view once
++        it is prepared; a list that is removed is removed from the view.
++      </description>
++      <arg name="name" type="string" summary="list identifier"/>
++    </event>
++
++    <event name="load_url">
++      <description summary="load a URL">
++        Navigate the view to the URL. about:blank unloads the page and
++        stops its media.
++      </description>
++      <arg name="url" type="string" summary="the URL to load"/>
++    </event>
++
++    <event name="navigate">
++      <description summary="history and load control">
++        Go back or forward, reload, or stop the current load.
++      </description>
++      <arg name="action" type="uint" enum="navigation" summary="what to do"/>
++    </event>
++
++    <event name="set_active">
++      <description summary="the view is shown or hidden">
++        Active means the compositor presents the view's surface and routes
++        input to it. An inactive view keeps running and may render less
++        often; it must still commit a frame when its content changes, so
++        that the compositor has a current picture when it activates the
++        view again.
++      </description>
++      <arg name="active" type="uint" summary="1 while the view is presented"/>
++    </event>
++
++    <event name="close">
++      <description summary="the compositor is done with the view">
++        The browser unloads the page, unmaps the surface and destroys the
++        view. The profile's storage stays.
++      </description>
++    </event>
++
++    <event name="set_viewport">
++      <description summary="the viewport the page lays itself out for">
++        The size in CSS pixels of the viewport the view's pages are
++        written for, such as the 1920x1080 of a television's browser. The
++        browser zooms the page so that a viewport of this size fits the
++        view, keeping its aspect ratio, and follows changes of the view's
++        size. Where the view is wider or taller in proportion, the page
++        gets the remainder. Takes effect at once. A view configured
++        without it, or with a width or height of 0, lays out at the size
++        of its surface.
++      </description>
++      <arg name="width" type="uint" summary="viewport width in CSS pixels"/>
++      <arg name="height" type="uint" summary="viewport height in CSS pixels"/>
++    </event>
++  </interface>
++</protocol>

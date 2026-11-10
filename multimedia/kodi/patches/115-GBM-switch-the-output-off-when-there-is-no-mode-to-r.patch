@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 24 Sep 2026 23:45:30 +0100
+Subject: [PATCH] GBM: switch the output off when there is no mode to restore
+
+On a device nothing had driven before us there is no original crtc to
+put back, so the restore path did nothing and reported failure. Our own
+mode then stays up after kodi exits, leaving the last frame on screen
+for whatever runs next.
+
+Disable the crtc in that case, which leaves the display off rather than
+holding a scanout we no longer own.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/windowing/gbm/drm/DRMUtils.cpp | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+--- a/xbmc/windowing/gbm/drm/DRMUtils.cpp
++++ b/xbmc/windowing/gbm/drm/DRMUtils.cpp
+@@ -734,7 +734,20 @@ bool CDRMUtils::RestoreOriginalMode()
+ {
+   if (!m_orig_crtc)
+   {
+-    return false;
++    // Nothing had driven the connector before us, so there is no mode to
++    // put back. Leaving ours up would leak the last frame to whatever
++    // comes next, so switch the output off instead.
++    if (!m_crtc)
++      return false;
++
++    if (drmModeSetCrtc(m_fd, m_crtc->GetCrtcId(), 0, 0, 0, nullptr, 0, nullptr))
++    {
++      CLog::LogF(LOGERROR, "Failed to disable crtc {}", m_crtc->GetCrtcId());
++      return false;
++    }
++
++    CLog::LogF(LOGDEBUG, "Disabled crtc {}, nothing to restore", m_crtc->GetCrtcId());
++    return true;
+   }
+ 
+   auto ret = drmModeSetCrtc(m_fd, m_orig_crtc->GetCrtcId(), m_orig_crtc->GetBufferId(),

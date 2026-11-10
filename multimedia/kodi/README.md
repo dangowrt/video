@@ -1,6 +1,6 @@
 # Kodi for OpenWrt
 
-Kodi 22.0 RC1 (tag `22.0rc1-Piers`, commit `28ea2eac`) built for the GBM (bare KMS/DRM) and Wayland windowing
+Kodi 22.0 RC2 (tag `22.0rc2-Piers`, commit `d686683a`) built for the GBM (bare KMS/DRM) and Wayland windowing
 systems with GLES rendering. X11 and framebuffer are not supported.
 
 This package supersedes the previous Kodi 21.3 Omega package under the
@@ -36,8 +36,9 @@ through V4L2 Request.
 
 ## DRM_PRIME / hardware decoding
 
-`patches/140` and `patches/141` are LibreELEC's `drmprime-filter`
-patches (their 2026-08-22 rebase, applied unchanged): they let the DRM_PRIME video path run FFmpeg filters, which is
+`patches/201` and `patches/202` are LibreELEC's `drmprime-filter`
+patches (their 2026-08-22 rebase, carried on top of the decoder
+fallback of `patches/127`): they let the DRM_PRIME video path run FFmpeg filters, which is
 what drives the `deinterlace_v4l2m2m` filter (sun50i-di on H6) for
 interlaced content.
 
@@ -54,17 +55,28 @@ Python from staging; nothing is pre-generated or downloaded.
 
 ## Patches
 
-`001` to `120` make Kodi build against musl and for cross targets,
-`140` and `141` are LibreELEC's DRM_PRIME filter patches (see above),
-`210` is LibreELEC's and keeps the target build from cross-building its
-own TexturePacker, and `220` to `231` fix the cmake lookups for a cross
-build with OpenWrt's staging directory. The remaining patches are the
-downstream features: display power management (`142`, `143`), hwmon
-temperatures (`144` to `146`), GBM output selection (`147`), per-add-on
-uplinks (`150` to `155`) and the web apps with their Wayland host and
-web player (`240` to `265`). Each is exported from the `wayland-host`
-branch of https://github.com/dangowrt/xbmc and carries that commit's
-hash in its `From` line.
+The patches come in three ranges, exported in this order from the
+`wayland-host` branch of https://github.com/dangowrt/xbmc, which stacks
+them on the release tag:
+
+- `0xx`: changes merged upstream after the release tag, backported.
+  None at present.
+- `1xx`: changes in upstream pull requests that are still open, each
+  taken from its pull request branch on Kodi master and adapted to the
+  release where needed, in dependency order: `101` (xbmc/xbmc#29962),
+  `102` (GBM immutable properties), `103` (xbmc/xbmc#29346), `104`
+  (xbmc/xbmc#29347), `105` to `107` (xbmc/xbmc#29348), `108` to `111`
+  (xbmc/xbmc#29899), `112` and `113` (xbmc/xbmc#30283), `114` and `115`
+  (GBM output selection), `116` to `119` (musl), `120` to `123` (cross
+  builds), `124` to `126` (device volume), `127` (DRM PRIME decoder
+  fallback), `128` (stop video when the display switches off), and the
+  web apps with their Wayland host and web player last, `129` to `140`
+  (xbmc/xbmc#30315), which needs `101` and `102`.
+- `2xx`: changes kept downstream: LibreELEC's DRM_PRIME filter patches
+  (`201`, `202`, see above), the per-add-on uplinks (`203` to `216`),
+  LibreELEC's patch that keeps the target build from cross-building its
+  own TexturePacker (`217`), and the add-ons the OpenWrt packages
+  install enabled on first start (`218`, `219`).
 
 ## libdvdread / libdvdnav
 

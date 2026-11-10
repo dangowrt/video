@@ -1,0 +1,222 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Mon, 9 Nov 2026 14:09:47 +0000
+Subject: [PATCH] WebPlayer: let the red button of an HbbTV web app hide it or
+ not
+
+On a television the red button hides an HbbTV application to show the
+broadcast behind it. Kodi has no broadcast behind a web app, so apps
+such as ORF ON and ARD Mediathek leave an empty screen on red; whether
+red hides them is chosen by a query parameter of their start URL.
+
+kodi.webapp 1.4.0 adds the manifest element <redbutton on="..."
+off="..."/>, naming the query parameter for red hiding the app and for
+red staying inside it. An app that has it gets the setting "Red button
+hides the app to show the TV picture", off by default, and RunAddon
+appends the parameter of the chosen state to the start URL. A URL
+handed to RunAddon is opened as given.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ addons/kodi.webapp/addon.xml                  |  2 +-
+ .../resources/strings.po                      | 26 ++++++++++++++++++-
+ system/settings/webapp.xml                    |  9 +++++++
+ xbmc/addons/WebApp.cpp                        | 20 ++++++++++++++
+ xbmc/addons/WebApp.h                          |  5 ++++
+ xbmc/cores/WebPlayer/WebApp.h                 | 25 ++++++++++++++++++
+ xbmc/cores/WebPlayer/WebPlayerDefs.h          |  6 +++++
+ xbmc/interfaces/builtins/AddonBuiltins.cpp    |  5 ++++
+ 8 files changed, 96 insertions(+), 2 deletions(-)
+
+--- a/addons/kodi.webapp/addon.xml
++++ b/addons/kodi.webapp/addon.xml
+@@ -1,5 +1,5 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+-<addon id="kodi.webapp" version="1.3.0" provider-name="Team Kodi">
++<addon id="kodi.webapp" version="1.4.0" provider-name="Team Kodi">
+   <backwards-compatibility abi="1.0.0"/>
+   <requires>
+     <import addon="xbmc.core" version="0.1.0"/>
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -26053,7 +26053,31 @@ msgctxt "#40264"
+ msgid "Let the app play video that only a software decoder can decode. Off offers the app only the codecs the hardware decodes, so that an app choosing among several picks one of those; on most devices software decoding cannot keep up with high definition video. Video that a DRM module such as Widevine decodes itself is not affected."
+ msgstr ""
+ 
+-#empty strings from id 40265 to 40399
++#. Label of the category of the HbbTV settings Kodi gives a web app that names a red button
++#: system/settings/webapp.xml
++msgctxt "#40265"
++msgid "HbbTV"
++msgstr ""
++
++#. Help text of the category of the HbbTV settings Kodi gives a web app that names a red button
++#: system/settings/webapp.xml
++msgctxt "#40266"
++msgid "How the app behaves as a broadcaster's HbbTV application."
++msgstr ""
++
++#. Label of the setting that lets the red button hide an HbbTV web app
++#: system/settings/webapp.xml
++msgctxt "#40267"
++msgid "Red button hides the app to show the TV picture"
++msgstr ""
++
++#. Help text of the setting that lets the red button hide an HbbTV web app
++#: system/settings/webapp.xml
++msgctxt "#40268"
++msgid "On a television, the red button hides an HbbTV application so that the broadcast behind it shows. Kodi shows no broadcast behind a web app, so with this off the red button stays inside the app."
++msgstr ""
++
++#empty strings from id 40269 to 40399
+ 
+ # Video versions
+ 
+--- a/system/settings/webapp.xml
++++ b/system/settings/webapp.xml
+@@ -22,5 +22,14 @@
+         </setting>
+       </group>
+     </category>
++    <category id="hbbtv" label="40265" help="40266">
++      <group id="1">
++        <setting id="redbuttonhides" type="boolean" label="40267" help="40268">
++          <level>1</level>
++          <default>false</default>
++          <control type="toggle" />
++        </setting>
++      </group>
++    </category>
+   </section>
+ </settings>
+--- a/xbmc/addons/WebApp.cpp
++++ b/xbmc/addons/WebApp.cpp
+@@ -11,6 +11,8 @@
+ #include "addons/AddonVersion.h"
+ #include "addons/addoninfo/AddonInfo.h"
+ #include "addons/addoninfo/AddonType.h"
++#include "cores/WebPlayer/WebApp.h"
++#include "cores/WebPlayer/WebPlayerDefs.h"
+ #include "filesystem/File.h"
+ #include "utils/XBMCTinyXML.h"
+ #include "utils/XMLUtils.h"
+@@ -69,6 +71,22 @@ bool CWebApp::LeavesKodiSettingsToKodi()
+                      { return dependency.id == "kodi.webapp" && dependency.version >= version; });
+ }
+ 
++// the red button settings are for apps whose manifest names its query parameters
++void CWebApp::DropUnusedKodiCategories(TiXmlElement& section) const
++{
++  const CAddonType* type = Type(AddonType::WEBAPP);
++  if (type && KODI::WEB::WebAppHasRedButton(*type))
++    return;
++
++  for (TiXmlElement* category = section.FirstChildElement("category"); category;)
++  {
++    TiXmlElement* next = category->NextSiblingElement("category");
++    if (XMLUtils::GetAttribute(category, "id") == KODI::WEB::RED_BUTTON_CATEGORY)
++      section.RemoveChild(category);
++    category = next;
++  }
++}
++
+ bool CWebApp::LoadSettingsDefinition(const std::string& path, CXBMCTinyXML& doc, AddonInstanceId id)
+ {
+   if (id != ADDON_SETTINGS_ID || !LeavesKodiSettingsToKodi())
+@@ -88,6 +106,7 @@ bool CWebApp::LoadSettingsDefinition(con
+     doc.Clear();
+     doc.InsertEndChild(*kodiDoc.RootElement());
+     SectionOf(doc)->SetAttribute("id", ID());
++    DropUnusedKodiCategories(*SectionOf(doc));
+     return true;
+   }
+ 
+@@ -115,5 +134,6 @@ bool CWebApp::LoadSettingsDefinition(con
+   for (const TiXmlElement* category = kodiSection->FirstChildElement("category"); category;
+        category = category->NextSiblingElement("category"))
+     section->InsertEndChild(*category);
++  DropUnusedKodiCategories(*section);
+   return true;
+ }
+--- a/xbmc/addons/WebApp.h
++++ b/xbmc/addons/WebApp.h
+@@ -12,6 +12,8 @@
+ 
+ #include <string>
+ 
++class TiXmlElement;
++
+ namespace ADDON
+ {
+ 
+@@ -28,6 +30,9 @@ protected:
+   bool LoadSettingsDefinition(const std::string& path,
+                               CXBMCTinyXML& doc,
+                               AddonInstanceId id) override;
++
++private:
++  void DropUnusedKodiCategories(TiXmlElement& section) const;
+ };
+ 
+ } // namespace ADDON
+--- a/xbmc/cores/WebPlayer/WebApp.h
++++ b/xbmc/cores/WebPlayer/WebApp.h
+@@ -31,5 +31,30 @@ inline std::string WebAppElement(const A
+   return {};
+ }
+ 
++//! \brief Whether a web app's manifest names the query parameters of its red button
++inline bool WebAppHasRedButton(const ADDON::CAddonType& type)
++{
++  return !type.GetValue("redbutton@on").empty() || !type.GetValue("redbutton@off").empty();
++}
++
++//! \brief \p url with the query parameter a web app's manifest names for whether the red
++//! button hides the app
++inline std::string WebAppRedButtonUrl(const ADDON::CAddonType& type,
++                                      const std::string& url,
++                                      bool hides)
++{
++  const std::string parameter = type.GetValue(hides ? "redbutton@on" : "redbutton@off").asString();
++  if (parameter.empty())
++    return url;
++
++  const size_t fragment = url.find('#');
++  std::string withParameter = url.substr(0, fragment);
++  withParameter += withParameter.find('?') == std::string::npos ? '?' : '&';
++  withParameter += parameter;
++  if (fragment != std::string::npos)
++    withParameter += url.substr(fragment);
++  return withParameter;
++}
++
+ } // namespace WEB
+ } // namespace KODI
+--- a/xbmc/cores/WebPlayer/WebPlayerDefs.h
++++ b/xbmc/cores/WebPlayer/WebPlayerDefs.h
+@@ -25,5 +25,11 @@ constexpr const char* DEFAULT_PROFILE =
+ //! \brief The add-on that installs the Widevine CDM for a web app importing it
+ constexpr const char* INPUTSTREAMHELPER = "script.module.inputstreamhelper";
+ 
++//! \brief The category of the settings Kodi gives only a web app that names a red button
++constexpr const char* RED_BUTTON_CATEGORY = "hbbtv";
++
++//! \brief The setting whether the red button hides the app, as on a television
++constexpr const char* SETTING_RED_BUTTON_HIDES = "redbuttonhides";
++
+ } // namespace WEB
+ } // namespace KODI
+--- a/xbmc/interfaces/builtins/AddonBuiltins.cpp
++++ b/xbmc/interfaces/builtins/AddonBuiltins.cpp
+@@ -211,6 +211,11 @@ static int RunAddon(const std::vector<st
+               : KODI::WEB::WebAppElement(*type, "starturl", webapp->GetSetting("starturl"));
+       if (url.empty())
+         url = type->GetValue("@starturl").asString();
++      // a URL given to RunAddon is opened as given
++      bool redButtonHides = false;
++      if (params.size() < 2 &&
++          webapp->GetSettingBool(KODI::WEB::SETTING_RED_BUTTON_HIDES, redButtonHides))
++        url = KODI::WEB::WebAppRedButtonUrl(*type, url, redButtonHides);
+       CFileItem item(url, false);
+       item.SetLabel(webapp->Name());
+       item.SetProperty(KODI::WEB::PROPERTY_PROFILE, addonid);

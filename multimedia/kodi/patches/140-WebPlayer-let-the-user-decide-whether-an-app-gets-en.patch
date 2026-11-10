@@ -1,0 +1,224 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Mon, 9 Nov 2026 14:28:37 +0000
+Subject: [PATCH] WebPlayer: let the user decide whether an app gets encrypted
+ media
+
+WebKit hides the encrypted media API from youtube.com unless it is
+built for Thunder, and the external CDM build keeps it. YouTube then
+serves some video protected that it would otherwise serve in the
+clear, and the CDM decodes it in software, too slow on small devices
+for the resolutions the hardware decoders handle, while a signed-in
+user's free video plays in the clear either way.
+
+An app whose manifest has <encryptedmedia optional="true"/> gets the
+setting "Allow DRM-protected video", off by default. While it is off,
+the view gets a user script that removes requestMediaKeySystemAccess,
+as WebKit's quirk does, and Kodi does not offer to install a CDM for
+the app.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../resources/strings.po                      | 14 +++++++-
+ cmake/installdata/common/common.txt           |  1 +
+ system/settings/webapp.xml                    |  5 +++
+ system/webapp/no-encrypted-media.js           |  2 ++
+ xbmc/addons/WebApp.cpp                        | 34 +++++++++++++++----
+ xbmc/addons/WebApp.h                          |  2 +-
+ xbmc/cores/WebPlayer/WebApp.h                 |  6 ++++
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 14 +++++++-
+ xbmc/cores/WebPlayer/WebPlayerDefs.h          |  7 ++++
+ 9 files changed, 75 insertions(+), 10 deletions(-)
+ create mode 100644 system/webapp/no-encrypted-media.js
+
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -26077,7 +26077,19 @@ msgctxt "#40268"
+ msgid "On a television, the red button hides an HbbTV application so that the broadcast behind it shows. Kodi shows no broadcast behind a web app, so with this off the red button stays inside the app."
+ msgstr ""
+ 
+-#empty strings from id 40269 to 40399
++#. Label of the setting that lets a web app use a DRM module such as Widevine
++#: system/settings/webapp.xml
++msgctxt "#40269"
++msgid "Allow DRM-protected video"
++msgstr ""
++
++#. Help text of the setting that lets a web app use a DRM module such as Widevine
++#: system/settings/webapp.xml
++msgctxt "#40270"
++msgid "Let the app play protected video through the DRM module, such as Widevine. Off offers the app no DRM, and a service such as YouTube then serves its free video in the clear, which the hardware decodes. On also plays protected video, but the DRM module decodes it in software, which on small devices may be too slow for high resolutions."
++msgstr ""
++
++#empty strings from id 40271 to 40399
+ 
+ # Video versions
+ 
+--- a/cmake/installdata/common/common.txt
++++ b/cmake/installdata/common/common.txt
+@@ -12,4 +12,5 @@ system/peripherals.xml
+ system/playercorefactory.xml
+ system/settings/*
+ system/shaders/*
++system/webapp/*
+ userdata/*
+--- a/system/settings/webapp.xml
++++ b/system/settings/webapp.xml
+@@ -20,6 +20,11 @@
+           <default>false</default>
+           <control type="toggle" />
+         </setting>
++        <setting id="encryptedmedia" type="boolean" label="40269" help="40270">
++          <level>1</level>
++          <default>false</default>
++          <control type="toggle" />
++        </setting>
+       </group>
+     </category>
+     <category id="hbbtv" label="40265" help="40266">
+--- /dev/null
++++ b/system/webapp/no-encrypted-media.js
+@@ -0,0 +1,2 @@
++// The user did not allow this app DRM-protected video: as WebKit's YouTube quirk does, offer no EME.
++delete Navigator.prototype.requestMediaKeySystemAccess;
+--- a/xbmc/addons/WebApp.cpp
++++ b/xbmc/addons/WebApp.cpp
+@@ -71,18 +71,38 @@ bool CWebApp::LeavesKodiSettingsToKodi()
+                      { return dependency.id == "kodi.webapp" && dependency.version >= version; });
+ }
+ 
+-// the red button settings are for apps whose manifest names its query parameters
+-void CWebApp::DropUnusedKodiCategories(TiXmlElement& section) const
++namespace
++{
++void DropSetting(TiXmlElement& category, const std::string& id)
++{
++  for (TiXmlElement* group = category.FirstChildElement("group"); group;
++       group = group->NextSiblingElement("group"))
++  {
++    for (TiXmlElement* setting = group->FirstChildElement("setting"); setting;)
++    {
++      TiXmlElement* next = setting->NextSiblingElement("setting");
++      if (XMLUtils::GetAttribute(setting, "id") == id)
++        group->RemoveChild(setting);
++      setting = next;
++    }
++  }
++}
++} // namespace
++
++// the red button and encrypted media settings are for apps whose manifest asks for them
++void CWebApp::DropUnusedKodiSettings(TiXmlElement& section) const
+ {
+   const CAddonType* type = Type(AddonType::WEBAPP);
+-  if (type && KODI::WEB::WebAppHasRedButton(*type))
+-    return;
++  const bool redButton = type && KODI::WEB::WebAppHasRedButton(*type);
++  const bool encryptedMedia = type && KODI::WEB::WebAppEncryptedMediaOptional(*type);
+ 
+   for (TiXmlElement* category = section.FirstChildElement("category"); category;)
+   {
+     TiXmlElement* next = category->NextSiblingElement("category");
+-    if (XMLUtils::GetAttribute(category, "id") == KODI::WEB::RED_BUTTON_CATEGORY)
++    if (!redButton && XMLUtils::GetAttribute(category, "id") == KODI::WEB::RED_BUTTON_CATEGORY)
+       section.RemoveChild(category);
++    else if (!encryptedMedia)
++      DropSetting(*category, KODI::WEB::SETTING_ENCRYPTED_MEDIA);
+     category = next;
+   }
+ }
+@@ -106,7 +126,7 @@ bool CWebApp::LoadSettingsDefinition(con
+     doc.Clear();
+     doc.InsertEndChild(*kodiDoc.RootElement());
+     SectionOf(doc)->SetAttribute("id", ID());
+-    DropUnusedKodiCategories(*SectionOf(doc));
++    DropUnusedKodiSettings(*SectionOf(doc));
+     return true;
+   }
+ 
+@@ -134,6 +154,6 @@ bool CWebApp::LoadSettingsDefinition(con
+   for (const TiXmlElement* category = kodiSection->FirstChildElement("category"); category;
+        category = category->NextSiblingElement("category"))
+     section->InsertEndChild(*category);
+-  DropUnusedKodiCategories(*section);
++  DropUnusedKodiSettings(*section);
+   return true;
+ }
+--- a/xbmc/addons/WebApp.h
++++ b/xbmc/addons/WebApp.h
+@@ -32,7 +32,7 @@ protected:
+                               AddonInstanceId id) override;
+ 
+ private:
+-  void DropUnusedKodiCategories(TiXmlElement& section) const;
++  void DropUnusedKodiSettings(TiXmlElement& section) const;
+ };
+ 
+ } // namespace ADDON
+--- a/xbmc/cores/WebPlayer/WebApp.h
++++ b/xbmc/cores/WebPlayer/WebApp.h
+@@ -31,6 +31,12 @@ inline std::string WebAppElement(const A
+   return {};
+ }
+ 
++//! \brief Whether a web app's manifest leaves the use of encrypted media to the user
++inline bool WebAppEncryptedMediaOptional(const ADDON::CAddonType& type)
++{
++  return type.GetValue("encryptedmedia@optional").asString() == "true";
++}
++
+ //! \brief Whether a web app's manifest names the query parameters of its red button
+ inline bool WebAppHasRedButton(const ADDON::CAddonType& type)
+ {
+--- a/xbmc/cores/WebPlayer/WebClientManager.cpp
++++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
+@@ -182,6 +182,15 @@ const ADDON::CAddonType* WebAppType(cons
+   return webapp ? webapp->Type(ADDON::AddonType::WEBAPP) : nullptr;
+ }
+ 
++// an app that can do without encrypted media gets it only if the user allows it
++bool EncryptedMediaWithheld(const ADDON::AddonPtr& webapp)
++{
++  const ADDON::CAddonType* type = WebAppType(std::dynamic_pointer_cast<ADDON::CAddon>(webapp));
++  bool allowed = false;
++  return type && KODI::WEB::WebAppEncryptedMediaOptional(*type) &&
++         !(webapp->GetSettingBool(SETTING_ENCRYPTED_MEDIA, allowed) && allowed);
++}
++
+ struct WebAppFile
+ {
+   std::string path;
+@@ -916,7 +925,8 @@ bool CWebClientManager::WantsCdm(const s
+     return false;
+ 
+   const auto& dependencies = webapp->GetDependencies();
+-  if (std::none_of(dependencies.begin(), dependencies.end(),
++  if (EncryptedMediaWithheld(webapp) ||
++      std::none_of(dependencies.begin(), dependencies.end(),
+                    [](const auto& dependency) { return dependency.id == INPUTSTREAMHELPER; }))
+     return false;
+ 
+@@ -991,6 +1001,8 @@ bool CWebClientManager::ConfigureViewFro
+     }
+   }
+ 
++  if (EncryptedMediaWithheld(addon))
++    SendProfileFile(profile, NO_ENCRYPTED_MEDIA_SCRIPT, "kodi-no-encrypted-media.js", true);
+   for (const WebAppFile& file : files)
+     SendProfileFile(profile, file.path, file.name, file.script);
+   return true;
+--- a/xbmc/cores/WebPlayer/WebPlayerDefs.h
++++ b/xbmc/cores/WebPlayer/WebPlayerDefs.h
+@@ -31,5 +31,12 @@ constexpr const char* RED_BUTTON_CATEGOR
+ //! \brief The setting whether the red button hides the app, as on a television
+ constexpr const char* SETTING_RED_BUTTON_HIDES = "redbuttonhides";
+ 
++//! \brief The setting whether an app that can do without encrypted media gets it
++constexpr const char* SETTING_ENCRYPTED_MEDIA = "encryptedmedia";
++
++//! \brief The user script that takes the encrypted media API from a page
++constexpr const char* NO_ENCRYPTED_MEDIA_SCRIPT =
++    "special://xbmc/system/webapp/no-encrypted-media.js";
++
+ } // namespace WEB
+ } // namespace KODI

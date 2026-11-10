@@ -8,15 +8,15 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kodi
-PKG_VERSION:=22.0_rc1
-PKG_RELEASE:=42
+PKG_VERSION:=22.0_rc2
+PKG_RELEASE:=1
 
-# Tag 22.0rc1-Piers (version.txt: 22.0 RC1); pinned by commit so the
+# Tag 22.0rc2-Piers (version.txt: 22.0 RC2); pinned by commit so the
 # tarball name stays stable should the tag ever move.
-PKG_SOURCE_VERSION:=28ea2eac1eb7af8fdcbd2672d933ce87f594be79
+PKG_SOURCE_VERSION:=d686683a55d50e576dd282f53fb2bf9914931b38
 PKG_SOURCE:=xbmc-$(PKG_SOURCE_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/xbmc/xbmc/tar.gz/$(PKG_SOURCE_VERSION)?
-PKG_HASH:=34ef5ef2345763588c17f1d2065d63ada4f6016d249a47f8c98ee3c64efaedb4
+PKG_HASH:=3e97709c21193f75213fe5b62604be10bfb1c6fe640cc7fc18117337c99dab42
 PKG_BUILD_DIR:=$(BUILD_DIR)/xbmc-$(PKG_SOURCE_VERSION)
 HOST_BUILD_DIR:=$(BUILD_DIR_HOST)/xbmc-$(PKG_SOURCE_VERSION)
 

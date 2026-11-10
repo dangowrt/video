@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Mon, 9 Nov 2026 20:12:26 +0000
+Subject: [PATCH] GBM: detect immutable DRM properties
+
+IsPropertyImmutable() asks drm_property_type_is() for
+DRM_MODE_PROP_IMMUTABLE, but that helper compares the type bits of a
+property, and immutability is a flag outside of them, so every property
+is reported mutable. On vc4 the zpos of the primary plane is an
+immutable range of 0 to 0, and MoveOnTopOf() then tries to set it,
+which the kernel rejects with EINVAL. Test the flag itself.
+
+Fixes: 2e5eccbc2595 ("CDRMObject: Add IsPropertyImmutable for drm props")
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/windowing/gbm/drm/DRMObject.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/xbmc/windowing/gbm/drm/DRMObject.cpp
++++ b/xbmc/windowing/gbm/drm/DRMObject.cpp
+@@ -172,7 +172,7 @@ std::optional<bool> CDRMObject::IsProper
+   if (property == m_propsInfo.end())
+     return {};
+ 
+-  return static_cast<bool>(drm_property_type_is(property->get(), DRM_MODE_PROP_IMMUTABLE));
++  return (property->get()->flags & DRM_MODE_PROP_IMMUTABLE) != 0;
+ }
+ 
+ bool CDRMObject::SupportsProperty(std::string_view name)
