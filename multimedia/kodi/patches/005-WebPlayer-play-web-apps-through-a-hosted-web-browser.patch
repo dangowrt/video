@@ -1,4 +1,4 @@
-From f981ae96d287af4528b1852d8fd00b325529eb14 Mon Sep 17 00:00:00 2001
+From b2b41d1aa6f8025a8ae229646caa401c45b5f942 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
 Date: Tue, 3 Nov 2026 17:07:13 +0000
 Subject: [PATCH] WebPlayer: play web apps through a hosted web browser
@@ -93,7 +93,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/cores/WebPlayer/WebAudioServer.h         |  136 +++
  xbmc/cores/WebPlayer/WebClientManager.cpp     | 1010 +++++++++++++++++
  xbmc/cores/WebPlayer/WebClientManager.h       |  266 +++++
- xbmc/cores/WebPlayer/WebLayerBridge.cpp       |  239 ++++
+ xbmc/cores/WebPlayer/WebLayerBridge.cpp       |  241 ++++
  xbmc/cores/WebPlayer/WebLayerBridge.h         |   90 ++
  xbmc/cores/WebPlayer/WebPlayer.cpp            |  766 +++++++++++++
  xbmc/cores/WebPlayer/WebPlayer.h              |  173 +++
@@ -119,7 +119,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/settings/Settings.h                      |    5 +
  xbmc/utils/ExecString.cpp                     |    2 +
  xbmc/windows/GUIMediaWindow.cpp               |    9 +
- 63 files changed, 6159 insertions(+), 29 deletions(-)
+ 63 files changed, 6161 insertions(+), 29 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -4210,7 +4210,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebLayerBridge.cpp
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,241 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -4309,14 +4309,16 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +// the page's rectangle in screen pixels, fitted to the video's aspect ratio
 +CRect CWebLayerBridge::VideoDest() const
 +{
-+  if (m_videoRect.IsEmpty())
++  // without a page over it, the video plane carries the page itself
++  const CVideoBufferDRMPRIME* page = m_clear ? nullptr : m_pending ? m_pending : m_page;
++  if (m_videoRect.IsEmpty() || !page)
 +    return m_rendererRect;
 +
 +  const RESOLUTION_INFO mode = m_DRM->GetCurrentMode();
 +  const float screenWidth = static_cast<float>(mode.iScreenWidth);
 +  const float screenHeight = static_cast<float>(mode.iScreenHeight);
-+  const float scaleX = m_page ? screenWidth / static_cast<float>(m_page->GetWidth()) : 1.0f;
-+  const float scaleY = m_page ? screenHeight / static_cast<float>(m_page->GetHeight()) : 1.0f;
++  const float scaleX = screenWidth / static_cast<float>(page->GetWidth());
++  const float scaleY = screenHeight / static_cast<float>(page->GetHeight());
 +  CRect dest(m_videoRect.x1 * scaleX, m_videoRect.y1 * scaleY, m_videoRect.x2 * scaleX,
 +             m_videoRect.y2 * scaleY);
 +
