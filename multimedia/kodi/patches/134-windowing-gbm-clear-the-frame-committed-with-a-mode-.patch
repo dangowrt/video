@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 10 Nov 2026 20:49:16 +0000
+Subject: [PATCH] windowing/gbm: clear the frame committed with a mode change
+
+SetFullScreen() of the GBM GL and GLES contexts swaps buffers with
+nothing drawn, and CWinSystemGbm::SetFullScreen() then commits that
+buffer together with the mode: on atomic DRM since commit 2530a9be035f,
+on legacy DRM through drmModeSetCrtc(). EGL leaves the contents of a
+never-rendered back buffer undefined. Mesa allocates it inside
+eglSwapBuffers(), and on panfrost it is an AFBC buffer with zeroed
+headers that no GPU job has written; the RK3568 display controller
+underflows on it from the mode set until the first GUI frame replaces
+it.
+
+Reset the render system to the new size before the swap and clear the
+whole surface to opaque black, so the buffer committed with the mode is
+a rendered frame.
+
+Fixes: 2530a9be035f ("windowing: add SetVideoOutput for output-plane role tracking")
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/windowing/gbm/WinSystemGbmGLContext.cpp   | 4 +++-
+ xbmc/windowing/gbm/WinSystemGbmGLESContext.cpp | 4 +++-
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+--- a/xbmc/windowing/gbm/WinSystemGbmGLContext.cpp
++++ b/xbmc/windowing/gbm/WinSystemGbmGLContext.cpp
+@@ -105,6 +105,9 @@ bool CWinSystemGbmGLContext::SetFullScre
+     CreateNewWindow("", fullScreen, res);
+   }
+ 
++  CRenderSystemGL::ResetRenderSystem(res.iWidth, res.iHeight);
++  CRenderSystemGL::ClearBuffers(KODI::UTILS::COLOR::BLACK);
++
+   if (!m_eglContext.TrySwapBuffers())
+   {
+     CEGLUtils::Log(LOGERROR, "eglSwapBuffers failed");
+@@ -112,7 +115,6 @@ bool CWinSystemGbmGLContext::SetFullScre
+   }
+ 
+   CWinSystemGbm::SetFullScreen(fullScreen, res, blankOtherDisplays);
+-  CRenderSystemGL::ResetRenderSystem(res.iWidth, res.iHeight);
+ 
+   return true;
+ }
+--- a/xbmc/windowing/gbm/WinSystemGbmGLESContext.cpp
++++ b/xbmc/windowing/gbm/WinSystemGbmGLESContext.cpp
+@@ -122,6 +122,9 @@ bool CWinSystemGbmGLESContext::SetFullSc
+     CreateNewWindow("", fullScreen, res);
+   }
+ 
++  CRenderSystemGLES::ResetRenderSystem(res.iWidth, res.iHeight);
++  CRenderSystemGLES::ClearBuffers(KODI::UTILS::COLOR::BLACK);
++
+   if (!m_eglContext.TrySwapBuffers())
+   {
+     CEGLUtils::Log(LOGERROR, "eglSwapBuffers failed");
+@@ -129,7 +132,6 @@ bool CWinSystemGbmGLESContext::SetFullSc
+   }
+ 
+   CWinSystemGbm::SetFullScreen(fullScreen, res, blankOtherDisplays);
+-  CRenderSystemGLES::ResetRenderSystem(res.iWidth, res.iHeight);
+ 
+   return true;
+ }
