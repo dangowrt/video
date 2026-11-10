@@ -53,14 +53,15 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "resources/LocalizeStrings.h"
  #include "resources/ResourcesComponent.h"
  #include "settings/Settings.h"
-@@ -60,16 +61,22 @@
+@@ -67,6 +68,7 @@
  
  #include <algorithm>
  #include <cmath>
 +#include <cstdlib>
+ #include <functional>
  #include <limits>
  #include <mutex>
- #include <typeinfo>
+@@ -74,10 +76,15 @@
  #include <utility>
  
  #include <fcntl.h>
@@ -76,7 +77,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  using namespace KODI::WEB;
  using namespace KODI::WAYLANDHOST;
  
-@@ -153,6 +160,33 @@ std::string CdmIn(const std::string& dir
+@@ -161,6 +168,33 @@ std::string CdmIn(const std::string& dir
    return {};
  }
  
@@ -110,7 +111,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  void NotifyOpenError(const std::string& profile, const std::string& reason)
  {
    ADDON::AddonPtr addon;
-@@ -166,6 +200,16 @@ void NotifyOpenError(const std::string&
+@@ -174,6 +208,16 @@ void NotifyOpenError(const std::string&
        CGUIDialogKaiToast::Error, StringUtils::Format(localizeStrings.Get(13329), name), reason);
  }
  
@@ -127,7 +128,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  bool WebAppSettingsLoad(const std::string& profile)
  {
    ADDON::AddonPtr addon;
-@@ -606,6 +650,7 @@ void CWebClientManager::Spawn()
+@@ -686,6 +730,7 @@ void CWebClientManager::Spawn()
    if (!cdm.empty())
      env.emplace("KODI_WEB_CDM_DIR", cdm);
    m_clientCdm = CdmIn(cdm);
@@ -135,7 +136,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_host->SpawnClient({command}, std::move(env));
  }
  
-@@ -643,6 +688,11 @@ bool CWebClientManager::RequestView(cons
+@@ -723,6 +768,11 @@ bool CWebClientManager::RequestView(cons
    }
  
    const std::string uplink = UplinkOf(profile);

@@ -49,11 +49,15 @@ to the video's aspect ratio, and is set up anew as for a new frame.
 Every frame passes the render manager's configuration check, so that
 web video changes renderer whenever Kodi's own video would. A frame
 goes back to its sink once no plane shows it, and when a page's video
-stops, the page returns to the video plane. Web video follows the PRIME
-render method as Kodi's own video does: with the GLES method the
-browser gets no video socket and pages draw their video, and a change
-of the method restarts an idle browser, or the browser once its web app
-closes.
+stops, the page returns to the video plane. A sink that connects learns
+how many frames Kodi keeps while it waits for the next one, and the
+DMA-BUF heap, the system heap before the others, from which a frame of
+the screen's size imports as a framebuffer, so that a decoder writing
+for the sink can allocate a bounded number of frames from memory the
+display reads. Web video follows the PRIME render method as Kodi's own
+video does: with the GLES method the browser gets no video socket and
+pages draw their video, and a change of the method restarts an idle
+browser, or the browser once its web app closes.
 
 Web apps are a new add-on type, kodi.webapp: a manifest names the start
 URL, user agent, user scripts and content filters of the app, whose
@@ -71,7 +75,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  addons/kodi.webapp/addon.xml                  |    7 +
  .../resources/strings.po                      |  123 +-
  .../resource.language.en_gb/strings.po        |    5 +
- addons/skin.estuary/xml/DialogWebKeyboard.xml |  525 +++++++++
+ addons/skin.estuary/xml/DialogWebKeyboard.xml |  525 ++++++++
  addons/skin.estuary/xml/DialogWebOSD.xml      |   63 +
  addons/skin.estuary/xml/Home.xml              |   38 +
  addons/skin.estuary/xml/MyPrograms.xml        |    3 +-
@@ -101,21 +105,21 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  .../WebPlayer/GUIWindowFullScreenWeb.cpp      |  184 +++
  xbmc/cores/WebPlayer/GUIWindowFullScreenWeb.h |   52 +
  xbmc/cores/WebPlayer/WebApp.h                 |   35 +
- xbmc/cores/WebPlayer/WebAudioServer.cpp       |  796 +++++++++++++
- xbmc/cores/WebPlayer/WebAudioServer.h         |  136 +++
- xbmc/cores/WebPlayer/WebClientManager.cpp     | 1010 +++++++++++++++++
- xbmc/cores/WebPlayer/WebClientManager.h       |  266 +++++
+ xbmc/cores/WebPlayer/WebAudioServer.cpp       |  796 ++++++++++++
+ xbmc/cores/WebPlayer/WebAudioServer.h         |  136 ++
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 1090 +++++++++++++++++
+ xbmc/cores/WebPlayer/WebClientManager.h       |  266 ++++
  xbmc/cores/WebPlayer/WebLayerBridge.cpp       |  243 ++++
  xbmc/cores/WebPlayer/WebLayerBridge.h         |   94 ++
- xbmc/cores/WebPlayer/WebPlayer.cpp            |  826 ++++++++++++++
+ xbmc/cores/WebPlayer/WebPlayer.cpp            |  826 +++++++++++++
  xbmc/cores/WebPlayer/WebPlayer.h              |  177 +++
- xbmc/cores/WebPlayer/WebPlayerDefs.h          |   26 +
+ xbmc/cores/WebPlayer/WebPlayerDefs.h          |   31 +
  xbmc/cores/WebPlayer/WebVideoBuffer.cpp       |  112 ++
- xbmc/cores/WebPlayer/WebVideoBuffer.h         |   68 ++
- xbmc/cores/WebPlayer/WebVideoServer.cpp       |  428 +++++++
- xbmc/cores/WebPlayer/WebVideoServer.h         |  170 +++
+ xbmc/cores/WebPlayer/WebVideoBuffer.h         |   68 +
+ xbmc/cores/WebPlayer/WebVideoServer.cpp       |  437 +++++++
+ xbmc/cores/WebPlayer/WebVideoServer.h         |  178 +++
  xbmc/cores/WebPlayer/kodi-web-audio.h         |  175 +++
- xbmc/cores/WebPlayer/kodi-web-video.h         |  135 +++
+ xbmc/cores/WebPlayer/kodi-web-video.h         |  140 +++
  .../playercorefactory/PlayerCoreConfig.cpp    |    9 +
  .../playercorefactory/PlayerCoreFactory.cpp   |   11 +
  xbmc/filesystem/AddonsDirectory.cpp           |   16 +-
@@ -129,9 +133,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/interfaces/builtins/AddonBuiltins.cpp    |   40 +
  xbmc/settings/SettingConditions.cpp           |    3 +
  xbmc/settings/Settings.h                      |    5 +
+ xbmc/utils/DMAHeapBufferObject.cpp            |    5 +-
+ xbmc/utils/DMAHeapBufferObject.h              |    4 +
  xbmc/utils/ExecString.cpp                     |    2 +
  xbmc/windows/GUIMediaWindow.cpp               |    9 +
- 63 files changed, 6246 insertions(+), 29 deletions(-)
+ 65 files changed, 6360 insertions(+), 31 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -2940,7 +2946,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -0,0 +1,1010 @@
+@@ -0,0 +1,1090 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2993,12 +2999,20 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include "platform/linux/input/LibInputSettings.h"
 +#endif
 +
++#if defined(HAVE_GBM) && defined(HAS_GLES) && defined(HAVE_LINUX_DMA_HEAP)
++#include "utils/DMAHeapBufferObject.h"
++
++#include <drm_fourcc.h>
++#include <xf86drmMode.h>
++#endif
++
 +#if defined(HAVE_WAYLAND)
 +#include "windowing/wayland/WinSystemWayland.h"
 +#endif
 +
 +#include <algorithm>
 +#include <cmath>
++#include <functional>
 +#include <limits>
 +#include <mutex>
 +#include <utility>
@@ -3126,6 +3140,70 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +             CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER) == PRIME_RENDER_DIRECT;
 +}
 +
++#if defined(HAVE_GBM) && defined(HAS_GLES) && defined(HAVE_LINUX_DMA_HEAP)
++constexpr const char* DMA_HEAP_DIR = "/dev/dma_heap/";
++constexpr const char* SYSTEM_DMA_HEAP = "system";
++
++// the system heap first, which leaves contiguous memory to the devices that need it
++std::vector<std::string> DmaHeaps()
++{
++  CFileItemList items;
++  std::vector<std::string> heaps;
++  if (!XFILE::CDirectory::GetDirectory(DMA_HEAP_DIR, items, "", XFILE::DIR_FLAG_NO_FILE_DIRS))
++    return heaps;
++
++  for (const auto& item : items)
++    heaps.push_back(URIUtils::GetFileName(item->GetPath()));
++  std::ranges::sort(heaps, {}, [](const std::string& heap)
++                    { return std::make_pair(heap != SYSTEM_DMA_HEAP, heap); });
++  return heaps;
++}
++
++// a screen-sized NV12 frame, as web video brings: a smaller one may be contiguous from any heap
++bool HeapScansOut(int drmFd, const std::string& heap, uint32_t width, uint32_t height)
++{
++  CDMAHeapBufferObject buffer(DMA_HEAP_DIR + heap);
++  const uint32_t lumaSize = width * height;
++  if (!buffer.CreateBufferObject(static_cast<uint64_t>(lumaSize) + lumaSize / 2))
++    return false;
++
++  uint32_t handle = 0;
++  if (drmPrimeFDToHandle(drmFd, buffer.GetFd(), &handle) < 0)
++  {
++    CLog::Log(LOGDEBUG, "CWebClientManager::{}: cannot import from {}: {}", __FUNCTION__, heap,
++              strerror(errno));
++    return false;
++  }
++
++  const uint32_t handles[4] = {handle, handle};
++  const uint32_t pitches[4] = {width, width};
++  const uint32_t offsets[4] = {0, lumaSize};
++  uint32_t fbId = 0;
++  const bool added = drmModeAddFB2(drmFd, width, height, DRM_FORMAT_NV12, handles, pitches, offsets,
++                                   &fbId, 0) == 0;
++  if (added)
++    drmModeRmFB(drmFd, fbId);
++  else
++    CLog::Log(LOGDEBUG, "CWebClientManager::{}: no framebuffer from {}: {}", __FUNCTION__, heap,
++              strerror(errno));
++
++  drm_gem_close close{};
++  close.handle = handle;
++  drmIoctl(drmFd, DRM_IOCTL_GEM_CLOSE, &close);
++  return added;
++}
++
++std::string ScanoutDmaHeap(int drmFd, uint32_t width, uint32_t height)
++{
++  for (const std::string& heap : DmaHeaps())
++  {
++    if (HeapScansOut(drmFd, heap, width, height))
++      return heap;
++  }
++  return {};
++}
++#endif
++
 +// web apps run at the screen's resolution, whatever size the GUI renders at
 +WaylandHostConfig OutputMode()
 +{
@@ -3219,9 +3297,17 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  if (!gbm || !std::dynamic_pointer_cast<WINDOWING::GBM::CDRMAtomic>(gbm->GetDrm()))
 +    return;
 +
++  std::function<std::string()> dmaHeap;
++#if defined(HAVE_LINUX_DMA_HEAP)
++  const RESOLUTION_INFO mode = gbm->GetDrm()->GetCurrentMode();
++  dmaHeap = [drm = gbm->GetDrm(), width = static_cast<uint32_t>(mode.iScreenWidth),
++             height = static_cast<uint32_t>(mode.iScreenHeight)]
++  { return ScanoutDmaHeap(drm->GetFileDescriptor(), width, height); };
++#endif
++
 +  m_video = std::make_unique<CWebVideoServer>();
 +  if (!m_video->Start(CSpecialProtocol::TranslatePath(VIDEO_SOCKET),
-+                      gbm->GetDrm()->GetVideoFormats()))
++                      gbm->GetDrm()->GetVideoFormats(), std::move(dmaHeap)))
 +  {
 +    m_video.reset();
 +    return;
@@ -5574,7 +5660,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebPlayerDefs.h
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,31 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -5592,6 +5678,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +//! \brief Name under which the web player is registered with the player factory
 +constexpr const char* PLAYER_NAME = "WebPlayer";
++
++//! \brief The web video frames Kodi keeps while it waits for the next one: the frame on the
++//! video plane, the frame it replaced until the plane has moved on, and a late frame the render
++//! manager skipped
++constexpr unsigned int VIDEO_FRAMES_HELD = 3;
 +
 +//! \brief Item property naming the web profile a page opens in; a web add-on's id or "default"
 +constexpr const char* PROPERTY_PROFILE = "web.profile";
@@ -5789,7 +5880,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebVideoServer.cpp
-@@ -0,0 +1,428 @@
+@@ -0,0 +1,437 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -5800,6 +5891,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +#include "WebVideoServer.h"
 +
++#include "WebPlayerDefs.h"
 +#include "kodi-web-video.h"
 +#include "utils/log.h"
 +
@@ -5966,7 +6058,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 +
 +bool CWebVideoServer::Start(const std::string& path,
-+                            std::vector<std::pair<uint32_t, uint64_t>> formats)
++                            std::vector<std::pair<uint32_t, uint64_t>> formats,
++                            std::function<std::string()> dmaHeap)
 +{
 +  sockaddr_un addr{};
 +  if (path.size() >= sizeof(addr.sun_path) || formats.empty())
@@ -6003,6 +6096,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    formats.resize(KODI_WEB_VIDEO_MAX_FORMATS);
 +  }
 +  m_formats = std::move(formats);
++  m_dmaHeap = std::move(dmaHeap);
 +  m_path = path;
 +  Create();
 +  CLog::Log(LOGINFO, "CWebVideoServer::{}: web video at {}, {} formats", __FUNCTION__, path,
@@ -6093,11 +6187,17 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  reply.type = KODI_WEB_VIDEO_HELLO_REPLY;
 +  reply.version = KODI_WEB_VIDEO_VERSION;
 +  reply.format_count = static_cast<uint32_t>(m_formats.size());
++  reply.held_frames = VIDEO_FRAMES_HELD;
 +  for (size_t i = 0; i < m_formats.size(); ++i)
 +  {
 +    reply.formats[i].fourcc = m_formats[i].first;
 +    reply.formats[i].modifier = m_formats[i].second;
 +  }
++  const std::string heap = m_dmaHeap ? m_dmaHeap() : std::string();
++  heap.copy(reply.dma_heap, sizeof(reply.dma_heap) - 1);
++
++  CLog::Log(LOGINFO, "CWebVideoServer::{}: {} formats, {} frames held, dma-heap \"{}\"",
++            __FUNCTION__, reply.format_count, reply.held_frames, heap);
 +  return send(connection.GetFd(), &reply, sizeof(reply), MSG_NOSIGNAL) == sizeof(reply);
 +}
 +
@@ -6220,7 +6320,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebVideoServer.h
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,178 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -6238,6 +6338,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +#include <cstdint>
 +#include <deque>
++#include <functional>
 +#include <memory>
 +#include <string>
 +#include <utility>
@@ -6358,7 +6459,13 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  CWebVideoServer();
 +  ~CWebVideoServer() override;
 +
-+  bool Start(const std::string& path, std::vector<std::pair<uint32_t, uint64_t>> formats);
++  /*!
++   * \brief Serve the sinks at path; dmaHeap names, when a sink connects, the node in
++   * /dev/dma_heap whose buffers the display shows, or none
++   */
++  bool Start(const std::string& path,
++             std::vector<std::pair<uint32_t, uint64_t>> formats,
++             std::function<std::string()> dmaHeap);
 +  void Stop();
 +  const std::string& GetPath() const { return m_path; }
 +
@@ -6382,6 +6489,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  int m_listenFd{-1};
 +  int m_stopFd{-1};
 +  std::vector<std::pair<uint32_t, uint64_t>> m_formats;
++  std::function<std::string()> m_dmaHeap;
 +  std::shared_ptr<CWebVideoFramePool> m_pool;
 +  std::vector<std::shared_ptr<CWebVideoConnection>> m_connections;
 +  std::shared_ptr<CWebVideoConnection> m_placedBy;
@@ -6571,7 +6679,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#endif
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/kodi-web-video.h
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,140 @@
 +/* SPDX-License-Identifier: MIT */
 +/*
 + * kodi-web-video: the decoded frames of a web page's video, shown by Kodi on
@@ -6584,7 +6692,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 + *
 + *  sink -> Kodi  HELLO          version
 + *  Kodi -> sink  HELLO_REPLY    version, the DRM formats and modifiers Kodi
-+ *                               can show
++ *                               can show, the frames Kodi keeps while it
++ *                               waits for the next one, and the DMA-BUF heap
++ *                               whose buffers Kodi can show
 + *  sink -> Kodi  FRAME          id, size, DRM format and modifier, plane
 + *                               layout, colorimetry; carries one descriptor
 + *                               (SCM_RIGHTS) per DMA-BUF object
@@ -6602,6 +6712,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#ifndef KODI_WEB_VIDEO_H
 +#define KODI_WEB_VIDEO_H
 +
++#include <limits.h>
 +#include <stdint.h>
 +
 +#define KODI_WEB_VIDEO_VERSION 1
@@ -6661,8 +6772,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  uint32_t type;
 +  uint32_t version;
 +  uint32_t format_count;
-+  uint32_t pad;
++  uint32_t held_frames;
 +  struct kodi_web_video_format formats[KODI_WEB_VIDEO_MAX_FORMATS];
++  /* a node in /dev/dma_heap; empty for none */
++  char dma_heap[NAME_MAX + 1];
 +};
 +
 +struct kodi_web_video_frame
@@ -7048,6 +7161,47 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    static constexpr auto SETTING_SERVICES_DEVICENAME = "services.devicename";
    static constexpr auto SETTING_SERVICES_DEVICEUUID = "services.deviceuuid";
    static constexpr auto SETTING_SERVICES_UPNP = "services.upnp";
+--- a/xbmc/utils/DMAHeapBufferObject.cpp
++++ b/xbmc/utils/DMAHeapBufferObject.cpp
+@@ -104,10 +104,11 @@ bool CDMAHeapBufferObject::CreateBufferO
+ 
+   if (m_dmaheapfd < 0)
+   {
+-    m_dmaheapfd = open(DMA_HEAP_PATH, O_RDWR);
++    const char* path = m_heapPath.empty() ? DMA_HEAP_PATH : m_heapPath.c_str();
++    m_dmaheapfd = open(path, O_RDWR);
+     if (m_dmaheapfd < 0)
+     {
+-      CLog::LogF(LOGERROR, "failed to open {}:", DMA_HEAP_PATH, strerror(errno));
++      CLog::LogF(LOGERROR, "failed to open {}:", path, strerror(errno));
+       return false;
+     }
+   }
+--- a/xbmc/utils/DMAHeapBufferObject.h
++++ b/xbmc/utils/DMAHeapBufferObject.h
+@@ -12,11 +12,14 @@
+ 
+ #include <memory>
+ #include <stdint.h>
++#include <string>
++#include <utility>
+ 
+ class CDMAHeapBufferObject : public CBufferObject
+ {
+ public:
+   CDMAHeapBufferObject() = default;
++  explicit CDMAHeapBufferObject(std::string heapPath) : m_heapPath(std::move(heapPath)) {}
+   virtual ~CDMAHeapBufferObject() override;
+ 
+   // Registration
+@@ -32,6 +35,7 @@ public:
+   std::string GetName() const override { return "CDMAHeapBufferObject"; }
+ 
+ private:
++  std::string m_heapPath;
+   int m_dmaheapfd{-1};
+   uint64_t m_size{0};
+   uint8_t* m_map{nullptr};
 --- a/xbmc/utils/ExecString.cpp
 +++ b/xbmc/utils/ExecString.cpp
 @@ -124,6 +124,8 @@ bool CExecString::Parse(const CFileItem&

@@ -111,7 +111,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "addons/addoninfo/AddonType.h"
  #include "application/ApplicationComponents.h"
  #include "dialogs/GUIDialogKaiToast.h"
-@@ -166,6 +167,91 @@ const ADDON::CAddonType* WebAppType(cons
+@@ -174,6 +175,91 @@ const ADDON::CAddonType* WebAppType(cons
    return webapp ? webapp->Type(ADDON::AddonType::WEBAPP) : nullptr;
  }
  
@@ -203,7 +203,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  void AddFilterListsOf(const ADDON::AddonPtr& addon, std::set<std::string>& lists)
  {
    const ADDON::CAddonType* type = WebAppType(std::dynamic_pointer_cast<ADDON::CAddon>(addon));
-@@ -523,6 +609,13 @@ bool CWebClientManager::RequestView(cons
+@@ -603,6 +689,13 @@ bool CWebClientManager::RequestView(cons
      return false;
    }
  
@@ -217,7 +217,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    const std::string uplink = UplinkOf(profile);
  
    std::unique_lock lock(m_lock);
-@@ -803,35 +896,30 @@ bool CWebClientManager::ConfigureViewFro
+@@ -883,35 +976,30 @@ bool CWebClientManager::ConfigureViewFro
    if (!userAgent.empty())
      m_host->WebViewSetUserAgent(profile, userAgent);
  
@@ -269,7 +269,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    return true;
  }
  
-@@ -872,11 +960,12 @@ void CWebClientManager::SendProfileFiles
+@@ -952,11 +1040,12 @@ void CWebClientManager::SendProfileFiles
    std::sort(files.begin(), files.end());
  
    for (const std::string& file : files)
@@ -283,7 +283,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
                                          bool script)
  {
    const int fd = open(CSpecialProtocol::TranslatePath(file).c_str(), O_RDONLY | O_CLOEXEC);
-@@ -889,7 +978,6 @@ void CWebClientManager::SendProfileFile(
+@@ -969,7 +1058,6 @@ void CWebClientManager::SendProfileFile(
      return;
    }
  

@@ -129,15 +129,15 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "addons/AddonManager.h"
  #include "addons/addoninfo/AddonType.h"
  #include "application/ApplicationComponents.h"
-@@ -58,6 +59,7 @@
- #include <cmath>
+@@ -66,6 +67,7 @@
+ #include <functional>
  #include <limits>
  #include <mutex>
 +#include <typeinfo>
  #include <utility>
  
  #include <fcntl.h>
-@@ -147,6 +149,45 @@ void NotifyOpenError(const std::string&
+@@ -155,6 +157,45 @@ void NotifyOpenError(const std::string&
        CGUIDialogKaiToast::Error, StringUtils::Format(localizeStrings.Get(13329), name), reason);
  }
  
@@ -183,7 +183,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  // the command is run as execvpe() runs it: a name with a slash as a path,
  // any other through PATH
  bool ClientCommandExists(const std::string& command)
-@@ -222,6 +263,12 @@ void CWebClientManager::Start()
+@@ -294,6 +335,12 @@ void CWebClientManager::Start()
    if (!m_audio->Start(CSpecialProtocol::TranslatePath(AUDIO_SOCKET)))
      m_audio.reset();
  
@@ -196,7 +196,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
    CServiceBroker::GetWinSystem()->Register(this);
    settings->RegisterCallback(this, {CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER});
-@@ -244,14 +291,20 @@ void CWebClientManager::Stop()
+@@ -316,14 +363,20 @@ void CWebClientManager::Stop()
  
    if (const auto settingsComponent = CServiceBroker::GetSettingsComponent())
      settingsComponent->GetSettings()->UnregisterCallback(this);
@@ -218,7 +218,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_state = State::ABSENT;
    m_views.clear();
    m_surfaces.clear();
-@@ -259,6 +312,51 @@ void CWebClientManager::Stop()
+@@ -331,6 +384,51 @@ void CWebClientManager::Stop()
    m_observer = nullptr;
  }
  
@@ -270,7 +270,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  // the client finds a video socket only while pages' video goes to a display plane
  void CWebClientManager::UpdateVideo()
  {
-@@ -609,6 +707,8 @@ void CWebClientManager::OnClientExited(p
+@@ -689,6 +787,8 @@ void CWebClientManager::OnClientExited(p
    m_views.clear();
    m_surfaces.clear();
    m_closing.clear();
@@ -279,7 +279,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    if (m_restarting)
    {
      m_restarting = false;
-@@ -672,7 +772,7 @@ bool CWebClientManager::ConfigureViewFro
+@@ -752,7 +852,7 @@ bool CWebClientManager::ConfigureViewFro
      return false;
  
    const auto webapp = std::dynamic_pointer_cast<ADDON::CAddon>(addon);
@@ -288,7 +288,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    if (!type)
      return false;
  
-@@ -698,7 +798,13 @@ bool CWebClientManager::ConfigureViewFro
+@@ -778,7 +878,13 @@ bool CWebClientManager::ConfigureViewFro
      {
        const std::string list = values.GetValue("contentfilter@list").asString();
        if (!list.empty())

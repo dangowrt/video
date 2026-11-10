@@ -82,7 +82,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  </settings>
 --- a/xbmc/cores/WebPlayer/WebClientManager.cpp
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -630,6 +630,7 @@ bool CWebClientManager::RequestView(cons
+@@ -710,6 +710,7 @@ bool CWebClientManager::RequestView(cons
    {
      CWaylandSurface& surface = *view->second;
      lock.unlock();
@@ -90,7 +90,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
      observer.OnWebViewAvailable(profile, surface);
      return true;
    }
-@@ -877,6 +878,16 @@ std::string CWebClientManager::UplinkOf(
+@@ -957,6 +958,16 @@ std::string CWebClientManager::UplinkOf(
    return addon->GetSetting("uplinkaddress");
  }
  
@@ -107,7 +107,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  bool CWebClientManager::ConfigureViewFromAddon(const std::string& profile)
  {
    ADDON::AddonPtr addon;
-@@ -896,6 +907,8 @@ bool CWebClientManager::ConfigureViewFro
+@@ -976,6 +987,8 @@ bool CWebClientManager::ConfigureViewFro
    if (!userAgent.empty())
      m_host->WebViewSetUserAgent(profile, userAgent);
  

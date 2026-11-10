@@ -172,7 +172,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  {
 --- a/xbmc/cores/WebPlayer/WebClientManager.cpp
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -182,6 +182,15 @@ const ADDON::CAddonType* WebAppType(cons
+@@ -190,6 +190,15 @@ const ADDON::CAddonType* WebAppType(cons
    return webapp ? webapp->Type(ADDON::AddonType::WEBAPP) : nullptr;
  }
  
@@ -188,7 +188,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  struct WebAppFile
  {
    std::string path;
-@@ -916,7 +925,8 @@ bool CWebClientManager::WantsCdm(const s
+@@ -996,7 +1005,8 @@ bool CWebClientManager::WantsCdm(const s
      return false;
  
    const auto& dependencies = webapp->GetDependencies();
@@ -198,7 +198,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
                     [](const auto& dependency) { return dependency.id == INPUTSTREAMHELPER; }))
      return false;
  
-@@ -991,6 +1001,8 @@ bool CWebClientManager::ConfigureViewFro
+@@ -1071,6 +1081,8 @@ bool CWebClientManager::ConfigureViewFro
      }
    }
  
@@ -209,7 +209,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    return true;
 --- a/xbmc/cores/WebPlayer/WebPlayerDefs.h
 +++ b/xbmc/cores/WebPlayer/WebPlayerDefs.h
-@@ -31,5 +31,12 @@ constexpr const char* RED_BUTTON_CATEGOR
+@@ -36,5 +36,12 @@ constexpr const char* RED_BUTTON_CATEGOR
  //! \brief The setting whether the red button hides the app, as on a television
  constexpr const char* SETTING_RED_BUTTON_HIDES = "redbuttonhides";
  
