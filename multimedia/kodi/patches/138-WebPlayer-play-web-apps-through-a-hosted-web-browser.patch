@@ -45,12 +45,15 @@ page covers the video except where it is transparent, so the GPU
 composes neither the video nor the page. A page with an opaque
 background leaves a transparent hole where its video element is, and
 the sink reports that rectangle, so the video plane moves there, fitted
-to the video's aspect ratio. A frame goes back to its sink once no
-plane shows it, and when a page's video stops, the page returns to the
-video plane. Web video follows the PRIME render method as Kodi's own
-video does: with the GLES method the browser gets no video socket and
-pages draw their video, and a change of the method restarts an idle
-browser, or the browser once its web app closes.
+to the video's aspect ratio, and is set up anew as for a new frame.
+Every frame passes the render manager's configuration check, so that
+web video changes renderer whenever Kodi's own video would. A frame
+goes back to its sink once no plane shows it, and when a page's video
+stops, the page returns to the video plane. Web video follows the PRIME
+render method as Kodi's own video does: with the GLES method the
+browser gets no video socket and pages draw their video, and a change
+of the method restarts an idle browser, or the browser once its web app
+closes.
 
 Web apps are a new add-on type, kodi.webapp: a manifest names the start
 URL, user agent, user scripts and content filters of the app, whose
@@ -102,9 +105,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/cores/WebPlayer/WebAudioServer.h         |  136 +++
  xbmc/cores/WebPlayer/WebClientManager.cpp     | 1010 +++++++++++++++++
  xbmc/cores/WebPlayer/WebClientManager.h       |  266 +++++
- xbmc/cores/WebPlayer/WebLayerBridge.cpp       |  239 ++++
- xbmc/cores/WebPlayer/WebLayerBridge.h         |   90 ++
- xbmc/cores/WebPlayer/WebPlayer.cpp            |  825 ++++++++++++++
+ xbmc/cores/WebPlayer/WebLayerBridge.cpp       |  243 ++++
+ xbmc/cores/WebPlayer/WebLayerBridge.h         |   94 ++
+ xbmc/cores/WebPlayer/WebPlayer.cpp            |  826 ++++++++++++++
  xbmc/cores/WebPlayer/WebPlayer.h              |  177 +++
  xbmc/cores/WebPlayer/WebPlayerDefs.h          |   26 +
  xbmc/cores/WebPlayer/WebVideoBuffer.cpp       |  112 ++
@@ -128,7 +131,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/settings/Settings.h                      |    5 +
  xbmc/utils/ExecString.cpp                     |    2 +
  xbmc/windows/GUIMediaWindow.cpp               |    9 +
- 63 files changed, 6237 insertions(+), 29 deletions(-)
+ 63 files changed, 6246 insertions(+), 29 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -4219,7 +4222,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebLayerBridge.cpp
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,243 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -4242,10 +4245,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +CWebLayerBridge::~CWebLayerBridge()
 +{
-+  for (CVideoBufferDRMPRIME* page : {m_pending, m_page, m_prevPage})
++  for (CVideoBufferDRMPRIME* buffer : {m_pending, m_page, m_prevPage, m_video})
 +  {
-+    if (page)
-+      page->Release();
++    if (buffer)
++      buffer->Release();
 +  }
 +
 +  // the plane-off commit from Disable has run by now
@@ -4290,6 +4293,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +void CWebLayerBridge::SetVideoPlane(CVideoBufferDRMPRIME* buffer, const CRect& destRect)
 +{
++  if (buffer != m_video)
++  {
++    buffer->Acquire();
++    if (m_video)
++      m_video->Release();
++    m_video = buffer;
++  }
++
 +  CVideoLayerBridgeDRMPRIME::SetVideoPlane(buffer, FitVideo(buffer->GetPicture(), destRect));
 +  ApplyPage();
 +}
@@ -4306,10 +4317,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  return VideoDest();
 +}
 +
++// a moved video goes through SetVideoPlane() like a new frame, to be described in full
 +void CWebLayerBridge::UpdateVideoPlane()
 +{
-+  CVideoLayerBridgeDRMPRIME::UpdateVideoPlane();
-+  PlaceVideo();
++  const std::optional<CRect> moved = MovedVideo();
++  if (moved)
++    CVideoLayerBridgeDRMPRIME::SetVideoPlane(m_video, *moved);
++  else
++    CVideoLayerBridgeDRMPRIME::UpdateVideoPlane();
 +  ApplyPage();
 +}
 +
@@ -4349,22 +4364,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  return dest;
 +}
 +
-+void CWebLayerBridge::PlaceVideo()
++std::optional<CRect> CWebLayerBridge::MovedVideo()
 +{
 +  std::unique_lock lock(m_lock);
-+  if (!m_videoShown || !m_videoRectChanged)
-+    return;
-+
-+  CDRMPlane* plane = m_DRM->GetVideoPlane();
-+  if (!plane)
-+    return;
++  if (!m_video || !m_videoShown || !m_videoRectChanged)
++    return {};
 +
 +  m_videoRectChanged = false;
-+  const CRect dest = VideoDest();
-+  m_DRM->AddProperty(plane, "CRTC_X", static_cast<int32_t>(dest.x1) & ~1);
-+  m_DRM->AddProperty(plane, "CRTC_Y", static_cast<int32_t>(dest.y1) & ~1);
-+  m_DRM->AddProperty(plane, "CRTC_W", (static_cast<uint32_t>(dest.Width()) + 1) & ~1);
-+  m_DRM->AddProperty(plane, "CRTC_H", (static_cast<uint32_t>(dest.Height()) + 1) & ~1);
++  return VideoDest();
 +}
 +
 +void CWebLayerBridge::ApplyPage()
@@ -4461,7 +4468,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebLayerBridge.h
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,94 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -4476,6 +4483,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include "cores/VideoPlayer/VideoRenderers/HwDecRender/VideoLayerBridgeDRMPRIME.h"
 +#include "threads/CriticalSection.h"
 +#include "utils/Geometry.h"
++
++#include <optional>
 +
 +struct VideoPicture;
 +
@@ -4527,11 +4536,13 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +private:
 +  CRect FitVideo(const VideoPicture& picture, const CRect& destRect);
 +  CRect VideoDest() const;
-+  void PlaceVideo();
++  std::optional<CRect> MovedVideo();
 +  void ApplyPage();
 +  void ShowPage();
 +  bool StackPage();
 +  void HidePage();
++
++  CVideoBufferDRMPRIME* m_video{nullptr};
 +
 +  CCriticalSection m_lock;
 +  CVideoBufferDRMPRIME* m_pending{nullptr};
@@ -4554,7 +4565,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebPlayer.cpp
-@@ -0,0 +1,825 @@
+@@ -0,0 +1,826 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -5290,12 +5301,21 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    CLog::Log(LOGINFO, "CWebPlayer::{}: frames {}x{} format {:#x} modifier {:#x} planes {}",
 +              __FUNCTION__, picture.iWidth, picture.iHeight, format,
 +              descriptor->objects[0].format_modifier, descriptor->layers[0].nb_planes);
-+    if (!ConfigureRenderer(picture))
-+      return;
++    m_processInfo->SetVideoDimensions(picture.iWidth, picture.iHeight);
++    m_processInfo->SetVideoDAR(static_cast<float>(picture.iWidth) / picture.iHeight);
++    m_processInfo->SetVideoDecoderName("wayland", true);
++    m_processInfo->SetVideoPixelFormat("drm_prime");
++    m_processInfo->SetVideoFps(m_fps);
++    m_processInfo->SetVideoInterlaced(false);
++    m_processInfo->SetVideoDeintMethod("none");
 +    m_configuredFormat = format;
 +    m_configuredWidth = picture.iWidth;
 +    m_configuredHeight = picture.iHeight;
 +  }
++
++  // the renderer may also give way to another one for pictures of the same kind
++  if (!ConfigureRenderer(picture))
++    return;
 +
 +  if (!m_renderManager.AddVideoPicture(picture, m_stop, VS_INTERLACEMETHOD_NONE, false))
 +    CLog::Log(LOGDEBUG, "CWebPlayer::{}: frame dropped, no free render buffer", __FUNCTION__);
@@ -5303,14 +5323,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +bool CWebPlayer::ConfigureRenderer(const VideoPicture& picture)
 +{
-+  m_processInfo->SetVideoDimensions(picture.iWidth, picture.iHeight);
-+  m_processInfo->SetVideoDAR(static_cast<float>(picture.iWidth) / picture.iHeight);
-+  m_processInfo->SetVideoDecoderName("wayland", true);
-+  m_processInfo->SetVideoPixelFormat("drm_prime");
-+  m_processInfo->SetVideoFps(m_fps);
-+  m_processInfo->SetVideoInterlaced(false);
-+  m_processInfo->SetVideoDeintMethod("none");
-+
 +  if (!m_renderManager.Configure(picture, m_fps, 0, RENDER_BUFFERS))
 +  {
 +    CLog::Log(LOGERROR, "CWebPlayer::{}: no renderer for the client's {}x{} buffers", __FUNCTION__,

@@ -484,7 +484,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 -
 --- a/xbmc/windowing/gbm/WinSystemGbm.cpp
 +++ b/xbmc/windowing/gbm/WinSystemGbm.cpp
-@@ -342,6 +342,11 @@ bool CWinSystemGbm::UseLimitedColor()
+@@ -349,6 +349,11 @@ bool CWinSystemGbm::UseLimitedColor()
        CSettings::SETTING_VIDEOSCREEN_LIMITEDRANGE);
  }
  

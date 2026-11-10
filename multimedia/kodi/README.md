@@ -69,9 +69,12 @@ them on the release tag:
   (xbmc/xbmc#29899), `112` and `113` (xbmc/xbmc#30283), `114` and `115`
   (GBM output selection), `116` to `119` (musl), `120` to `123` (cross
   builds), `124` to `126` (device volume), `127` (DRM PRIME decoder
-  fallback), `128` (stop video when the display switches off), and the
-  web apps with their Wayland host and web player last, `129` to `140`
-  (xbmc/xbmc#30315), which needs `101` and `102`.
+  fallback), `128` (stop video when the display switches off), `129` to
+  `131` (GBM atomic fallback request), `132` and `133` (GL rendering of a
+  video the video plane refuses), and the web apps with their Wayland
+  host and web player last, `134` to `145` (xbmc/xbmc#30315), which
+  needs `101` and `102`, and `132` and `133` for the same fallback of
+  web video.
 - `2xx`: changes kept downstream: LibreELEC's DRM_PRIME filter patches
   (`201`, `202`, see above), the per-add-on uplinks (`203` to `216`),
   LibreELEC's patch that keeps the target build from cross-building its

@@ -295,7 +295,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    if (!m_manager->RequestView(m_profile, *this) || !AwaitFilterLists())
    {
      playLock.lock();
-@@ -814,6 +850,28 @@ bool CWebPlayer::ConfigureRenderer(const
+@@ -815,6 +851,28 @@ bool CWebPlayer::ConfigureRenderer(const
    return true;
  }
  

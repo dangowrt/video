@@ -1,0 +1,340 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 10 Nov 2026 14:17:44 +0000
+Subject: [PATCH] DRMPRIME: fall back to GL when the plane refuses a video
+
+When the kernel refuses the video plane as set up, for example a 256x110
+video scaled to 3840x1638 on RK3568, whose VOP2 planes scale up by at
+most eight, every frame's request fails its test commit and the bridge
+sends the same one again with the next frame, so the video is never
+shown.
+
+Test each new size and position of the video plane on its own with a
+TEST_ONLY commit and leave the plane alone when the kernel refuses it.
+CRendererDRMPRIME then reports a configuration change and its Create()
+declines pictures of the refused size, so that CRendererDRMPRIMEGLES
+renders the video. That renderer takes DRM PRIME pictures with either
+renderer setting, as it is the fallback of the direct one.
+
+Since commit 41c6d07329be ("GBM: move video plane teardown from renderer
+dtor to FlipPage"), the bridge of a replaced CRendererDRMPRIME is torn
+down at the next FlipPage(), and that teardown expects the GUI and the
+video plane apart. CRendererDRMPRIMEGLES sets up its output in
+SetVideoOutput() before that FlipPage(), where the single output plane
+becomes the video plane, so SetVideoOutput() disables and releases a
+bridge left behind first, through the same teardown as FlipPage().
+
+Fixes: 87a783978517 ("VideoPlayer: add DRM PRIME renderer")
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../HwDecRender/RendererDRMPRIME.cpp          | 10 +++
+ .../HwDecRender/RendererDRMPRIME.h            |  3 +
+ .../HwDecRender/RendererDRMPRIMEGLES.cpp      |  3 -
+ .../HwDecRender/VideoLayerBridgeDRMPRIME.cpp  | 63 ++++++++++++++++---
+ .../HwDecRender/VideoLayerBridgeDRMPRIME.h    | 14 +++++
+ xbmc/windowing/gbm/WinSystemGbm.cpp           | 36 +++++++----
+ xbmc/windowing/gbm/WinSystemGbm.h             |  1 +
+ xbmc/windowing/gbm/drm/DRMAtomic.cpp          | 10 +++
+ xbmc/windowing/gbm/drm/DRMAtomic.h            |  5 ++
+ 9 files changed, 121 insertions(+), 24 deletions(-)
+
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.cpp
+@@ -81,6 +81,11 @@ CBaseRenderer* CRendererDRMPRIME::Create
+     if (!gui)
+       return nullptr;
+ 
++    auto bridge =
++        std::dynamic_pointer_cast<CVideoLayerBridgeDRMPRIME>(winSystem->GetVideoLayerBridge());
++    if (bridge && bridge->Refuses(width, height))
++      return nullptr;
++
+     if (!drm->FindVideoAndGuiPlane(format, modifier, width, height))
+       return nullptr;
+ 
+@@ -242,6 +247,7 @@ void CRendererDRMPRIME::RenderUpdate(
+   if (m_iLastRenderBuffer == index && m_videoLayerBridge)
+   {
+     m_videoLayerBridge->UpdateVideoPlane();
++    m_planeRefused = m_videoLayerBridge->Refuses(m_sourceWidth, m_sourceHeight);
+     return;
+   }
+ 
+@@ -264,6 +270,7 @@ void CRendererDRMPRIME::RenderUpdate(
+     m_videoLayerBridge->Configure(buffer);
+ 
+   m_videoLayerBridge->SetVideoPlane(buffer, m_planeDestRect);
++  m_planeRefused = m_videoLayerBridge->Refuses(m_sourceWidth, m_sourceHeight);
+ 
+   m_iLastRenderBuffer = index;
+ }
+@@ -273,6 +280,9 @@ bool CRendererDRMPRIME::ConfigChanged(co
+   if (picture.videoBuffer->GetFormat() != m_format)
+     return true;
+ 
++  if (m_planeRefused)
++    return true;
++
+   return false;
+ }
+ 
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIME.h
+@@ -10,6 +10,8 @@
+ 
+ #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
+ 
++#include <atomic>
++
+ class CVideoBuffer;
+ class CVideoLayerBridgeDRMPRIME;
+ 
+@@ -54,6 +56,7 @@ private:
+   CRect m_planeDestRect;
+ 
+   std::shared_ptr<CVideoLayerBridgeDRMPRIME> m_videoLayerBridge;
++  std::atomic<bool> m_planeRefused{false};
+ 
+   struct BUFFER
+   {
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
+@@ -44,9 +44,6 @@ CBaseRenderer* CRendererDRMPRIMEGLES::Cr
+   if (!settings->GetBool(CSettings::SETTING_VIDEOPLAYER_USEPRIMEDECODER))
+     return nullptr;
+ 
+-  if (settings->GetInt(CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER) != 1)
+-    return nullptr;
+-
+   auto buf = dynamic_cast<CVideoBufferDRMPRIME*>(buffer);
+   if (!buf)
+     return nullptr;
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/VideoLayerBridgeDRMPRIME.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/VideoLayerBridgeDRMPRIME.cpp
+@@ -14,6 +14,8 @@
+ #include "windowing/WinSystem.h"
+ #include "windowing/gbm/drm/DRMAtomic.h"
+ 
++#include <cerrno>
++#include <cstring>
+ #include <utility>
+ 
+ using namespace KODI::WINDOWING::GBM;
+@@ -193,6 +195,8 @@ void CVideoLayerBridgeDRMPRIME::Configur
+   for (uint32_t doomed : m_fbCache.Reap({m_fb_id, m_prev_fb_id}))
+     drmModeRmFB(m_DRM->GetFileDescriptor(), doomed);
+ 
++  m_tested.reset();
++
+   auto plane = m_DRM->GetVideoPlane();
+   if (!plane)
+     return;
+@@ -235,17 +239,56 @@ void CVideoLayerBridgeDRMPRIME::UpdateVi
+   AddPlaneProperties(plane);
+ }
+ 
++bool CVideoLayerBridgeDRMPRIME::Refuses(uint32_t width, uint32_t height) const
++{
++  return m_refused == std::make_pair(width, height);
++}
++
+ // the request that last set up the plane may never have reached the kernel
+ void CVideoLayerBridgeDRMPRIME::AddPlaneProperties(CDRMPlane* plane)
+ {
+-  m_DRM->AddProperty(plane, "FB_ID", m_fb_id);
+-  m_DRM->AddProperty(plane, "CRTC_ID", m_DRM->GetCrtc()->GetCrtcId());
+-  m_DRM->AddProperty(plane, "SRC_X", 0);
+-  m_DRM->AddProperty(plane, "SRC_Y", 0);
+-  m_DRM->AddProperty(plane, "SRC_W", m_buffer->GetWidth() << 16);
+-  m_DRM->AddProperty(plane, "SRC_H", m_buffer->GetHeight() << 16);
+-  m_DRM->AddProperty(plane, "CRTC_X", static_cast<int32_t>(m_destRect.x1) & ~1);
+-  m_DRM->AddProperty(plane, "CRTC_Y", static_cast<int32_t>(m_destRect.y1) & ~1);
+-  m_DRM->AddProperty(plane, "CRTC_W", (static_cast<uint32_t>(m_destRect.Width()) + 1) & ~1);
+-  m_DRM->AddProperty(plane, "CRTC_H", (static_cast<uint32_t>(m_destRect.Height()) + 1) & ~1);
++  const Properties properties = {
++      {"FB_ID", m_fb_id},
++      {"CRTC_ID", m_DRM->GetCrtc()->GetCrtcId()},
++      {"SRC_X", 0},
++      {"SRC_Y", 0},
++      {"SRC_W", m_buffer->GetWidth() << 16},
++      {"SRC_H", m_buffer->GetHeight() << 16},
++      {"CRTC_X", static_cast<int32_t>(m_destRect.x1) & ~1},
++      {"CRTC_Y", static_cast<int32_t>(m_destRect.y1) & ~1},
++      {"CRTC_W", (static_cast<uint32_t>(m_destRect.Width()) + 1) & ~1},
++      {"CRTC_H", (static_cast<uint32_t>(m_destRect.Height()) + 1) & ~1},
++  };
++
++  if (!PlaneAccepts(plane, properties))
++    return;
++
++  for (const auto& [name, value] : properties)
++    m_DRM->AddProperty(plane, name, value);
++}
++
++// a new size or place is tested once, as a refused request would fail every frame
++bool CVideoLayerBridgeDRMPRIME::PlaneAccepts(CDRMPlane* plane, const Properties& properties)
++{
++  const auto size = std::make_pair(m_buffer->GetWidth(), m_buffer->GetHeight());
++  const auto setup = std::make_pair(size, m_destRect);
++  if (m_tested == setup)
++    return m_accepted;
++
++  m_tested = setup;
++  m_accepted = m_DRM->TestProperties(plane, properties);
++  if (m_accepted)
++  {
++    if (m_refused == size)
++      m_refused.reset();
++    return true;
++  }
++
++  CLog::Log(LOGINFO,
++            "CVideoLayerBridgeDRMPRIME::{} - the video plane refuses {}x{} at {}x{}: {}, the "
++            "video is left to GL rendering",
++            __FUNCTION__, size.first, size.second, m_destRect.Width(), m_destRect.Height(),
++            strerror(errno));
++  m_refused = size;
++  return false;
+ }
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/VideoLayerBridgeDRMPRIME.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/VideoLayerBridgeDRMPRIME.h
+@@ -13,7 +13,11 @@
+ #include "utils/Geometry.h"
+ #include "windowing/gbm/VideoLayerBridge.h"
+ 
++#include <cstdint>
+ #include <memory>
++#include <optional>
++#include <utility>
++#include <vector>
+ 
+ #include <drm_mode.h>
+ 
+@@ -42,6 +46,9 @@ public:
+   virtual void SetVideoPlane(CVideoBufferDRMPRIME* buffer, const CRect& destRect);
+   virtual void UpdateVideoPlane();
+ 
++  //! \brief Whether the video plane refused to show pictures of this size
++  bool Refuses(uint32_t width, uint32_t height) const;
++
+ protected:
+   std::shared_ptr<KODI::WINDOWING::GBM::CDRMAtomic> m_DRM;
+ 
+@@ -60,7 +67,14 @@ private:
+   uint32_t m_fb_id{0};
+   uint32_t m_prev_fb_id{0};
+ 
++  using Properties = std::vector<std::pair<const char*, uint64_t>>;
++
+   void AddPlaneProperties(KODI::WINDOWING::GBM::CDRMPlane* plane);
++  bool PlaneAccepts(KODI::WINDOWING::GBM::CDRMPlane* plane, const Properties& properties);
+ 
+   CRect m_destRect;
++  std::optional<std::pair<std::pair<uint32_t, uint32_t>, CRect>> m_tested;
++  bool m_accepted{false};
++
++  std::optional<std::pair<uint32_t, uint32_t>> m_refused;
+ };
+--- a/xbmc/windowing/gbm/WinSystemGbm.cpp
++++ b/xbmc/windowing/gbm/WinSystemGbm.cpp
+@@ -322,18 +322,25 @@ void CWinSystemGbm::FlipPage(bool render
+   m_DRM->FlipPage(bo, rendered, videoLayer, async);
+ 
+   // !videoLayer alone cannot gate teardown: FlipPage also runs with videoLayer
+-  // false during a mode switch or renderer swap. use_count reaches 1 only when
+-  // CRendererDRMPRIME drops its bridge reference, which happens at video stop.
+-  if (m_videoLayerBridge && !videoLayer && m_videoLayerBridge.use_count() == 1)
+-  {
+-    // delete video layer bridge when video layer no longer is active
+-    m_videoLayerBridge.reset();
++  // false during a mode switch or renderer swap.
++  if (!videoLayer)
++    ReleaseVideoLayerBridge();
++}
+ 
+-    //! @todo unify D2P and single-plane teardown behind one winsystem plane API
+-    m_DRM->ReleaseVideoPlane();
+-    auto* gui = m_DRM->GetGuiPlane();
+-    m_DRM->FindGuiPlane(gui->GetFormat(), gui->GetModifier());
+-  }
++// use_count reaches 1 only when CRendererDRMPRIME drops its bridge reference,
++// which happens at video stop or when another renderer takes over
++void CWinSystemGbm::ReleaseVideoLayerBridge()
++{
++  if (!m_videoLayerBridge || m_videoLayerBridge.use_count() != 1)
++    return;
++
++  // delete video layer bridge when video layer no longer is active
++  m_videoLayerBridge.reset();
++
++  //! @todo unify D2P and single-plane teardown behind one winsystem plane API
++  m_DRM->ReleaseVideoPlane();
++  auto* gui = m_DRM->GetGuiPlane();
++  m_DRM->FindGuiPlane(gui->GetFormat(), gui->GetModifier());
+ }
+ 
+ bool CWinSystemGbm::UseLimitedColor()
+@@ -423,6 +430,13 @@ std::vector<std::string> CWinSystemGbm::
+ 
+ bool CWinSystemGbm::SetVideoOutput(const VideoPicture* videoPicture)
+ {
++  // a replaced direct-to-plane renderer leaves its bridge on its video plane until FlipPage
++  if (m_videoLayerBridge)
++  {
++    m_videoLayerBridge->Disable();
++    ReleaseVideoLayerBridge();
++  }
++
+   // Base: flip the gui/video plane role for the single shared output
+   // plane on GBM. videoPicture set means a video is starting and the
+   // output plane should be tracked as the video plane; nullptr means
+--- a/xbmc/windowing/gbm/WinSystemGbm.h
++++ b/xbmc/windowing/gbm/WinSystemGbm.h
+@@ -85,6 +85,7 @@ public:
+ protected:
+   void OnLostDevice();
+   void OnResetDisplay();
++  void ReleaseVideoLayerBridge();
+ 
+   std::unique_ptr<CVideoSync> GetVideoSync(CVideoReferenceClock* clock) override;
+ 
+--- a/xbmc/windowing/gbm/drm/DRMAtomic.cpp
++++ b/xbmc/windowing/gbm/drm/DRMAtomic.cpp
+@@ -338,6 +338,16 @@ bool CDRMAtomic::AddProperty(CDRMObject*
+   return m_req->AddProperty(object, name, value);
+ }
+ 
++bool CDRMAtomic::TestProperties(CDRMObject* object,
++                                const std::vector<std::pair<const char*, uint64_t>>& properties)
++{
++  CDRMAtomicRequest request;
++  for (const auto& [name, value] : properties)
++    request.AddProperty(object, name, value);
++
++  return drmModeAtomicCommit(m_fd, request.Get(), DRM_MODE_ATOMIC_TEST_ONLY, nullptr) == 0;
++}
++
+ CDRMAtomic::CDRMAtomicRequest::CDRMAtomicRequest() : m_atomicRequest(drmModeAtomicAlloc())
+ {
+ }
+--- a/xbmc/windowing/gbm/drm/DRMAtomic.h
++++ b/xbmc/windowing/gbm/drm/DRMAtomic.h
+@@ -15,6 +15,7 @@
+ #include <deque>
+ #include <map>
+ #include <memory>
++#include <utility>
+ #include <vector>
+ 
+ namespace KODI
+@@ -37,6 +38,10 @@ public:
+   bool SupportsFencing() override { return true; }
+   bool AddProperty(CDRMObject* object, const char* name, uint64_t value);
+ 
++  //! \brief Whether the kernel accepts these properties of the object on top of its current state
++  bool TestProperties(CDRMObject* object,
++                      const std::vector<std::pair<const char*, uint64_t>>& properties);
++
+   // Probe whether any DRM device supports atomic modesetting, with no
+   // connector required. Used to decide atomic-vs-legacy before falling back.
+   static bool SupportsAtomicModesetting();

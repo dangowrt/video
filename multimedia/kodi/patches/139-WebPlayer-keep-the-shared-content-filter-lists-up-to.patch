@@ -1014,7 +1014,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    {
      playLock.lock();
      m_opening = false;
-@@ -775,12 +814,62 @@ bool CWebPlayer::ConfigureRenderer(const
+@@ -776,12 +815,62 @@ bool CWebPlayer::ConfigureRenderer(const
    return true;
  }
  

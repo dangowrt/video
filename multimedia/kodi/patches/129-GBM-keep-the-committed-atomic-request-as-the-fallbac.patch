@@ -1,0 +1,95 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 10 Nov 2026 14:10:23 +0000
+Subject: [PATCH] GBM: keep the committed atomic request as the fallback
+
+When a test commit fails, DrmAtomicCommit() commits the last
+successful request in its place. That request is at the front of the
+queue and the failed one at the back, and a successful commit pops the
+front, so the request just committed is deleted and the failed one
+becomes the fallback of the next frame. When the fallback fails too, it
+stays at the front, and every later frame that fails its test replays
+it again, so the display stops updating for good.
+
+Keep only the request the kernel accepted, and drop the request that
+failed, the fallback included. With nothing committed yet there is no
+fallback to use.
+
+Fixes: 6c49df769b7a ("CDRMAtomic: Backlog only the last known good drmrequest")
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/windowing/gbm/drm/DRMAtomic.cpp | 31 +++++++++++++++++++++-------
+ xbmc/windowing/gbm/drm/DRMAtomic.h   |  1 +
+ 2 files changed, 25 insertions(+), 7 deletions(-)
+
+--- a/xbmc/windowing/gbm/drm/DRMAtomic.cpp
++++ b/xbmc/windowing/gbm/drm/DRMAtomic.cpp
+@@ -141,19 +141,23 @@ void CDRMAtomic::DrmAtomicCommit(int fb_
+                "request",
+                strerror(errno));
+ 
+-    auto oldRequest = m_atomicRequestQueue.front().get();
+-    CDRMAtomicRequest::LogAtomicDiff(m_req, oldRequest);
+-    m_req = oldRequest;
++    ret = UseLastRequest() ? 0 : -1;
+ 
+     // update the old atomic request with the new fb id to avoid tearing
+-    if (rendered)
++    if (ret == 0 && rendered)
+       AddProperty(outputPlane, "FB_ID", fb_id);
+   }
+ 
+-  ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags, nullptr);
++  if (ret == 0)
++  {
++    ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags, nullptr);
++    if (ret < 0)
++      CLog::LogF(LOGERROR, "atomic commit failed: {}", strerror(errno));
++  }
++
++  // a failed request is not kept, so a fallback the kernel refused is not tried again
+   if (ret < 0)
+   {
+-    CLog::LogF(LOGERROR, "atomic commit failed: {}", strerror(errno));
+     m_atomicRequestQueue.pop_back();
+   }
+   else
+@@ -165,7 +169,7 @@ void CDRMAtomic::DrmAtomicCommit(int fb_
+     // incorrect plane cleanup on subsequent video playback.
+     m_req->CacheProperties();
+ 
+-    if (m_atomicRequestQueue.size() > 1)
++    while (m_atomicRequestQueue.size() > 1)
+       m_atomicRequestQueue.pop_front();
+   }
+ 
+@@ -179,6 +183,19 @@ void CDRMAtomic::DrmAtomicCommit(int fb_
+   m_req = m_atomicRequestQueue.back().get();
+ }
+ 
++bool CDRMAtomic::UseLastRequest()
++{
++  if (m_atomicRequestQueue.size() < 2)
++    return false;
++
++  auto lastRequest = m_atomicRequestQueue.front().get();
++  CDRMAtomicRequest::LogAtomicDiff(m_req, lastRequest);
++
++  m_atomicRequestQueue.pop_back();
++  m_req = lastRequest;
++  return true;
++}
++
+ void CDRMAtomic::FlipPage(struct gbm_bo* bo, bool rendered, bool videoLayer, bool async)
+ {
+   struct drm_fb* drm_fb = nullptr;
+--- a/xbmc/windowing/gbm/drm/DRMAtomic.h
++++ b/xbmc/windowing/gbm/drm/DRMAtomic.h
+@@ -42,6 +42,7 @@ public:
+ 
+ private:
+   void DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer);
++  bool UseLastRequest();
+ 
+   bool m_need_modeset{true};
+   bool m_active = true;

@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 10 Nov 2026 14:11:40 +0000
+Subject: [PATCH] GBM: keep the mode blob of an atomic request alive with it
+
+A modeset request sets MODE_ID to a property blob that DrmAtomicCommit()
+destroys when it returns, while the request stays queued as the
+fallback for the next frame. Replaying it then refers to a blob id that
+no longer exists, which the kernel rejects with EINVAL.
+
+Let the request own the blob, so that it lives as long as any request
+refers to it.
+
+Fixes: 5dffbb50a0f6 ("windowing/gbm/drm: create an atomic queue to allow falling back after a failed commit")
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ xbmc/windowing/gbm/drm/DRMAtomic.cpp | 22 ++++++++++++++--------
+ xbmc/windowing/gbm/drm/DRMAtomic.h   |  4 ++++
+ 2 files changed, 18 insertions(+), 8 deletions(-)
+
+--- a/xbmc/windowing/gbm/drm/DRMAtomic.cpp
++++ b/xbmc/windowing/gbm/drm/DRMAtomic.cpp
+@@ -20,6 +20,7 @@
+ #include <errno.h>
+ #include <string.h>
+ #include <thread>
++#include <utility>
+ 
+ #include <drm_fourcc.h>
+ #include <drm_mode.h>
+@@ -30,12 +31,6 @@ using namespace KODI::WINDOWING::GBM;
+ 
+ void CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer)
+ {
+-  // Declared at function scope so the blob outlives drmModeAtomicCommit.
+-  // DRM requires the blob to remain alive for the duration of the commit;
+-  // destroying it before the commit returns leaves the atomic request
+-  // referencing an invalid id and the kernel rejects with EINVAL.
+-  CDRMPropertyBlob modeBlob;
+-
+   if (m_old_crtc != nullptr)
+   {
+     if (m_old_crtc->GetId() != m_crtc->GetId())
+@@ -77,11 +72,11 @@ void CDRMAtomic::DrmAtomicCommit(int fb_
+     if (!AddProperty(m_connector, "CRTC_ID", m_crtc->GetCrtcId()))
+       return;
+ 
+-    modeBlob = CDRMPropertyBlob(m_fd, m_mode, sizeof(*m_mode));
++    CDRMPropertyBlob modeBlob(m_fd, m_mode, sizeof(*m_mode));
+     if (!modeBlob.IsValid())
+       return;
+ 
+-    if (!AddProperty(m_crtc, "MODE_ID", modeBlob.Get()))
++    if (!m_req->AddProperty(m_crtc, "MODE_ID", std::move(modeBlob)))
+       return;
+ 
+     if (!AddProperty(m_crtc, "ACTIVE", m_active ? 1 : 0))
+@@ -363,6 +358,17 @@ bool CDRMAtomic::CDRMAtomicRequest::AddP
+   return true;
+ }
+ 
++bool CDRMAtomic::CDRMAtomicRequest::AddProperty(CDRMObject* object,
++                                                const char* name,
++                                                CDRMPropertyBlob blob)
++{
++  if (!AddProperty(object, name, blob.Get()))
++    return false;
++
++  m_blobs.emplace_back(std::move(blob));
++  return true;
++}
++
+ void CDRMAtomic::CDRMAtomicRequest::RemoveProperty(const char* name)
+ {
+   bool removed = false;
+--- a/xbmc/windowing/gbm/drm/DRMAtomic.h
++++ b/xbmc/windowing/gbm/drm/DRMAtomic.h
+@@ -15,6 +15,7 @@
+ #include <deque>
+ #include <map>
+ #include <memory>
++#include <vector>
+ 
+ namespace KODI
+ {
+@@ -58,6 +59,8 @@ private:
+     drmModeAtomicReqPtr Get() const { return m_atomicRequest.get(); }
+ 
+     bool AddProperty(CDRMObject* object, const char* name, uint64_t value);
++    //! \brief Set a blob property; the blob lives as long as the request
++    bool AddProperty(CDRMObject* object, const char* name, CDRMPropertyBlob blob);
+     void RemoveProperty(const char* name);
+     void CacheProperties();
+     void LogAtomicRequest();
+@@ -69,6 +72,7 @@ private:
+         uint8_t logLevel, std::map<CDRMObject*, std::map<uint32_t, uint64_t>>& atomicRequestItems);
+ 
+     std::map<CDRMObject*, std::map<uint32_t, uint64_t>> m_atomicRequestItems;
++    std::vector<CDRMPropertyBlob> m_blobs;
+ 
+     struct DrmModeAtomicReqDeleter
+     {
