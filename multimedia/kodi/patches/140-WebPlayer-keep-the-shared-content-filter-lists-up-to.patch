@@ -953,8 +953,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "guilib/GUIComponent.h"
  #include "guilib/GUIWindowManager.h"
  #include "guilib/WindowIDs.h"
-@@ -27,6 +28,10 @@
- #include "input/keyboard/XBMC_keyboard.h"
+@@ -28,6 +29,10 @@
+ #include "input/touch/generic/GenericTouchInputHandler.h"
  #include "kodi-web-video.h"
  #include "messaging/ApplicationMessenger.h"
 +#include "resources/LocalizeStrings.h"
@@ -964,7 +964,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "utils/log.h"
  #include "windowing/GraphicContext.h"
  #include "windowing/WinSystem.h"
-@@ -133,6 +138,40 @@ AVColorTransferCharacteristic TransferOf
+@@ -135,6 +140,40 @@ AVColorTransferCharacteristic TransferOf
    }
  }
  
@@ -1005,7 +1005,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  } // unnamed namespace
  
  CWebPlayer::CWebPlayer(IPlayerCallback& callback)
-@@ -189,7 +228,7 @@ bool CWebPlayer::OpenFile(const CFileIte
+@@ -191,7 +230,7 @@ bool CWebPlayer::OpenFile(const CFileIte
    m_openFailed = false;
    playLock.unlock();
  
@@ -1014,7 +1014,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    {
      playLock.lock();
      m_opening = false;
-@@ -776,12 +815,62 @@ bool CWebPlayer::ConfigureRenderer(const
+@@ -845,12 +884,62 @@ bool CWebPlayer::ConfigureRenderer(const
    return true;
  }
  
@@ -1079,7 +1079,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    if (!m_playing.exchange(false))
 --- a/xbmc/cores/WebPlayer/WebPlayer.h
 +++ b/xbmc/cores/WebPlayer/WebPlayer.h
-@@ -135,6 +135,7 @@ private:
+@@ -141,6 +141,7 @@ private:
    bool InputWakesDisplay() const;
    bool DisplayAsleep() const;
    void StopFromClient(bool error = false);

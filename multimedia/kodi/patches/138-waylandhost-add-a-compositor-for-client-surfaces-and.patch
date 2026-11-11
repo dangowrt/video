@@ -7,15 +7,16 @@ Subject: [PATCH] waylandhost: add a compositor for client surfaces and
 CWaylandHost is a Wayland compositor without a screen of its own. It
 spawns its clients with an inherited socket and serves wl_compositor,
 xdg_wm_base, linux-dmabuf, wp_presentation, a seat that forwards Kodi's
-input, and text-input-v3 so that Kodi's keyboard can type into a client.
-Committed client buffers are handed to an observer, which shows them
-through Kodi's renderers, and the observer learns when a surface goes
-away. When the host stops, its clients get SIGTERM and their exit is
-awaited; a client still running 90 s later, for instance one blocked on
-a stale network mount, is killed. A client that cannot be started, or
-whose exit cannot be watched, is reported as ended. Clients learn the
-screen's mode, and when the display is reset for a new mode every output
-gets the new mode and every surface a configure for the new size.
+keyboard, pointer and touch input, and text-input-v3 so that Kodi's
+keyboard can type into a client. Committed client buffers are handed to
+an observer, which shows them through Kodi's renderers, and the observer
+learns when a surface goes away. When the host stops, its clients get
+SIGTERM and their exit is awaited; a client still running 90 s later,
+for instance one blocked on a stale network mount, is killed. A client
+that cannot be started, or whose exit cannot be watched, is reported as
+ended. Clients learn the screen's mode, and when the display is reset
+for a new mode every output gets the new mode and every surface a
+configure for the new size.
 
 The host also serves kodi_web_v1, a protocol through which Kodi drives a
 web browser it hosts: the browser creates one view per profile, a
@@ -34,12 +35,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  .../platform/linux/waylandhost/CMakeLists.txt |   34 +
  .../linux/waylandhost/WaylandBuffer.cpp       |   64 +
  .../linux/waylandhost/WaylandBuffer.h         |   96 +
- .../linux/waylandhost/WaylandHost.cpp         | 2218 +++++++++++++++++
- xbmc/platform/linux/waylandhost/WaylandHost.h |  401 +++
+ .../linux/waylandhost/WaylandHost.cpp         | 2332 +++++++++++++++++
+ xbmc/platform/linux/waylandhost/WaylandHost.h |  424 +++
  .../linux/waylandhost/WaylandSurface.cpp      |  245 ++
  .../linux/waylandhost/WaylandSurface.h        |  101 +
- .../waylandhost/protocol/kodi-web-v1.xml      |  422 ++++
- 9 files changed, 3582 insertions(+)
+ .../waylandhost/protocol/kodi-web-v1.xml      |  422 +++
+ 9 files changed, 3719 insertions(+)
  create mode 100644 cmake/treedata/optional/common/waylandserver.txt
  create mode 100644 xbmc/platform/linux/waylandhost/CMakeLists.txt
  create mode 100644 xbmc/platform/linux/waylandhost/WaylandBuffer.cpp
@@ -259,7 +260,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.cpp
-@@ -0,0 +1,2218 @@
+@@ -0,0 +1,2332 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -851,6 +852,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  HostOf(resource).RemoveKeyboard(resource);
 +}
 +
++void TouchResourceDestroyed(wl_resource* resource)
++{
++  HostOf(resource).RemoveTouch(resource);
++}
++
 +void SeatGetPointer(wl_client* client, wl_resource* resource, uint32_t id)
 +{
 +  HostOf(resource).AddPointer(client, wl_resource_get_version(resource), id);
@@ -863,15 +869,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +void SeatGetTouch(wl_client* client, wl_resource* resource, uint32_t id)
 +{
-+  wl_resource* touch =
-+      wl_resource_create(client, &wl_touch_interface, wl_resource_get_version(resource), id);
-+  if (!touch)
-+  {
-+    wl_client_post_no_memory(client);
-+    return;
-+  }
-+
-+  wl_resource_set_implementation(touch, &TOUCH_IMPL, nullptr, nullptr);
++  HostOf(resource).AddTouch(client, wl_resource_get_version(resource), id);
 +}
 +
 +const struct wl_seat_interface SEAT_IMPL = {
@@ -1225,6 +1223,31 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +void CWaylandHost::PointerScroll(int32_t x, int32_t y, int32_t pixels)
 +{
 +  Post([this, x, y, pixels]() { DoPointerScroll(x, y, pixels); });
++}
++
++void CWaylandHost::TouchDown(int32_t id, int32_t x, int32_t y)
++{
++  Post([this, id, x, y]() { DoTouchDown(id, x, y); });
++}
++
++void CWaylandHost::TouchMotion(int32_t id, int32_t x, int32_t y)
++{
++  Post([this, id, x, y]() { DoTouchMotion(id, x, y); });
++}
++
++void CWaylandHost::TouchUp(int32_t id)
++{
++  Post([this, id]() { DoTouchUp(id); });
++}
++
++void CWaylandHost::TouchFrame()
++{
++  Post([this]() { DoTouchFrame(); });
++}
++
++void CWaylandHost::TouchCancel()
++{
++  Post([this]() { DoTouchCancel(); });
 +}
 +
 +void CWaylandHost::FrameDone()
@@ -1616,7 +1639,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  if (!resource)
 +    return;
 +
-+  wl_seat_send_capabilities(resource, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
++  wl_seat_send_capabilities(resource, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD |
++                                          WL_SEAT_CAPABILITY_TOUCH);
 +  if (wl_resource_get_version(resource) >= WL_SEAT_NAME_SINCE_VERSION)
 +    wl_seat_send_name(resource, "seat0");
 +}
@@ -2064,6 +2088,24 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  m_pointers.remove(pointer);
 +}
 +
++void CWaylandHost::AddTouch(wl_client* client, uint32_t version, uint32_t id)
++{
++  wl_resource* touch = wl_resource_create(client, &wl_touch_interface, version, id);
++  if (!touch)
++  {
++    wl_client_post_no_memory(client);
++    return;
++  }
++
++  wl_resource_set_implementation(touch, &TOUCH_IMPL, this, TouchResourceDestroyed);
++  m_touches.push_back(touch);
++}
++
++void CWaylandHost::RemoveTouch(wl_resource* touch)
++{
++  m_touches.remove(touch);
++}
++
 +void CWaylandHost::OnSurfaceCreated(CWaylandSurface* surface)
 +{
 +  m_surfaces.push_back(surface);
@@ -2081,6 +2123,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    m_keyboardFocus = nullptr;
 +  if (m_pointerFocus == surface)
 +    m_pointerFocus = nullptr;
++  if (m_touchFocus == surface)
++  {
++    m_touchFocus = nullptr;
++    m_touchIds.clear();
++  }
 +}
 +
 +void CWaylandHost::OnSurfaceMapped(CWaylandSurface& surface)
@@ -2097,6 +2144,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    SetKeyboardFocus(nullptr);
 +  if (m_pointerFocus == &surface)
 +    SendPointerLeave();
++  if (m_touchFocus == &surface)
++    DoTouchCancel();
 +  m_observer.OnSurfaceUnmapped(surface);
 +}
 +
@@ -2468,6 +2517,72 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  }
 +}
 +
++std::vector<wl_resource*> CWaylandHost::TouchesOfFocus() const
++{
++  std::vector<wl_resource*> touches;
++  if (!m_touchFocus)
++    return touches;
++
++  wl_client* client = wl_resource_get_client(m_touchFocus->GetResource());
++  for (wl_resource* touch : m_touches)
++  {
++    if (wl_resource_get_client(touch) == client)
++      touches.push_back(touch);
++  }
++  return touches;
++}
++
++void CWaylandHost::DoTouchDown(int32_t id, int32_t x, int32_t y)
++{
++  if (m_touchIds.empty())
++    m_touchFocus = m_keyboardFocus;
++  if (!m_touchFocus || !m_touchIds.insert(id).second)
++    return;
++
++  const uint32_t serial = NextSerial();
++  const uint32_t time = Milliseconds(Now());
++  for (wl_resource* touch : TouchesOfFocus())
++    wl_touch_send_down(touch, serial, time, m_touchFocus->GetResource(), id, wl_fixed_from_int(x),
++                       wl_fixed_from_int(y));
++}
++
++void CWaylandHost::DoTouchMotion(int32_t id, int32_t x, int32_t y)
++{
++  if (!m_touchIds.contains(id))
++    return;
++
++  const uint32_t time = Milliseconds(Now());
++  for (wl_resource* touch : TouchesOfFocus())
++    wl_touch_send_motion(touch, time, id, wl_fixed_from_int(x), wl_fixed_from_int(y));
++}
++
++void CWaylandHost::DoTouchUp(int32_t id)
++{
++  if (m_touchIds.erase(id) == 0)
++    return;
++
++  const uint32_t serial = NextSerial();
++  const uint32_t time = Milliseconds(Now());
++  for (wl_resource* touch : TouchesOfFocus())
++    wl_touch_send_up(touch, serial, time, id);
++}
++
++void CWaylandHost::DoTouchFrame()
++{
++  for (wl_resource* touch : TouchesOfFocus())
++    wl_touch_send_frame(touch);
++  if (m_touchIds.empty())
++    m_touchFocus = nullptr;
++}
++
++void CWaylandHost::DoTouchCancel()
++{
++  for (wl_resource* touch : TouchesOfFocus())
++    wl_touch_send_cancel(touch);
++  m_touchIds.clear();
++  m_touchFocus = nullptr;
++}
++
 +void CWaylandHost::DoFrameDone()
 +{
 +  const timespec now = Now();
@@ -2480,7 +2595,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.h
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,424 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2500,6 +2615,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include <list>
 +#include <map>
 +#include <memory>
++#include <set>
 +#include <string>
 +#include <vector>
 +
@@ -2670,6 +2786,17 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  void PointerScroll(int32_t x, int32_t y, int32_t pixels);
 +
 +  /*!
++   * \brief Touch points of the focused surface in surface coordinates; a
++   * touch stays with the surface it went down on until its last point is
++   * up; TouchFrame() ends a set of changes; any thread
++   */
++  void TouchDown(int32_t id, int32_t x, int32_t y);
++  void TouchMotion(int32_t id, int32_t x, int32_t y);
++  void TouchUp(int32_t id);
++  void TouchFrame();
++  void TouchCancel();
++
++  /*!
 +   * \brief A display refresh has passed; any thread
 +   */
 +  void FrameDone();
@@ -2772,6 +2899,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  void RemoveKeyboard(wl_resource* keyboard);
 +  void AddPointer(wl_client* client, uint32_t version, uint32_t id);
 +  void RemovePointer(wl_resource* pointer);
++  void AddTouch(wl_client* client, uint32_t version, uint32_t id);
++  void RemoveTouch(wl_resource* touch);
 +
 +protected:
 +  void Process() override;
@@ -2801,6 +2930,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  void DoPointerButton(uint32_t evdevButton, bool pressed);
 +  void DoPointerAxis(int32_t value120);
 +  void DoPointerScroll(int32_t x, int32_t y, int32_t pixels);
++  void DoTouchDown(int32_t id, int32_t x, int32_t y);
++  void DoTouchMotion(int32_t id, int32_t x, int32_t y);
++  void DoTouchUp(int32_t id);
++  void DoTouchFrame();
++  void DoTouchCancel();
 +  void DoFrameDone();
 +  void DoSetOutputMode(int32_t width, int32_t height, int32_t refreshMilliHz);
 +  void SendOutputMode(wl_resource* output) const;
@@ -2811,6 +2945,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  void SendPointerEnter(CWaylandSurface& surface);
 +  void SendPointerEnterTo(wl_resource* pointer, CWaylandSurface& surface);
 +  void SendPointerLeave();
++  std::vector<wl_resource*> TouchesOfFocus() const;
 +  void SendModifiers();
 +  void OnClientExit(Client& client);
 +
@@ -2858,10 +2993,13 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  std::list<wl_resource*> m_outputs;
 +  std::list<wl_resource*> m_keyboards;
 +  std::list<wl_resource*> m_pointers;
++  std::list<wl_resource*> m_touches;
 +  CWaylandSurface* m_keyboardFocus{nullptr};
 +  CWaylandSurface* m_pointerFocus{nullptr};
 +  int32_t m_pointerX{0};
 +  int32_t m_pointerY{0};
++  CWaylandSurface* m_touchFocus{nullptr};
++  std::set<int32_t> m_touchIds;
 +
 +  xkb_context* m_xkbContext{nullptr};
 +  xkb_keymap* m_xkbKeymap{nullptr};

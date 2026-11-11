@@ -14,22 +14,23 @@ browser for a view of the item's profile, loads the URL, and passes the
 frames the browser commits through Kodi's video renderers, so that
 Kodi's OSD and dialogs compose over the page as over any other video.
 While the web window is in front, keys the keymap leaves to the page,
-the red, green, yellow and blue keys with which TV pages drive their
-own menus, and the pointer go to the browser; text fields open Kodi's
-keyboard along the bottom of the screen. Input the page takes counts as
-activity as Kodi's own input does: it resets the idle timers, and a key
-that wakes the display does nothing else. The browser's audio plays
-through Kodi's audio engine over a socket of its own, and pages decrypt
-with the CDM inputstream.adaptive installed. The player starts out
-paused and lists no media while the user browses; it announces pause
+the red, green, yellow and blue keys with which TV pages drive their own
+menus, the pointer and touch go to the browser, a touch that starts in
+the web window staying with the page until it ends; text fields open
+Kodi's keyboard along the bottom of the screen. Input the page takes
+counts as activity as Kodi's own input does: it resets the idle timers,
+and a key that wakes the display does nothing else. The browser's audio
+plays through Kodi's audio engine over a socket of its own, and pages
+decrypt with the CDM inputstream.adaptive installed. The player starts
+out paused and lists no media while the user browses; it announces pause
 and resume as the page's media stops and starts, and a stream change
-when the page gains or loses video or audio, so that the screensaver
-and display power rules treat a page as the video or music it plays.
-The view lives as long as the player: leaving the app, from the page or
-by starting another one, closes it, so that no page keeps running in
-the background. The browser caches what pages download in memory, and
-on disk in Kodi's profile only when web.diskcache asks for it, since
-that writes to the storage as pages load.
+when the page gains or loses video or audio, so that the screensaver and
+display power rules treat a page as the video or music it plays. The
+view lives as long as the player: leaving the app, from the page or by
+starting another one, closes it, so that no page keeps running in the
+background. The browser caches what pages download in memory, and on
+disk in Kodi's profile only when web.diskcache asks for it, since that
+writes to the storage as pages load.
 
 The frames are DRM PRIME buffers, which the GBM and Wayland windowing
 show, so the web host runs only there; System.SupportsWebApps tells
@@ -111,8 +112,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/cores/WebPlayer/WebClientManager.h       |  266 ++++
  xbmc/cores/WebPlayer/WebLayerBridge.cpp       |  243 ++++
  xbmc/cores/WebPlayer/WebLayerBridge.h         |   94 ++
- xbmc/cores/WebPlayer/WebPlayer.cpp            |  826 +++++++++++++
- xbmc/cores/WebPlayer/WebPlayer.h              |  177 +++
+ xbmc/cores/WebPlayer/WebPlayer.cpp            |  895 ++++++++++++++
+ xbmc/cores/WebPlayer/WebPlayer.h              |  190 +++
  xbmc/cores/WebPlayer/WebPlayerDefs.h          |   31 +
  xbmc/cores/WebPlayer/WebVideoBuffer.cpp       |  112 ++
  xbmc/cores/WebPlayer/WebVideoBuffer.h         |   68 +
@@ -137,7 +138,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/utils/DMAHeapBufferObject.h              |    4 +
  xbmc/utils/ExecString.cpp                     |    2 +
  xbmc/windows/GUIMediaWindow.cpp               |    9 +
- 65 files changed, 6360 insertions(+), 31 deletions(-)
+ 65 files changed, 6442 insertions(+), 31 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -4651,7 +4652,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebPlayer.cpp
-@@ -0,0 +1,826 @@
+@@ -0,0 +1,895 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -4679,6 +4680,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include "input/actions/ActionIDs.h"
 +#include "input/keyboard/Key.h"
 +#include "input/keyboard/XBMC_keyboard.h"
++#include "input/touch/generic/GenericTouchInputHandler.h"
 +#include "kodi-web-video.h"
 +#include "messaging/ApplicationMessenger.h"
 +#include "utils/log.h"
@@ -4694,6 +4696,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include "windowing/gbm/drm/DRMAtomic.h"
 +#endif
 +
++#include <cmath>
 +#include <mutex>
 +
 +#include <linux/input-event-codes.h>
@@ -4866,6 +4869,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
 +  CServiceBroker::GetInputManager().RegisterKeyboardEventHandler(this);
 +  CServiceBroker::GetInputManager().RegisterMouseDriverHandler(this);
++  CGenericTouchInputHandler::GetInstance().RegisterEventHandler(this);
 +
 +  playLock.lock();
 +  m_opening = false;
@@ -4898,6 +4902,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +{
 +  if (!m_manager)
 +    return true;
++
++  // before m_manager goes: the touch input thread reaches the client through it
++  CGenericTouchInputHandler::GetInstance().UnregisterEventHandler(this);
++  m_touchInput = false;
++  m_touchPoints.clear();
 +
 +  const bool wasPlaying = m_playing.exchange(false);
 +  m_stop = true;
@@ -5023,6 +5032,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  const bool active = m_configured && m_manager &&
 +                      CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindowOrDialog() ==
 +                          WINDOW_FULLSCREEN_WEB;
++  // a touch on a sleeping display wakes it through Kodi
++  m_touchInput = active && !DisplayAsleep();
++  if (m_touchActivity.exchange(false))
++    InputWakesDisplay();
++
 +  if (active == m_inputActive)
 +    return;
 +
@@ -5038,6 +5052,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    m_manager->GetHost()->KeyboardKey(scancode, false);
 +  m_pressedKeys.clear();
 +  m_pressedButtons.clear();
++
++  std::unique_lock lock(m_touchLock);
++  if (!m_touchPoints.empty() && !m_touchCancelled)
++    m_manager->GetHost()->TouchCancel();
++  m_touchCancelled = true;
 +}
 +
 +// input the page takes never reaches CInputManager, which counts it as
@@ -5155,6 +5174,57 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    default:
 +      break;
 +  }
++}
++
++bool CWebPlayer::OnTouchEvent(TouchInput event, float x, float y, int64_t time, int32_t pointer)
++{
++  std::unique_lock lock(m_touchLock);
++  CWaylandHost* host = m_manager->GetHost();
++  const auto surfaceX = static_cast<int32_t>(std::lround(x));
++  const auto surfaceY = static_cast<int32_t>(std::lround(y));
++
++  switch (event)
++  {
++    case TouchInputDown:
++      if (m_touchPoints.empty())
++      {
++        if (!m_touchInput)
++          return false;
++        m_touchCancelled = false;
++      }
++      m_touchPoints.insert(pointer);
++      if (m_touchCancelled)
++        return true;
++      host->TouchDown(pointer, surfaceX, surfaceY);
++      break;
++    case TouchInputMove:
++      if (!m_touchPoints.contains(pointer))
++        return false;
++      if (m_touchCancelled)
++        return true;
++      host->TouchMotion(pointer, surfaceX, surfaceY);
++      break;
++    case TouchInputUp:
++      if (m_touchPoints.erase(pointer) == 0)
++        return false;
++      if (m_touchCancelled)
++        return true;
++      host->TouchUp(pointer);
++      break;
++    case TouchInputAbort:
++      if (m_touchPoints.empty())
++        return false;
++      m_touchPoints.clear();
++      if (!m_touchCancelled)
++        host->TouchCancel();
++      return true;
++    default:
++      return false;
++  }
++
++  host->TouchFrame();
++  m_touchActivity = true;
++  return true;
 +}
 +
 +void CWebPlayer::OnWebViewAvailable(const std::string& profile, CWaylandSurface& surface)
@@ -5480,7 +5550,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebPlayer.h
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,190 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -5498,6 +5568,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include "guilib/DispResource.h"
 +#include "input/keyboard/interfaces/IKeyboardEventHandler.h"
 +#include "input/mouse/interfaces/IMouseDriverHandler.h"
++#include "input/touch/ITouchEventHandler.h"
++#include "threads/CriticalSection.h"
 +
 +#include <atomic>
 +#include <memory>
@@ -5520,8 +5592,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 + * through Kodi's video renderers, so the GUI composes over them like over
 + * any other video. While a page's video hands its frames to Kodi, those go
 + * to the video plane instead and the page to a plane above it. While the
-+ * web window is up, keys the keymap does not claim and the pointer go to
-+ * the client.
++ * web window is up, keys the keymap does not claim, the pointer and touch
++ * go to the client.
 + */
 +class CWebPlayer : public IPlayer,
 +                   public IRenderLoop,
@@ -5529,7 +5601,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +                   public IWebViewObserver,
 +                   public IWebVideoObserver,
 +                   public KEYBOARD::IKeyboardEventHandler,
-+                   public MOUSE::IMouseDriverHandler
++                   public MOUSE::IMouseDriverHandler,
++                   public ITouchEventHandler
 +{
 +public:
 +  explicit CWebPlayer(IPlayerCallback& callback);
@@ -5598,6 +5671,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  bool OnButtonPress(MOUSE::BUTTON_ID button) override;
 +  void OnButtonRelease(MOUSE::BUTTON_ID button) override;
 +
++  // implementation of ITouchEventHandler
++  bool OnTouchEvent(TouchInput event, float x, float y, int64_t time, int32_t pointer) override;
++
 +protected:
 +  // implementation of IRenderMsg
 +  void VideoParamsChange() override {}
@@ -5654,6 +5730,13 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  std::set<MOUSE::BUTTON_ID> m_pressedButtons;
 +  int m_pointerX{-1};
 +  int m_pointerY{-1};
++  // touch arrives on the input thread; a touch the page took stays with it
++  // until its last point is up
++  std::atomic<bool> m_touchInput{false};
++  std::atomic<bool> m_touchActivity{false};
++  CCriticalSection m_touchLock;
++  std::set<int32_t> m_touchPoints;
++  bool m_touchCancelled{false};
 +};
 +
 +} // namespace WEB

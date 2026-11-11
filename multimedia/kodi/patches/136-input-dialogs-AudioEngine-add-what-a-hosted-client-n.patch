@@ -3,12 +3,13 @@ From: Daniel Golle <daniel@makrotopia.org>
 Date: Tue, 3 Nov 2026 17:06:39 +0000
 Subject: [PATCH] input, dialogs, AudioEngine: add what a hosted client needs
 
-A Wayland client hosted by Kodi takes keyboard input, may use Kodi's
-on-screen keyboard and may hand Kodi encoded audio. Let a keyboard
-event handler take events before Kodi translates them into actions,
-tell whether a keyboard with letter keys is attached on GBM, let a
-keyboard dialog derived from the generic one choose its own window,
-and unpack the frame of an IEC 61937 burst.
+A Wayland client hosted by Kodi takes keyboard and touch input, may use
+Kodi's on-screen keyboard and may hand Kodi encoded audio. Let a
+keyboard event handler take events before Kodi translates them into
+actions, and a touch event handler take raw touch points before Kodi
+recognises gestures in them, tell whether a keyboard with letter keys is
+attached on GBM, let a keyboard dialog derived from the generic one
+choose its own window, and unpack the frame of an IEC 61937 burst.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
@@ -20,12 +21,17 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/input/InputManager.h                     | 11 ++++
  xbmc/input/keyboard/interfaces/CMakeLists.txt |  1 +
  .../interfaces/IKeyboardEventHandler.h        | 45 ++++++++++++++
+ xbmc/input/touch/CMakeLists.txt               |  1 +
+ xbmc/input/touch/ITouchEventHandler.h         | 40 +++++++++++++
+ .../generic/GenericTouchInputHandler.cpp      | 32 +++++++++-
+ .../touch/generic/GenericTouchInputHandler.h  | 12 ++++
  xbmc/platform/linux/input/LibInputHandler.cpp | 60 ++++++++++++++-----
  xbmc/platform/linux/input/LibInputHandler.h   | 19 ++++--
  xbmc/windowing/gbm/WinSystemGbm.cpp           |  5 ++
  xbmc/windowing/gbm/WinSystemGbm.h             |  1 +
- 12 files changed, 237 insertions(+), 27 deletions(-)
+ 16 files changed, 321 insertions(+), 28 deletions(-)
  create mode 100644 xbmc/input/keyboard/interfaces/IKeyboardEventHandler.h
+ create mode 100644 xbmc/input/touch/ITouchEventHandler.h
 
 --- a/xbmc/cores/AudioEngine/Utils/AEPackIEC61937.cpp
 +++ b/xbmc/cores/AudioEngine/Utils/AEPackIEC61937.cpp
@@ -315,6 +321,150 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +} // namespace KEYBOARD
 +} // namespace KODI
+--- a/xbmc/input/touch/CMakeLists.txt
++++ b/xbmc/input/touch/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ set(SOURCES ITouchInputHandling.cpp)
+ 
+ set(HEADERS ITouchActionHandler.h
++            ITouchEventHandler.h
+             ITouchInputHandler.h
+             ITouchInputHandling.h
+             TouchTypes.h)
+--- /dev/null
++++ b/xbmc/input/touch/ITouchEventHandler.h
+@@ -0,0 +1,40 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "input/touch/ITouchInputHandler.h"
++
++#include <stdint.h>
++
++/*!
++ * \ingroup touch
++ * \brief Interface for handling raw touch events before Kodi recognises
++ *        gestures in them
++ *
++ * A handler that forwards touch to another process needs the touch points
++ * themselves. It is called on the thread that delivers touch input.
++ */
++class ITouchEventHandler
++{
++public:
++  virtual ~ITouchEventHandler() = default;
++
++  /*!
++   * \brief A touch point went down, moved or went up, or the touch was aborted
++   *
++   * \param event    The touch event (abort, down, up, move)
++   * \param x        The x coordinate in Kodi's GUI coordinates
++   * \param y        The y coordinate in Kodi's GUI coordinates
++   * \param time     The time (in nanoseconds) when this touch occurred
++   * \param pointer  The number of the touch point
++   *
++   * \return True if the event was handled and Kodi must not act on it
++   */
++  virtual bool OnTouchEvent(TouchInput event, float x, float y, int64_t time, int32_t pointer) = 0;
++};
+--- a/xbmc/input/touch/generic/GenericTouchInputHandler.cpp
++++ b/xbmc/input/touch/generic/GenericTouchInputHandler.cpp
+@@ -53,7 +53,13 @@ bool CGenericTouchInputHandler::HandleTo
+                                                  int32_t pointer /* = 0 */,
+                                                  float size /* = 0.0f */)
+ {
+-  if (time < 0 || pointer < 0 || pointer >= MAX_POINTERS)
++  if (time < 0 || pointer < 0)
++    return false;
++
++  if (event != TouchInputUnchanged && OnTouchEvent(event, x, y, time, pointer))
++    return true;
++
++  if (pointer >= MAX_POINTERS)
+     return false;
+ 
+   std::unique_lock lock(m_critical);
+@@ -317,6 +323,30 @@ bool CGenericTouchInputHandler::UpdateTo
+   return true;
+ }
+ 
++void CGenericTouchInputHandler::RegisterEventHandler(ITouchEventHandler* handler)
++{
++  if (handler == nullptr)
++    return;
++
++  std::unique_lock lock(m_eventHandlerLock);
++  if (std::ranges::find(m_eventHandlers, handler) == m_eventHandlers.end())
++    m_eventHandlers.insert(m_eventHandlers.begin(), handler);
++}
++
++void CGenericTouchInputHandler::UnregisterEventHandler(ITouchEventHandler* handler)
++{
++  std::unique_lock lock(m_eventHandlerLock);
++  std::erase(m_eventHandlers, handler);
++}
++
++bool CGenericTouchInputHandler::OnTouchEvent(
++    TouchInput event, float x, float y, int64_t time, int32_t pointer)
++{
++  std::unique_lock lock(m_eventHandlerLock);
++  return std::ranges::any_of(m_eventHandlers, [&](ITouchEventHandler* handler)
++                             { return handler->OnTouchEvent(event, x, y, time, pointer); });
++}
++
+ void CGenericTouchInputHandler::saveLastTouch()
+ {
+   for (auto& pointer : m_pointers)
+--- a/xbmc/input/touch/generic/GenericTouchInputHandler.h
++++ b/xbmc/input/touch/generic/GenericTouchInputHandler.h
+@@ -8,6 +8,7 @@
+ 
+ #pragma once
+ 
++#include "input/touch/ITouchEventHandler.h"
+ #include "input/touch/ITouchInputHandler.h"
+ #include "input/touch/TouchTypes.h"
+ #include "threads/CriticalSection.h"
+@@ -16,6 +17,7 @@
+ #include <array>
+ #include <memory>
+ #include <set>
++#include <vector>
+ 
+ class IGenericTouchGestureDetector;
+ 
+@@ -50,6 +52,13 @@ public:
+   bool UpdateTouchPointer(
+       int32_t pointer, float x, float y, int64_t time, float size = 0.0f) override;
+ 
++  /*!
++   * \brief Offer raw touch events to a handler before gesture recognition;
++   *        the last handler registered is asked first
++   */
++  void RegisterEventHandler(ITouchEventHandler* handler);
++  void UnregisterEventHandler(ITouchEventHandler* handler);
++
+ private:
+   // private construction, and no assignments; use the provided singleton methods
+   CGenericTouchInputHandler();
+@@ -87,7 +96,10 @@ private:
+   }
+   void triggerDetectors(TouchInput event, int32_t pointer);
+   float AdjustPointerSize(float size);
++  bool OnTouchEvent(TouchInput event, float x, float y, int64_t time, int32_t pointer);
+ 
++  CCriticalSection m_eventHandlerLock;
++  std::vector<ITouchEventHandler*> m_eventHandlers;
+   CCriticalSection m_critical;
+   std::unique_ptr<CTimer> m_holdTimer;
+   std::array<Pointer, MAX_POINTERS> m_pointers;
 --- a/xbmc/platform/linux/input/LibInputHandler.cpp
 +++ b/xbmc/platform/linux/input/LibInputHandler.cpp
 @@ -27,7 +27,7 @@

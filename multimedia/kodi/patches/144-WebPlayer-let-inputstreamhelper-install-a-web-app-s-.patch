@@ -230,10 +230,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "dialogs/GUIDialogProgress.h"
  #include "guilib/GUIComponent.h"
  #include "guilib/GUIWindowManager.h"
-@@ -26,11 +30,14 @@
- #include "input/actions/ActionIDs.h"
+@@ -27,11 +31,14 @@
  #include "input/keyboard/Key.h"
  #include "input/keyboard/XBMC_keyboard.h"
+ #include "input/touch/generic/GenericTouchInputHandler.h"
 +#include "interfaces/generic/ScriptInvocationManager.h"
  #include "kodi-web-video.h"
  #include "messaging/ApplicationMessenger.h"
@@ -245,9 +245,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "utils/Variant.h"
  #include "utils/log.h"
  #include "windowing/GraphicContext.h"
-@@ -46,6 +53,9 @@
- #endif
+@@ -48,6 +55,9 @@
  
+ #include <cmath>
  #include <mutex>
 +#include <string>
 +#include <utility>
@@ -255,7 +255,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
  #include <linux/input-event-codes.h>
  
-@@ -172,6 +182,30 @@ FilterListWait NextFilterListWait(const
+@@ -174,6 +184,30 @@ FilterListWait NextFilterListWait(const
    return wait;
  }
  
@@ -286,7 +286,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  } // unnamed namespace
  
  CWebPlayer::CWebPlayer(IPlayerCallback& callback)
-@@ -228,6 +262,8 @@ bool CWebPlayer::OpenFile(const CFileIte
+@@ -230,6 +264,8 @@ bool CWebPlayer::OpenFile(const CFileIte
    m_openFailed = false;
    playLock.unlock();
  
@@ -295,7 +295,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    if (!m_manager->RequestView(m_profile, *this) || !AwaitFilterLists())
    {
      playLock.lock();
-@@ -815,6 +851,28 @@ bool CWebPlayer::ConfigureRenderer(const
+@@ -884,6 +920,28 @@ bool CWebPlayer::ConfigureRenderer(const
    return true;
  }
  
@@ -326,7 +326,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  bool CWebPlayer::AwaitFilterLists()
 --- a/xbmc/cores/WebPlayer/WebPlayer.h
 +++ b/xbmc/cores/WebPlayer/WebPlayer.h
-@@ -135,6 +135,7 @@ private:
+@@ -141,6 +141,7 @@ private:
    bool InputWakesDisplay() const;
    bool DisplayAsleep() const;
    void StopFromClient(bool error = false);
