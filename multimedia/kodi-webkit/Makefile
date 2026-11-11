@@ -5,9 +5,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/dangowrt/kodi-webkit.git
-PKG_SOURCE_DATE:=2026-11-11
-PKG_SOURCE_VERSION:=bf40ec796f7ba99d71797e547a440e8476de4180
-PKG_MIRROR_HASH:=711ec92974aa518fb35cd6f599b1ab16c0acf3462b04907e5e1cd16a848737b6
+PKG_SOURCE_DATE:=2026-11-11.1
+PKG_SOURCE_VERSION:=66c7ee7ffb9a31aa328445748e1dc2cbf66d0d93
+PKG_MIRROR_HASH:=0ba8a88ee113f74f92f21af8446f31f8c91df0b9dae641bdcab8abc9bee5cfc4
 
 PKG_LICENSE:=GPL-2.0-or-later
 PKG_LICENSE_FILES:=LICENSE
@@ -48,6 +48,8 @@ define Package/kodi-webkit/install
 	$(INSTALL_DIR) $(1)/usr/lib/gstreamer-1.0
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/libgstkodiaudiosink.so $(1)/usr/lib/gstreamer-1.0/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/libgstkodivideosink.so $(1)/usr/lib/gstreamer-1.0/
+	$(INSTALL_DIR) $(1)/usr/share/kodi-webkit/scripts
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/scripts/*.js $(1)/usr/share/kodi-webkit/scripts/
 endef
 
 $(eval $(call BuildPackage,kodi-webkit))
