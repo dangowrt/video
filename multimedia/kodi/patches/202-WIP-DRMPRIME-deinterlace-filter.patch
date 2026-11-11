@@ -24,9 +24,9 @@ DVDVideoCodecDRMPRIME: Move FilterTest from open to first frame returned
 The pixel format is not accurate until the first frame is returned
 and it may (later) influence the choice of deinterlacers available.
 ---
- .../DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp | 419 +++++++++++++++---
+ .../DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp | 421 +++++++++++++++---
  .../DVDCodecs/Video/DVDVideoCodecDRMPRIME.h   |  10 +-
- 2 files changed, 366 insertions(+), 63 deletions(-)
+ 2 files changed, 367 insertions(+), 64 deletions(-)
 
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp
@@ -52,9 +52,9 @@ and it may (later) influence the choice of deinterlacers available.
 +  av_frame_unref(m_pFilterFrame);
 +  FilterClose();
    avcodec_free_context(&m_pCodecContext);
- 
-   if (!Open(m_hints, m_options))
-@@ -430,8 +435,11 @@ bool CDVDVideoCodecDRMPRIME::Open(CDVDSt
+   m_packetsSinceOpen = 0;
+   m_pictureDecoded = false;
+@@ -432,8 +437,11 @@ bool CDVDVideoCodecDRMPRIME::Open(CDVDSt
    }
  
    UpdateProcessInfo(m_pCodecContext, m_pCodecContext->pix_fmt);
@@ -67,7 +67,7 @@ and it may (later) influence the choice of deinterlacers available.
  
    return true;
  }
-@@ -506,6 +514,8 @@ void CDVDVideoCodecDRMPRIME::Reset()
+@@ -509,6 +517,8 @@ void CDVDVideoCodecDRMPRIME::Reset()
      return;
  
    Drain();
@@ -76,7 +76,7 @@ and it may (later) influence the choice of deinterlacers available.
  
    do
    {
-@@ -553,7 +563,7 @@ void CDVDVideoCodecDRMPRIME::Drain()
+@@ -556,7 +566,7 @@ void CDVDVideoCodecDRMPRIME::Drain()
    av_packet_free(&avpkt);
  }
  
@@ -85,7 +85,7 @@ and it may (later) influence the choice of deinterlacers available.
  {
    pVideoPicture->iWidth = m_pFrame->width;
    pVideoPicture->iHeight = m_pFrame->height;
-@@ -665,13 +675,252 @@ void CDVDVideoCodecDRMPRIME::SetPictureP
+@@ -668,13 +678,252 @@ void CDVDVideoCodecDRMPRIME::SetPictureP
                             ? DVD_NOPTS_VALUE
                             : static_cast<double>(pts) * DVD_TIME_BASE / AV_TIME_BASE;
    pVideoPicture->dts = DVD_NOPTS_VALUE;
@@ -340,7 +340,7 @@ and it may (later) influence the choice of deinterlacers available.
    int ret = av_buffersrc_add_frame(m_pFilterIn, m_pFrame);
    if (ret < 0)
    {
-@@ -687,21 +936,14 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecD
+@@ -690,21 +939,14 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecD
  
  CDVDVideoCodec::VCReturn CDVDVideoCodecDRMPRIME::ProcessFilterOut()
  {
@@ -366,7 +366,7 @@ and it may (later) influence the choice of deinterlacers available.
    }
    else if (ret)
    {
-@@ -712,9 +954,31 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecD
+@@ -715,9 +957,31 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecD
      return VC_ERROR;
    }
  
@@ -398,7 +398,7 @@ and it may (later) influence the choice of deinterlacers available.
  CDVDVideoCodec::VCReturn CDVDVideoCodecDRMPRIME::GetPicture(VideoPicture* pVideoPicture)
  {
    if (!m_pCodecContext)
-@@ -748,68 +1012,99 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecD
+@@ -751,70 +1015,101 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecD
    if (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN)
      Drain();
  
@@ -429,6 +429,8 @@ and it may (later) influence the choice of deinterlacers available.
 +      return ret;
      }
 -
+-    m_pictureDecoded = true;
+-
 -    result = ProcessFilterIn();
 -    if (result != VC_PICTURE)
 -      return result;
@@ -439,17 +441,11 @@ and it may (later) influence the choice of deinterlacers available.
 -  m_processInfo.GetVideoDimensions(piWidth, piHeight);
 -  if (m_pFrame->width != piWidth || m_pFrame->height != piHeight)
 -    m_processInfo.SetVideoDimensions(m_pFrame->width, m_pFrame->height);
--
--  SetPictureParams(pVideoPicture);
--
--  if (pVideoPicture->videoBuffer)
 +  int ret = avcodec_receive_frame(m_pCodecContext, m_pFrame);
 +  if (ret == AVERROR(EAGAIN))
 +    return VC_BUFFER;
 +  else if (ret == AVERROR_EOF)
-   {
--    pVideoPicture->videoBuffer->Release();
--    pVideoPicture->videoBuffer = nullptr;
++  {
 +    if (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN)
 +    {
 +      CLog::Log(LOGDEBUG, "CDVDVideoCodecDRMPRIME::{} - flush buffers", __FUNCTION__);
@@ -457,34 +453,26 @@ and it may (later) influence the choice of deinterlacers available.
 +      SetCodecControl(m_codecControlFlags & ~DVD_CODEC_CTRL_DRAIN);
 +    }
 +    return VC_EOF;
-   }
--
--  if (IsSupportedHwFormat(static_cast<AVPixelFormat>(m_pFrame->format)))
++  }
 +  else if (ret)
-   {
--    CVideoBufferDRMPRIMEFFmpeg* buffer = m_hwVideoBufferPool->Get();
--    buffer->SetPictureParams(*pVideoPicture);
--    buffer->SetRef(m_pFrame);
--    pVideoPicture->videoBuffer = buffer;
++  {
 +    char err[AV_ERROR_MAX_STRING_SIZE] = {};
 +    av_strerror(ret, err, AV_ERROR_MAX_STRING_SIZE);
 +    CLog::Log(LOGERROR, "CDVDVideoCodecDRMPRIME::{} - receive frame failed: {} ({})",
 +              __FUNCTION__, err, ret);
 +    return VC_ERROR;
-   }
--  else if (m_pFrame->opaque)
-+
++  }
+ 
+-  SetPictureParams(pVideoPicture);
++  m_pictureDecoded = true;
+ 
+-  if (pVideoPicture->videoBuffer)
 +  if (!m_checkedDeinterlace)
    {
--    CVideoBufferDMA* buffer = static_cast<CVideoBufferDMA*>(m_pFrame->opaque);
--    buffer->SetPictureParams(*pVideoPicture);
--    buffer->Acquire();
--    buffer->SyncEnd();
--    buffer->SetDimensions(m_pFrame->width, m_pFrame->height);
+-    pVideoPicture->videoBuffer->Release();
+-    pVideoPicture->videoBuffer = nullptr;
 +    FilterTest();
- 
--    pVideoPicture->videoBuffer = buffer;
--    av_frame_unref(m_pFrame);
++
 +    if (!m_deintFilterName.empty())
 +    {
 +      std::list<EINTERLACEMETHOD> methods;
@@ -495,17 +483,17 @@ and it may (later) influence the choice of deinterlacers available.
 +    m_checkedDeinterlace = true;
    }
  
--  if (!pVideoPicture->videoBuffer)
+-  if (IsSupportedHwFormat(static_cast<AVPixelFormat>(m_pFrame->format)))
 +  if (!m_processInfo.GetVideoInterlaced() && (m_pFrame->flags & AV_FRAME_FLAG_INTERLACED) != 0)
 +    m_processInfo.SetVideoInterlaced(true);
 +
 +  std::string filterChain = GetFilterChain((m_pFrame->flags & AV_FRAME_FLAG_INTERLACED) != 0);
 +  if (!filterChain.empty())
    {
--    CLog::Log(LOGERROR, "CDVDVideoCodecDRMPRIME::{} - videoBuffer:nullptr format:{}", __FUNCTION__,
--              av_get_pix_fmt_name(static_cast<AVPixelFormat>(m_pFrame->format)));
--    av_frame_unref(m_pFrame);
--    return VC_ERROR;
+-    CVideoBufferDRMPRIMEFFmpeg* buffer = m_hwVideoBufferPool->Get();
+-    buffer->SetPictureParams(*pVideoPicture);
+-    buffer->SetRef(m_pFrame);
+-    pVideoPicture->videoBuffer = buffer;
 +    bool reopenFilter = false;
 +    if (m_filters != filterChain)
 +      reopenFilter = true;
@@ -528,12 +516,26 @@ and it may (later) influence the choice of deinterlacers available.
 +        return VC_NONE;
 +    }
    }
+-  else if (m_pFrame->opaque)
 +  else
-+  {
+   {
+-    CVideoBufferDMA* buffer = static_cast<CVideoBufferDMA*>(m_pFrame->opaque);
+-    buffer->SetPictureParams(*pVideoPicture);
+-    buffer->Acquire();
+-    buffer->SyncEnd();
+-    buffer->SetDimensions(m_pFrame->width, m_pFrame->height);
+-
+-    pVideoPicture->videoBuffer = buffer;
+-    av_frame_unref(m_pFrame);
 +    m_filters.clear();
 +    FilterClose();
-+  }
-+
+   }
+ 
+-  if (!pVideoPicture->videoBuffer)
+-  {
+-    CLog::Log(LOGERROR, "CDVDVideoCodecDRMPRIME::{} - videoBuffer:nullptr format:{}", __FUNCTION__,
+-              av_get_pix_fmt_name(static_cast<AVPixelFormat>(m_pFrame->format)));
+-    av_frame_unref(m_pFrame);
 +  // ffmpeg's v4l2m2m resizes without re-invoking our GetFormat callback; republish from the frames
 +  int piWidth, piHeight;
 +  m_processInfo.GetVideoDimensions(piWidth, piHeight);
@@ -541,13 +543,14 @@ and it may (later) influence the choice of deinterlacers available.
 +    m_processInfo.SetVideoDimensions(m_pFrame->width, m_pFrame->height);
 +
 +  if (!SetPictureParams(pVideoPicture))
-+    return VC_ERROR;
+     return VC_ERROR;
+-  }
  
    return VC_PICTURE;
  }
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.h
-@@ -45,14 +45,20 @@ public:
+@@ -46,14 +46,20 @@ public:
  
  protected:
    void Drain();
@@ -569,9 +572,9 @@ and it may (later) influence the choice of deinterlacers available.
    int m_codecControlFlags = 0;
    CDVDStreamInfo m_hints;
    CDVDCodecOptions m_options;
-@@ -62,8 +68,10 @@ protected:
-   bool m_hwFormatFailed = false;
-   bool m_noSupportedFormat = false;
+@@ -65,8 +71,10 @@ protected:
+   unsigned m_packetsSinceOpen = 0;
+   bool m_pictureDecoded = false;
    double m_DAR = 1.0;
 +  bool m_checkedDeinterlace = false;
    AVCodecContext* m_pCodecContext = nullptr;
