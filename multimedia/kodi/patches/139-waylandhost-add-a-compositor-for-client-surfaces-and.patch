@@ -10,7 +10,9 @@ xdg_wm_base, linux-dmabuf, wp_presentation, a seat that forwards Kodi's
 keyboard, pointer and touch input, and text-input-v3 so that Kodi's
 keyboard can type into a client. Committed client buffers are handed to
 an observer, which shows them through Kodi's renderers, and the observer
-learns when a surface goes away. When the host stops, its clients get
+learns when a surface goes away. A renderer may still hold a buffer
+after the host has stopped; unlocking it then sends nothing, as its
+client is gone with the host. When the host stops, its clients get
 SIGTERM and their exit is awaited; a client still running 90 s later,
 for instance one blocked on a stale network mount, is killed. A client
 that cannot be started, or whose exit cannot be watched, is reported as
@@ -34,14 +36,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
  .../optional/common/waylandserver.txt         |    1 +
  .../platform/linux/waylandhost/CMakeLists.txt |   34 +
- .../linux/waylandhost/WaylandBuffer.cpp       |   64 +
+ .../linux/waylandhost/WaylandBuffer.cpp       |   65 +
  .../linux/waylandhost/WaylandBuffer.h         |   96 +
- .../linux/waylandhost/WaylandHost.cpp         | 2354 +++++++++++++++++
- xbmc/platform/linux/waylandhost/WaylandHost.h |  435 +++
+ .../linux/waylandhost/WaylandHost.cpp         | 2383 +++++++++++++++++
+ xbmc/platform/linux/waylandhost/WaylandHost.h |  466 ++++
  .../linux/waylandhost/WaylandSurface.cpp      |  245 ++
  .../linux/waylandhost/WaylandSurface.h        |  101 +
  .../waylandhost/protocol/kodi-web-v1.xml      |  440 +++
- 9 files changed, 3770 insertions(+)
+ 9 files changed, 3831 insertions(+)
  create mode 100644 cmake/treedata/optional/common/waylandserver.txt
  create mode 100644 xbmc/platform/linux/waylandhost/CMakeLists.txt
  create mode 100644 xbmc/platform/linux/waylandhost/WaylandBuffer.cpp
@@ -95,7 +97,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +endif()
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/WaylandBuffer.cpp
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,65 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -114,14 +116,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +using namespace KODI::WAYLANDHOST;
 +
-+CWaylandBuffer::CWaylandBuffer(CWaylandHost& host,
++CWaylandBuffer::CWaylandBuffer(std::weak_ptr<CWaylandTaskQueue> tasks,
 +                               uint32_t width,
 +                               uint32_t height,
 +                               uint32_t format,
 +                               uint64_t modifier,
 +                               const std::array<DmaBufPlane, MAX_PLANES>& planes,
 +                               unsigned int planeCount)
-+  : m_host(host),
++  : m_tasks(std::move(tasks)),
 +    m_width(width),
 +    m_height(height),
 +    m_format(format),
@@ -150,7 +152,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  if (--m_locks > 0)
 +    return;
 +
-+  m_host.Post([buffer = shared_from_this()]() { buffer->SendRelease(); });
++  if (const auto tasks = m_tasks.lock())
++    tasks->Post([buffer = shared_from_this()]() { buffer->SendRelease(); });
 +}
 +
 +void CWaylandBuffer::SendRelease()
@@ -185,7 +188,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +namespace WAYLANDHOST
 +{
 +
-+class CWaylandHost;
++class CWaylandTaskQueue;
 +
 +struct DmaBufPlane
 +{
@@ -199,15 +202,15 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 + *
 + * The host keeps the planes' file descriptors open for as long as the object
 + * lives, so a consumer may hold the buffer after the client destroyed the
-+ * wl_buffer. wl_buffer.release is sent once the surface no longer shows the
-+ * buffer and no consumer holds a lock on it.
++ * wl_buffer, and after the host stopped. wl_buffer.release is sent once the
++ * surface no longer shows the buffer and no consumer holds a lock on it.
 + */
 +class CWaylandBuffer : public std::enable_shared_from_this<CWaylandBuffer>
 +{
 +public:
 +  static constexpr unsigned int MAX_PLANES = 4;
 +
-+  CWaylandBuffer(CWaylandHost& host,
++  CWaylandBuffer(std::weak_ptr<CWaylandTaskQueue> tasks,
 +                 uint32_t width,
 +                 uint32_t height,
 +                 uint32_t format,
@@ -245,7 +248,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  void SendRelease();
 +
 +private:
-+  CWaylandHost& m_host;
++  const std::weak_ptr<CWaylandTaskQueue> m_tasks;
 +  const uint32_t m_width;
 +  const uint32_t m_height;
 +  const uint32_t m_format;
@@ -261,7 +264,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.cpp
-@@ -0,0 +1,2354 @@
+@@ -0,0 +1,2383 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -730,8 +733,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    return nullptr;
 +  }
 +
-+  auto* holder = new std::shared_ptr<CWaylandBuffer>(std::make_shared<CWaylandBuffer>(
-+      *params->host, width, height, format, params->modifier, params->planes, params->planeCount));
++  auto* holder = new std::shared_ptr<CWaylandBuffer>(
++      std::make_shared<CWaylandBuffer>(params->host->GetTaskQueue(), width, height, format,
++                                       params->modifier, params->planes, params->planeCount));
 +  for (auto& plane : params->planes)
 +    plane.fd = -1;
 +  (*holder)->SetResource(buffer);
@@ -1123,6 +1127,52 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +} // unnamed namespace
 +
++CWaylandTaskQueue::~CWaylandTaskQueue()
++{
++  Close();
++}
++
++int CWaylandTaskQueue::Open()
++{
++  std::unique_lock lock(m_lock);
++  if (m_wakeFd < 0)
++    m_wakeFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
++  return m_wakeFd;
++}
++
++void CWaylandTaskQueue::Close()
++{
++  std::unique_lock lock(m_lock);
++  m_tasks.clear();
++  if (m_wakeFd >= 0)
++    close(m_wakeFd);
++  m_wakeFd = -1;
++}
++
++void CWaylandTaskQueue::Post(std::function<void()> task)
++{
++  std::unique_lock lock(m_lock);
++  if (m_wakeFd < 0)
++    return;
++
++  m_tasks.push_back(std::move(task));
++  const uint64_t one = 1;
++  if (write(m_wakeFd, &one, sizeof(one)) != sizeof(one))
++    CLog::Log(LOGERROR, "CWaylandTaskQueue::{}: wake failed: {}", __FUNCTION__, strerror(errno));
++}
++
++void CWaylandTaskQueue::Run()
++{
++  std::list<std::function<void()>> tasks;
++  {
++    std::unique_lock lock(m_lock);
++    tasks.swap(m_tasks);
++  }
++
++  for (auto& task : tasks)
++    task();
++}
++
 +CWaylandHost::CWaylandHost(IWaylandHostObserver& observer, WaylandHostConfig config)
 +  : CThread("waylandhost"),
 +    m_observer(observer),
@@ -1148,14 +1198,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  }
 +  m_loop = wl_display_get_event_loop(m_display);
 +
-+  m_wakeFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-+  if (m_wakeFd < 0)
++  const int wakeFd = m_tasks->Open();
++  if (wakeFd < 0)
 +  {
 +    CLog::Log(LOGERROR, "CWaylandHost::{}: eventfd failed: {}", __FUNCTION__, strerror(errno));
 +    DestroyAll();
 +    return false;
 +  }
-+  m_wakeSource = wl_event_loop_add_fd(m_loop, m_wakeFd, WL_EVENT_READABLE, OnWake, this);
++  m_wakeSource = wl_event_loop_add_fd(m_loop, wakeFd, WL_EVENT_READABLE, OnWake, this);
 +
 +  if (!CreateKeymap() || !CreateFormatTable() || !CreateGlobals())
 +  {
@@ -1180,14 +1230,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +void CWaylandHost::Post(std::function<void()> task)
 +{
-+  {
-+    std::unique_lock lock(m_taskLock);
-+    m_tasks.push_back(std::move(task));
-+  }
-+
-+  const uint64_t one = 1;
-+  if (m_wakeFd >= 0 && write(m_wakeFd, &one, sizeof(one)) != sizeof(one))
-+    CLog::Log(LOGERROR, "CWaylandHost::{}: wake failed: {}", __FUNCTION__, strerror(errno));
++  m_tasks->Post(std::move(task));
 +}
 +
 +void CWaylandHost::SpawnClient(std::vector<std::string> argv,
@@ -1281,20 +1324,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  {
 +  }
 +
-+  static_cast<CWaylandHost*>(data)->RunTasks();
++  static_cast<CWaylandHost*>(data)->m_tasks->Run();
 +  return 0;
-+}
-+
-+void CWaylandHost::RunTasks()
-+{
-+  std::list<std::function<void()>> tasks;
-+  {
-+    std::unique_lock lock(m_taskLock);
-+    tasks.swap(m_tasks);
-+  }
-+
-+  for (auto& task : tasks)
-+    task();
 +}
 +
 +bool CWaylandHost::CreateKeymap()
@@ -1417,7 +1448,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    m_display = nullptr;
 +    m_loop = nullptr;
 +  }
-+  for (int* fd : {&m_wakeFd, &m_keymapFd, &m_formatTableFd})
++  m_tasks->Close();
++  for (int* fd : {&m_keymapFd, &m_formatTableFd})
 +  {
 +    if (*fd >= 0)
 +      close(*fd);
@@ -2618,7 +2650,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.h
-@@ -0,0 +1,435 @@
+@@ -0,0 +1,466 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2762,6 +2794,39 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  int32_t physicalHeight{0};
 +  std::string renderDevicePath;
 +  std::string keyboardLayout;
++};
++
++/*!
++ * \brief Functions posted from any thread for the host thread to run. A
++ * consumer may hold the queue beyond the host's life; once the host has
++ * closed it, posted functions are dropped.
++ */
++class CWaylandTaskQueue
++{
++public:
++  CWaylandTaskQueue() = default;
++  ~CWaylandTaskQueue();
++
++  CWaylandTaskQueue(const CWaylandTaskQueue&) = delete;
++  CWaylandTaskQueue& operator=(const CWaylandTaskQueue&) = delete;
++
++  /*!
++   * \brief Accept functions until Close(); returns an eventfd that becomes
++   * readable when one is posted, or -1
++   */
++  int Open();
++  void Close();
++
++  // any thread
++  void Post(std::function<void()> task);
++
++  // host thread only
++  void Run();
++
++private:
++  CCriticalSection m_lock;
++  std::list<std::function<void()>> m_tasks;
++  int m_wakeFd{-1};
 +};
 +
 +/*!
@@ -2919,6 +2984,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  void OnTextInputCommit(TextInput& input);
 +  void OnTextInputResourceDestroyed(TextInput& input);
 +  const WaylandHostConfig& GetConfig() const { return m_config; }
++  const std::shared_ptr<CWaylandTaskQueue>& GetTaskQueue() const { return m_tasks; }
 +  uint32_t NextSerial();
 +  void OnSurfaceCreated(CWaylandSurface* surface);
 +  void OnSurfaceDestroyed(CWaylandSurface* surface);
@@ -2952,7 +3018,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  bool CreateFormatTable();
 +  static int SealedMemfd(const char* name, const void* data, size_t size);
 +  void DestroyAll();
-+  void RunTasks();
 +  void DoSpawnClient(const std::vector<std::string>& argv,
 +                     const std::map<std::string, std::string>& env);
 +  void DoTerminateClients();
@@ -3010,12 +3075,10 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +  wl_display* m_display{nullptr};
 +  wl_event_loop* m_loop{nullptr};
-+  int m_wakeFd{-1};
 +  wl_event_source* m_wakeSource{nullptr};
 +  std::vector<wl_global*> m_globals;
 +
-+  CCriticalSection m_taskLock;
-+  std::list<std::function<void()>> m_tasks;
++  const std::shared_ptr<CWaylandTaskQueue> m_tasks{std::make_shared<CWaylandTaskQueue>()};
 +
 +  std::list<Client> m_clients;
 +  std::list<CWaylandSurface*> m_surfaces;

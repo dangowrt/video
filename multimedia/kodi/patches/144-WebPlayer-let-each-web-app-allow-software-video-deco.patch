@@ -128,7 +128,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
                          const std::string& extension,
 --- a/xbmc/platform/linux/waylandhost/WaylandHost.cpp
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.cpp
-@@ -1673,6 +1673,17 @@ void CWaylandHost::WebViewSetViewport(st
+@@ -1702,6 +1702,17 @@ void CWaylandHost::WebViewSetViewport(st
        });
  }
  
@@ -148,7 +148,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
                                          int fd,
 --- a/xbmc/platform/linux/waylandhost/WaylandHost.h
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.h
-@@ -214,6 +214,7 @@ public:
+@@ -247,6 +247,7 @@ public:
    void WebViewClose(std::string profile);
    void WebViewSetUserAgent(std::string profile, std::string userAgent);
    void WebViewSetViewport(std::string profile, uint32_t width, uint32_t height);
