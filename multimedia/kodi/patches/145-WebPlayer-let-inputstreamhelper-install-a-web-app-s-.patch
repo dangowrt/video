@@ -30,15 +30,15 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 
 --- a/xbmc/cores/WebPlayer/WebClientManager.cpp
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -13,6 +13,7 @@
- #include "GUIDialogWebKeyboard.h"
+@@ -14,6 +14,7 @@
+ #include "LangInfo.h"
  #include "ServiceBroker.h"
  #include "WebApp.h"
 +#include "WebPlayerDefs.h"
  #include "addons/Addon.h"
  #include "addons/AddonEvents.h"
  #include "addons/AddonManager.h"
-@@ -146,6 +147,20 @@ std::string CdmDirectory()
+@@ -148,6 +149,20 @@ std::string CdmDirectory()
    return path.empty() ? path : CSpecialProtocol::TranslatePath(path);
  }
  
@@ -59,7 +59,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  void NotifyOpenError(const std::string& profile, const std::string& reason)
  {
    ADDON::AddonPtr addon;
-@@ -585,14 +600,14 @@ void CWebClientManager::OnSettingChanged
+@@ -602,14 +617,14 @@ void CWebClientManager::OnSettingChanged
      m_restartWhenIdle = true;
      return;
    }
@@ -78,7 +78,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_restartWhenIdle = false;
    m_restarting = true;
    m_host->TerminateClients();
-@@ -658,8 +673,10 @@ void CWebClientManager::Spawn()
+@@ -680,8 +695,10 @@ void CWebClientManager::Spawn()
    if (m_video)
      env.emplace(KODI_WEB_VIDEO_ENV, m_video->GetPath());
    // pages decrypt with the CDM that inputstream.adaptive installed
@@ -90,7 +90,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_host->SpawnClient({command}, std::move(env));
  }
  
-@@ -705,6 +722,14 @@ bool CWebClientManager::RequestView(cons
+@@ -727,6 +744,14 @@ bool CWebClientManager::RequestView(cons
    m_shown.profile = profile;
    m_wantPending = false;
  
@@ -105,7 +105,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    const auto view = m_views.find(profile);
    if (view != m_views.end() && view->second && m_uplinks[profile] == uplink)
    {
-@@ -756,7 +781,7 @@ void CWebClientManager::ReleaseView(IWeb
+@@ -778,7 +803,7 @@ void CWebClientManager::ReleaseView(IWeb
    m_observerCallsDone.wait(lock, [this] { return m_observerCalls == 0; });
    CloseView(m_observedProfile);
    if (m_restartWhenIdle && m_state == State::READY && (m_video != nullptr) != VideoOnPlane())
@@ -114,7 +114,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  }
  
  // the client destroys the view later; a request for the profile waits for that
-@@ -907,7 +932,12 @@ void CWebClientManager::OnClientExited(p
+@@ -929,7 +954,12 @@ void CWebClientManager::OnClientExited(p
    {
      m_restarting = false;
      m_state = State::ABSENT;
@@ -128,7 +128,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
      SpawnIfPreloaded();
      return;
    }
-@@ -958,6 +988,36 @@ std::string CWebClientManager::UplinkOf(
+@@ -980,6 +1010,36 @@ std::string CWebClientManager::UplinkOf(
    return addon->GetSetting("uplinkaddress");
  }
  

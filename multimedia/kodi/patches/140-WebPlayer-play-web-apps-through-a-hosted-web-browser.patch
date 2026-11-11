@@ -16,21 +16,24 @@ Kodi's OSD and dialogs compose over the page as over any other video.
 While the web window is in front, keys the keymap leaves to the page,
 the red, green, yellow and blue keys with which TV pages drive their own
 menus, the pointer and touch go to the browser, a touch that starts in
-the web window staying with the page until it ends; text fields open
-Kodi's keyboard along the bottom of the screen. Input the page takes
-counts as activity as Kodi's own input does: it resets the idle timers,
-and a key that wakes the display does nothing else. The browser's audio
-plays through Kodi's audio engine over a socket of its own, and pages
-decrypt with the CDM inputstream.adaptive installed. The player starts
-out paused and lists no media while the user browses; it announces pause
-and resume as the page's media stops and starts, and a stream change
-when the page gains or loses video or audio, so that the screensaver and
-display power rules treat a page as the video or music it plays. The
-view lives as long as the player: leaving the app, from the page or by
-starting another one, closes it, so that no page keeps running in the
-background. The browser caches what pages download in memory, and on
-disk in Kodi's profile only when web.diskcache asks for it, since that
-writes to the storage as pages load.
+the web window staying with the page until it ends, and the browser
+learns the screen's physical size and whether the user's language is
+written right to left, so that it can tell a swipe in from the screen's
+edge; text fields open Kodi's keyboard along the bottom of the screen.
+Input the page takes counts as activity as Kodi's own input does: it
+resets the idle timers, and a key that wakes the display does nothing
+else. The browser's audio plays through Kodi's audio engine over a
+socket of its own, and pages decrypt with the CDM inputstream.adaptive
+installed. The player starts out paused and lists no media while the
+user browses; it announces pause and resume as the page's media stops
+and starts, and a stream change when the page gains or loses video or
+audio, so that the screensaver and display power rules treat a page as
+the video or music it plays. The view lives as long as the player:
+leaving the app, from the page or by starting another one, closes it, so
+that no page keeps running in the background. The browser caches what
+pages download in memory, and on disk in Kodi's profile only when
+web.diskcache asks for it, since that writes to the storage as pages
+load.
 
 The frames are DRM PRIME buffers, which the GBM and Wayland windowing
 show, so the web host runs only there; System.SupportsWebApps tells
@@ -108,11 +111,11 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/cores/WebPlayer/WebApp.h                 |   35 +
  xbmc/cores/WebPlayer/WebAudioServer.cpp       |  796 ++++++++++++
  xbmc/cores/WebPlayer/WebAudioServer.h         |  136 ++
- xbmc/cores/WebPlayer/WebClientManager.cpp     | 1090 +++++++++++++++++
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 1112 +++++++++++++++++
  xbmc/cores/WebPlayer/WebClientManager.h       |  266 ++++
  xbmc/cores/WebPlayer/WebLayerBridge.cpp       |  243 ++++
  xbmc/cores/WebPlayer/WebLayerBridge.h         |   94 ++
- xbmc/cores/WebPlayer/WebPlayer.cpp            |  895 ++++++++++++++
+ xbmc/cores/WebPlayer/WebPlayer.cpp            |  895 +++++++++++++
  xbmc/cores/WebPlayer/WebPlayer.h              |  190 +++
  xbmc/cores/WebPlayer/WebPlayerDefs.h          |   31 +
  xbmc/cores/WebPlayer/WebVideoBuffer.cpp       |  112 ++
@@ -138,7 +141,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/utils/DMAHeapBufferObject.h              |    4 +
  xbmc/utils/ExecString.cpp                     |    2 +
  xbmc/windows/GUIMediaWindow.cpp               |    9 +
- 65 files changed, 6442 insertions(+), 31 deletions(-)
+ 65 files changed, 6464 insertions(+), 31 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -2947,7 +2950,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -0,0 +1,1090 @@
+@@ -0,0 +1,1112 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2961,6 +2964,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include "FileItem.h"
 +#include "FileItemList.h"
 +#include "GUIDialogWebKeyboard.h"
++#include "LangInfo.h"
 +#include "ServiceBroker.h"
 +#include "WebApp.h"
 +#include "addons/Addon.h"
@@ -3016,6 +3020,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#include <functional>
 +#include <limits>
 +#include <mutex>
++#include <tuple>
 +#include <utility>
 +
 +#include <fcntl.h>
@@ -3246,7 +3251,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +  CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
 +  CServiceBroker::GetWinSystem()->Register(this);
-+  settings->RegisterCallback(this, {CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER});
++  settings->RegisterCallback(
++      this, {CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER, CSettings::SETTING_LOCALE_LANGUAGE});
 +  SpawnIfPreloaded();
 +}
 +
@@ -3325,7 +3331,21 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +void CWebClientManager::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
 +{
-+  if (!setting || setting->GetId() != CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER)
++  if (!setting)
++    return;
++
++  // CLangInfo may learn of the new language after this callback, so ask for that language
++  if (setting->GetId() == CSettings::SETTING_LOCALE_LANGUAGE)
++  {
++    const std::string& language =
++        std::static_pointer_cast<const CSettingString>(setting)->GetValue();
++    std::unique_lock lock(m_lock);
++    if (m_host)
++      m_host->WebSetLayoutDirection(g_langInfo.IsRightToLeft(language));
++    return;
++  }
++
++  if (setting->GetId() != CSettings::SETTING_VIDEOPLAYER_USEPRIMERENDERER)
 +    return;
 +
 +  std::unique_lock lock(m_lock);
@@ -3363,6 +3383,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +      config.renderDevicePath = drm->GetRenderDevicePath();
 +    config.keyboardLayout = CServiceBroker::GetSettingsComponent()->GetSettings()->GetString(
 +        CLibInputSettings::SETTING_INPUT_LIBINPUTKEYBOARDLAYOUT);
++    std::tie(config.physicalWidth, config.physicalHeight) = gbm->GetPhysicalSize();
 +  }
 +#endif
 +  if (config.renderDevicePath.empty())
@@ -3373,12 +3394,16 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    return false;
 +  }
 +
-+  CLog::Log(LOGINFO, "CWebClientManager::{}: hosting {}x{} at {} mHz on {}", __FUNCTION__,
-+            config.width, config.height, config.refreshMilliHz, config.renderDevicePath);
++  CLog::Log(LOGINFO, "CWebClientManager::{}: hosting {}x{} ({}x{} mm) at {} mHz on {}",
++            __FUNCTION__, config.width, config.height, config.physicalWidth, config.physicalHeight,
++            config.refreshMilliHz, config.renderDevicePath);
 +
 +  m_host = std::make_unique<CWaylandHost>(*this, std::move(config));
 +  if (m_host->Start())
++  {
++    m_host->WebSetLayoutDirection(g_langInfo.IsRightToLeft());
 +    return true;
++  }
 +
 +  m_host.reset();
 +  return false;

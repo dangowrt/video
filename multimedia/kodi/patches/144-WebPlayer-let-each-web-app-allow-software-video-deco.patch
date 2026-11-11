@@ -82,7 +82,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  </settings>
 --- a/xbmc/cores/WebPlayer/WebClientManager.cpp
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -710,6 +710,7 @@ bool CWebClientManager::RequestView(cons
+@@ -732,6 +732,7 @@ bool CWebClientManager::RequestView(cons
    {
      CWaylandSurface& surface = *view->second;
      lock.unlock();
@@ -90,7 +90,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
      observer.OnWebViewAvailable(profile, surface);
      return true;
    }
-@@ -957,6 +958,16 @@ std::string CWebClientManager::UplinkOf(
+@@ -979,6 +980,16 @@ std::string CWebClientManager::UplinkOf(
    return addon->GetSetting("uplinkaddress");
  }
  
@@ -107,7 +107,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  bool CWebClientManager::ConfigureViewFromAddon(const std::string& profile)
  {
    ADDON::AddonPtr addon;
-@@ -976,6 +987,8 @@ bool CWebClientManager::ConfigureViewFro
+@@ -998,6 +1009,8 @@ bool CWebClientManager::ConfigureViewFro
    if (!userAgent.empty())
      m_host->WebViewSetUserAgent(profile, userAgent);
  
@@ -128,7 +128,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
                          const std::string& extension,
 --- a/xbmc/platform/linux/waylandhost/WaylandHost.cpp
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.cpp
-@@ -1664,6 +1664,17 @@ void CWaylandHost::WebViewSetViewport(st
+@@ -1673,6 +1673,17 @@ void CWaylandHost::WebViewSetViewport(st
        });
  }
  
@@ -148,7 +148,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
                                          int fd,
 --- a/xbmc/platform/linux/waylandhost/WaylandHost.h
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.h
-@@ -211,6 +211,7 @@ public:
+@@ -214,6 +214,7 @@ public:
    void WebViewClose(std::string profile);
    void WebViewSetUserAgent(std::string profile, std::string userAgent);
    void WebViewSetViewport(std::string profile, uint32_t width, uint32_t height);
@@ -158,7 +158,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
     * \brief Replace the text around the cursor of the enabled text input;
 --- a/xbmc/platform/linux/waylandhost/protocol/kodi-web-v1.xml
 +++ b/xbmc/platform/linux/waylandhost/protocol/kodi-web-v1.xml
-@@ -418,5 +418,18 @@
+@@ -436,5 +436,18 @@
        <arg name="width" type="uint" summary="viewport width in CSS pixels"/>
        <arg name="height" type="uint" summary="viewport height in CSS pixels"/>
      </event>

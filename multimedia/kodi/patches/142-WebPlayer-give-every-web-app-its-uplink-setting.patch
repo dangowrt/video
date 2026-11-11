@@ -368,7 +368,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace ADDON
 --- a/xbmc/cores/WebPlayer/WebClientManager.cpp
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -16,6 +16,7 @@
+@@ -17,6 +17,7 @@
  #include "addons/Addon.h"
  #include "addons/AddonEvents.h"
  #include "addons/AddonManager.h"
@@ -376,7 +376,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "addons/addoninfo/AddonType.h"
  #include "application/ApplicationComponents.h"
  #include "dialogs/GUIDialogKaiToast.h"
-@@ -157,6 +158,17 @@ void NotifyOpenError(const std::string&
+@@ -159,6 +160,17 @@ void NotifyOpenError(const std::string&
        CGUIDialogKaiToast::Error, StringUtils::Format(localizeStrings.Get(13329), name), reason);
  }
  
@@ -394,7 +394,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  const ADDON::CAddonType* WebAppType(const std::shared_ptr<ADDON::CAddon>& webapp)
  {
    return webapp ? webapp->Type(ADDON::AddonType::WEBAPP) : nullptr;
-@@ -583,6 +595,14 @@ bool CWebClientManager::RequestView(cons
+@@ -605,6 +617,14 @@ bool CWebClientManager::RequestView(cons
      return false;
    }
  

@@ -8,31 +8,91 @@ Kodi's on-screen keyboard and may hand Kodi encoded audio. Let a
 keyboard event handler take events before Kodi translates them into
 actions, and a touch event handler take raw touch points before Kodi
 recognises gestures in them, tell whether a keyboard with letter keys is
-attached on GBM, let a keyboard dialog derived from the generic one
-choose its own window, and unpack the frame of an IEC 61937 burst.
+attached on GBM and how large the screen is, as its touch screen
+measures it or else as its EDID tells, tell whether the user's language
+is written right to left, let a keyboard dialog derived from the generic
+one choose its own window, and unpack the frame of an IEC 61937 burst.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
- .../AudioEngine/Utils/AEPackIEC61937.cpp      | 59 ++++++++++++++++++
+ xbmc/LangInfo.cpp                             | 17 +++++
+ xbmc/LangInfo.h                               |  6 ++
+ .../AudioEngine/Utils/AEPackIEC61937.cpp      | 59 ++++++++++++++++
  xbmc/cores/AudioEngine/Utils/AEPackIEC61937.h | 13 ++++
- xbmc/dialogs/GUIDialogKeyboardGeneric.cpp     | 14 +++--
+ xbmc/dialogs/GUIDialogKeyboardGeneric.cpp     | 14 ++--
  xbmc/dialogs/GUIDialogKeyboardGeneric.h       |  2 +
- xbmc/input/InputManager.cpp                   | 34 ++++++++++-
- xbmc/input/InputManager.h                     | 11 ++++
+ xbmc/input/InputManager.cpp                   | 34 ++++++++-
+ xbmc/input/InputManager.h                     | 11 +++
  xbmc/input/keyboard/interfaces/CMakeLists.txt |  1 +
- .../interfaces/IKeyboardEventHandler.h        | 45 ++++++++++++++
+ .../interfaces/IKeyboardEventHandler.h        | 45 ++++++++++++
  xbmc/input/touch/CMakeLists.txt               |  1 +
- xbmc/input/touch/ITouchEventHandler.h         | 40 +++++++++++++
- .../generic/GenericTouchInputHandler.cpp      | 32 +++++++++-
+ xbmc/input/touch/ITouchEventHandler.h         | 40 +++++++++++
+ .../generic/GenericTouchInputHandler.cpp      | 32 ++++++++-
  .../touch/generic/GenericTouchInputHandler.h  | 12 ++++
- xbmc/platform/linux/input/LibInputHandler.cpp | 60 ++++++++++++++-----
- xbmc/platform/linux/input/LibInputHandler.h   | 19 ++++--
- xbmc/windowing/gbm/WinSystemGbm.cpp           |  5 ++
- xbmc/windowing/gbm/WinSystemGbm.h             |  1 +
- 16 files changed, 321 insertions(+), 28 deletions(-)
+ xbmc/platform/linux/input/LibInputHandler.cpp | 70 ++++++++++++++-----
+ xbmc/platform/linux/input/LibInputHandler.h   | 28 ++++++--
+ xbmc/windowing/gbm/WinSystemGbm.cpp           | 18 +++++
+ xbmc/windowing/gbm/WinSystemGbm.h             |  6 ++
+ xbmc/windowing/gbm/drm/DRMConnector.h         |  3 +
+ 19 files changed, 384 insertions(+), 28 deletions(-)
  create mode 100644 xbmc/input/keyboard/interfaces/IKeyboardEventHandler.h
  create mode 100644 xbmc/input/touch/ITouchEventHandler.h
 
+--- a/xbmc/LangInfo.cpp
++++ b/xbmc/LangInfo.cpp
+@@ -38,6 +38,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <span>
++#include <string_view>
+ 
+ namespace
+ {
+@@ -47,6 +48,12 @@ std::string GetDateStringWithFormat(cons
+   // eg: '1/02/2003 (D/MM/YYYY)'
+   return date.GetAsLocalizedDate(format) + " (" + format + ")";
+ }
++
++// the languages whose CLDR 47 locale without script or region orders its characters right to left
++constexpr std::array<std::string_view, 22> RIGHT_TO_LEFT_LANGUAGES = {
++    "apc", "ar", "bal", "bgn", "ckb", "dv",  "fa",  "he",  "ks", "lrc", "mzn",
++    "nqo", "ps", "rhg", "sd",  "sdh", "skr", "syr", "trw", "ug", "ur",  "yi",
++};
+ } // namespace
+ 
+ using namespace KODI::LANGINFO;
+@@ -1009,6 +1016,16 @@ const CLocale& CLangInfo::GetLocale() co
+   return language != nullptr ? language->GetLocale() : CLocale::Empty;
+ }
+ 
++bool CLangInfo::IsRightToLeft(const std::string& language /* = "" */) const
++{
++  const LanguageResourcePtr addon = GetLanguageAddon(language);
++  if (addon == nullptr)
++    return false;
++
++  const std::string code = StringUtils::ToLower(addon->GetLocale().GetLanguageCode());
++  return std::ranges::find(RIGHT_TO_LEFT_LANGUAGES, code) != RIGHT_TO_LEFT_LANGUAGES.end();
++}
++
+ const std::string& CLangInfo::GetRegionLocale() const
+ {
+   return m_currentRegion->m_strRegionLocaleName;
+--- a/xbmc/LangInfo.h
++++ b/xbmc/LangInfo.h
+@@ -186,6 +186,12 @@ public:
+   const CLocale& GetLocale() const;
+ 
+   /*!
++   \brief Whether a language, by default the current one, is written right to left.
++   \param language The language add-on id or locale, as GetLanguageAddon() takes it
++   */
++  bool IsRightToLeft(const std::string& language = "") const;
++
++  /*!
+    \brief Returns the system's current locale.
+    */
+   const std::locale& GetSystemLocale() const { return m_systemLocale; }
 --- a/xbmc/cores/AudioEngine/Utils/AEPackIEC61937.cpp
 +++ b/xbmc/cores/AudioEngine/Utils/AEPackIEC61937.cpp
 @@ -233,3 +233,62 @@ int CAEPackIEC61937::PackPause(uint8_t *
@@ -467,7 +527,15 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    std::array<Pointer, MAX_POINTERS> m_pointers;
 --- a/xbmc/platform/linux/input/LibInputHandler.cpp
 +++ b/xbmc/platform/linux/input/LibInputHandler.cpp
-@@ -27,7 +27,7 @@
+@@ -18,6 +18,7 @@
+ #include "utils/log.h"
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <memory>
+ #include <string.h>
+ 
+@@ -27,7 +28,7 @@
  #include <sys/ioctl.h>
  #include <unistd.h>
  
@@ -476,7 +544,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  {
    int fd = open(path, flags);
  
-@@ -47,18 +47,20 @@ static int open_restricted(const char *p
+@@ -47,18 +48,20 @@ static int open_restricted(const char *p
    return fd;
  }
  
@@ -503,7 +571,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  {
    if (priority == LIBINPUT_LOG_PRIORITY_DEBUG)
    {
-@@ -181,7 +183,7 @@ void CLibInputHandler::Process()
+@@ -181,7 +184,7 @@ void CLibInputHandler::Process()
        return;
      }
  
@@ -512,7 +580,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
      while ((ev = libinput_get_event(m_li)) != nullptr)
      {
        ProcessEvent(ev);
-@@ -198,10 +200,10 @@ void CLibInputHandler::Process()
+@@ -198,10 +201,10 @@ void CLibInputHandler::Process()
    }
  }
  
@@ -525,13 +593,15 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
    switch (type)
    {
-@@ -248,10 +250,32 @@ void CLibInputHandler::ProcessEvent(libi
+@@ -248,16 +251,45 @@ void CLibInputHandler::ProcessEvent(libi
    }
  }
  
 -void CLibInputHandler::DeviceAdded(libinput_device *dev)
 +namespace
-+{
+ {
+-  const char *sysname = libinput_device_get_sysname(dev);
+-  const char *name = libinput_device_get_name(dev);
 +
 +// udev calls a device a keyboard when it has the letter keys; a remote
 +// control reports the keyboard capability without them
@@ -553,15 +623,26 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // unnamed namespace
 +
 +void CLibInputHandler::DeviceAdded(libinput_device* dev)
- {
--  const char *sysname = libinput_device_get_sysname(dev);
--  const char *name = libinput_device_get_name(dev);
++{
 +  const char* sysname = libinput_device_get_sysname(dev);
 +  const char* name = libinput_device_get_name(dev);
  
    if (libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_TOUCH))
    {
-@@ -273,13 +297,15 @@ void CLibInputHandler::DeviceAdded(libin
+     CLog::Log(LOGDEBUG, "CLibInputHandler::{} - touch type device added: {} ({})", __FUNCTION__,
+               name, sysname);
+     m_devices.push_back(libinput_device_ref(dev));
++    double width = 0.0;
++    double height = 0.0;
++    if (libinput_device_get_size(dev, &width, &height) == 0)
++    {
++      m_touchWidth = static_cast<int>(std::lround(width));
++      m_touchHeight = static_cast<int>(std::lround(height));
++    }
+   }
+ 
+   if (libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_POINTER))
+@@ -273,18 +305,22 @@ void CLibInputHandler::DeviceAdded(libin
                name, sysname);
      m_devices.push_back(libinput_device_ref(dev));
      m_keyboard->GetRepeat(dev);
@@ -580,7 +661,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
    if (libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_TOUCH))
    {
-@@ -301,6 +327,8 @@ void CLibInputHandler::DeviceRemoved(lib
+     CLog::Log(LOGDEBUG, "CLibInputHandler::{} - touch type device removed: {} ({})", __FUNCTION__,
+               name, sysname);
++    m_touchWidth = 0;
++    m_touchHeight = 0;
+     auto device = std::ranges::find(m_devices, libinput_device_unref(dev));
+     m_devices.erase(device);
+   }
+@@ -301,6 +337,8 @@ void CLibInputHandler::DeviceRemoved(lib
    {
      CLog::Log(LOGDEBUG, "CLibInputHandler::{} - keyboard type device removed: {} ({})",
                __FUNCTION__, name, sysname);
@@ -599,7 +687,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include <memory>
  #include <vector>
  
-@@ -37,14 +38,20 @@ public:
+@@ -37,14 +38,27 @@ public:
  
    bool SetKeymap(const std::string& layout);
  
@@ -608,6 +696,13 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +   * to a remote or a media key device; any thread
 +   */
 +  bool HasKeyboard() const { return m_keyboards.load() > 0; }
++
++  /*!
++   * \brief The size of the touch screen in millimetres, 0 when there is none
++   * or it does not tell; any thread
++   */
++  int GetTouchWidth() const { return m_touchWidth; }
++  int GetTouchHeight() const { return m_touchHeight; }
 +
  private:
    void Process() override;
@@ -625,16 +720,18 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    int m_liFd;
  
    std::unique_ptr<CLibInputKeyboard> m_keyboard;
-@@ -52,5 +59,5 @@ private:
+@@ -52,5 +66,7 @@ private:
    std::unique_ptr<CLibInputSettings> m_settings;
    std::unique_ptr<CLibInputTouch> m_touch;
    std::vector<libinput_device*> m_devices;
 +  std::atomic<int> m_keyboards{0};
++  std::atomic<int> m_touchWidth{0};
++  std::atomic<int> m_touchHeight{0};
  };
 -
 --- a/xbmc/windowing/gbm/WinSystemGbm.cpp
 +++ b/xbmc/windowing/gbm/WinSystemGbm.cpp
-@@ -349,6 +349,11 @@ bool CWinSystemGbm::UseLimitedColor()
+@@ -349,6 +349,24 @@ bool CWinSystemGbm::UseLimitedColor()
        CSettings::SETTING_VIDEOSCREEN_LIMITEDRANGE);
  }
  
@@ -643,16 +740,46 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  return m_libinput && m_libinput->HasKeyboard();
 +}
 +
++// a touch screen measures its own active area, which a cheap panel's EDID often misreports
++std::pair<int, int> CWinSystemGbm::GetPhysicalSize() const
++{
++  if (m_libinput && m_libinput->GetTouchWidth() > 0 && m_libinput->GetTouchHeight() > 0)
++    return {m_libinput->GetTouchWidth(), m_libinput->GetTouchHeight()};
++
++  const CDRMConnector* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
++  if (!connector)
++    return {0, 0};
++  return {static_cast<int>(connector->GetPhysicalWidth()),
++          static_cast<int>(connector->GetPhysicalHeight())};
++}
++
  bool CWinSystemGbm::Hide()
  {
    bool ret = m_DRM->SetActive(false);
 --- a/xbmc/windowing/gbm/WinSystemGbm.h
 +++ b/xbmc/windowing/gbm/WinSystemGbm.h
-@@ -57,6 +57,7 @@ public:
+@@ -57,6 +57,12 @@ public:
    bool UseLimitedColor() override;
  
    bool Hide() override;
 +  bool HasKeyboard() const;
++  /*!
++   * \brief The screen's width and height in millimetres: the touch screen's,
++   * else the display's; 0 when unknown
++   */
++  std::pair<int, int> GetPhysicalSize() const;
    bool Show(bool raise = true) override;
    void Register(IDispResource* resource) override;
    void Unregister(IDispResource* resource) override;
+--- a/xbmc/windowing/gbm/drm/DRMConnector.h
++++ b/xbmc/windowing/gbm/drm/DRMConnector.h
+@@ -38,6 +38,9 @@ public:
+       const std::vector<std::unique_ptr<CDRMEncoder>>& encoders) const;
+   int GetModesCount() const { return m_connector->count_modes; }
+   drmModeModeInfoPtr GetModeForIndex(int index) const { return &m_connector->modes[index]; }
++  // the display's size in millimetres as its EDID tells, 0 when unknown
++  uint32_t GetPhysicalWidth() const { return m_connector->mmWidth; }
++  uint32_t GetPhysicalHeight() const { return m_connector->mmHeight; }
+ 
+   bool IsConnected() { return m_connector->connection == DRM_MODE_CONNECTED; }
+   bool CheckConnector();

@@ -14,20 +14,21 @@ learns when a surface goes away. When the host stops, its clients get
 SIGTERM and their exit is awaited; a client still running 90 s later,
 for instance one blocked on a stale network mount, is killed. A client
 that cannot be started, or whose exit cannot be watched, is reported as
-ended. Clients learn the screen's mode, and when the display is reset
-for a new mode every output gets the new mode and every surface a
-configure for the new size.
+ended. Clients learn the screen's mode and physical size, and when the
+display is reset for a new mode every output gets the new mode and every
+surface a configure for the new size.
 
 The host also serves kodi_web_v1, a protocol through which Kodi drives a
 web browser it hosts: the browser creates one view per profile, a
 hermetic set of cookies and storage, only when Kodi asks for it. Kodi
 configures each view with a user agent, the viewport its pages are
 written for, user scripts and content filters before it loads a URL,
-navigates it, learns its URL, title, load progress, errors, media state
-and requests to leave, and closes it when done. Content filters use the
-Adblock Plus filter syntax, so that one maintained list serves any
-engine. The browser reports when it has prepared a shared list, and a
-view loads no page before the lists it was given are prepared.
+tells it the direction of the user's language, navigates it, learns its
+URL, title, load progress, errors, media state and requests to leave,
+and closes it when done. Content filters use the Adblock Plus filter
+syntax, so that one maintained list serves any engine. The browser
+reports when it has prepared a shared list, and a view loads no page
+before the lists it was given are prepared.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
@@ -35,12 +36,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  .../platform/linux/waylandhost/CMakeLists.txt |   34 +
  .../linux/waylandhost/WaylandBuffer.cpp       |   64 +
  .../linux/waylandhost/WaylandBuffer.h         |   96 +
- .../linux/waylandhost/WaylandHost.cpp         | 2332 +++++++++++++++++
- xbmc/platform/linux/waylandhost/WaylandHost.h |  424 +++
+ .../linux/waylandhost/WaylandHost.cpp         | 2354 +++++++++++++++++
+ xbmc/platform/linux/waylandhost/WaylandHost.h |  435 +++
  .../linux/waylandhost/WaylandSurface.cpp      |  245 ++
  .../linux/waylandhost/WaylandSurface.h        |  101 +
- .../waylandhost/protocol/kodi-web-v1.xml      |  422 +++
- 9 files changed, 3719 insertions(+)
+ .../waylandhost/protocol/kodi-web-v1.xml      |  440 +++
+ 9 files changed, 3770 insertions(+)
  create mode 100644 cmake/treedata/optional/common/waylandserver.txt
  create mode 100644 xbmc/platform/linux/waylandhost/CMakeLists.txt
  create mode 100644 xbmc/platform/linux/waylandhost/WaylandBuffer.cpp
@@ -260,7 +261,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.cpp
-@@ -0,0 +1,2332 @@
+@@ -0,0 +1,2354 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -1589,7 +1590,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
 +  wl_resource_set_destructor(resource, OutputDestroyed);
 +  host->m_outputs.push_back(resource);
-+  wl_output_send_geometry(resource, 0, 0, 0, 0, WL_OUTPUT_SUBPIXEL_UNKNOWN, "Kodi", "Kodi",
++  wl_output_send_geometry(resource, 0, 0, host->m_config.physicalWidth,
++                          host->m_config.physicalHeight, WL_OUTPUT_SUBPIXEL_UNKNOWN, "Kodi", "Kodi",
 +                          WL_OUTPUT_TRANSFORM_NORMAL);
 +  host->SendOutputMode(resource);
 +}
@@ -1697,8 +1699,16 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  if (m_webManager)
 +    CLog::Log(LOGWARNING, "CWaylandHost::{}: a second web client bound the manager", __FUNCTION__);
 +  m_webManager = manager;
++  SendLayoutDirection();
 +  for (const auto& [name, path] : m_filterLists)
 +    SendContentFilterList(name, path);
++}
++
++void CWaylandHost::SendLayoutDirection()
++{
++  kodi_web_manager_v1_send_layout_direction(
++      m_webManager, m_rightToLeft ? KODI_WEB_MANAGER_V1_LAYOUT_DIRECTION_RIGHT_TO_LEFT
++                                  : KODI_WEB_MANAGER_V1_LAYOUT_DIRECTION_LEFT_TO_RIGHT);
 +}
 +
 +void CWaylandHost::OnWebManagerUnbound(wl_resource* manager)
@@ -1952,6 +1962,19 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +      {
 +        if (auto* view = FindWebView(profile))
 +          kodi_web_view_v1_send_add_content_filter_list(view->resource, name.c_str());
++      });
++}
++
++void CWaylandHost::WebSetLayoutDirection(bool rightToLeft)
++{
++  Post(
++      [this, rightToLeft]()
++      {
++        if (rightToLeft == m_rightToLeft)
++          return;
++        m_rightToLeft = rightToLeft;
++        if (m_webManager)
++          SendLayoutDirection();
 +      });
 +}
 +
@@ -2595,7 +2618,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/WaylandHost.h
-@@ -0,0 +1,424 @@
+@@ -0,0 +1,435 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2734,6 +2757,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  int32_t width{0};
 +  int32_t height{0};
 +  int32_t refreshMilliHz{0};
++  // the screen's size in millimetres, 0 when not known
++  int32_t physicalWidth{0};
++  int32_t physicalHeight{0};
 +  std::string renderDevicePath;
 +  std::string keyboardLayout;
 +};
@@ -2834,6 +2860,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +   * path drops the list; any thread
 +   */
 +  void WebSetContentFilterList(std::string name, std::string path);
++
++  /*!
++   * \brief Tell the web client the direction the user's language is written
++   * in, now and whenever it binds again; any thread
++   */
++  void WebSetLayoutDirection(bool rightToLeft);
 +
 +  static bool IsValidWebProfile(const std::string& profile);
 +
@@ -2970,6 +3002,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  void SendWebViewFile(
 +      const std::string& profile, const std::string& name, int fd, uint32_t size, bool script);
 +  void SendContentFilterList(const std::string& name, const std::string& path);
++  void SendLayoutDirection();
 +
 +  IWaylandHostObserver& m_observer;
 +  // changed only on the host thread
@@ -2989,6 +3022,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  wl_resource* m_webManager{nullptr};
 +  std::list<WebView> m_views;
 +  std::map<std::string, std::string> m_filterLists;
++  bool m_rightToLeft{false};
 +  std::list<TextInput> m_textInputs;
 +  std::list<wl_resource*> m_outputs;
 +  std::list<wl_resource*> m_keyboards;
@@ -3374,7 +3408,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/platform/linux/waylandhost/protocol/kodi-web-v1.xml
-@@ -0,0 +1,422 @@
+@@ -0,0 +1,440 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<protocol name="kodi_web_v1">
 +
@@ -3562,6 +3596,24 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +      <arg name="name" type="string" summary="list identifier"/>
 +      <arg name="prepared" type="uint" summary="1 if views can apply the list, 0 if not"/>
 +    </request>
++
++    <enum name="layout_direction">
++      <entry name="left_to_right" value="0" summary="the language is written left to right"/>
++      <entry name="right_to_left" value="1" summary="the language is written right to left"/>
++    </enum>
++
++    <event name="layout_direction">
++      <description summary="the direction of the user's language">
++        The direction in which the language of the user's session is
++        written, independent of any page's content. Pages of a book in that
++        language turn forward in this direction, so a swipe in from the
++        edge where the language starts goes back in a view's history and a
++        swipe in from the other edge goes forward. The compositor sends it
++        after the browser binds the manager and again whenever the
++        language changes.
++      </description>
++      <arg name="direction" type="uint" enum="layout_direction"/>
++    </event>
 +  </interface>
 +
 +  <interface name="kodi_web_view_v1" version="1">
