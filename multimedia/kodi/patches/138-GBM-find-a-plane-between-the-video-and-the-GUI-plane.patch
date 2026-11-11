@@ -7,19 +7,21 @@ A client that composes a layer of its own over the video, such as a web
 page with its video on the video plane, needs a third plane stacked
 between the video and the GUI plane. FindOverlayPlane() picks a free
 plane of the CRTC for the layer's format, and GetVideoFormats() lists
-what the planes besides the GUI plane can show, each format in its
-linear layout before any modifier, so that a client taking only the
-first entries still gets every format. MoveOnTopOf() moves two planes to
-the ends of their zpos ranges, which leaves no level in between, so the
-three planes get the lowest, a middle and the highest level instead,
-around any of them whose zpos is fixed.
+the format and modifier pairs the planes besides the GUI plane report
+in IN_FORMATS, or each of their formats in the linear layout for a
+plane without that property. The linear pairs come first, so that a
+client taking only the first entries still gets every format a plane
+shows linearly. MoveOnTopOf() moves two planes to the ends of their
+zpos ranges, which leaves no level in between, so the three planes get
+the lowest, a middle and the highest level instead, around any of them
+whose zpos is fixed.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
  xbmc/windowing/gbm/drm/DRMPlane.h   |  4 ++
- xbmc/windowing/gbm/drm/DRMUtils.cpp | 84 +++++++++++++++++++++++++++++
+ xbmc/windowing/gbm/drm/DRMUtils.cpp | 96 +++++++++++++++++++++++++++++
  xbmc/windowing/gbm/drm/DRMUtils.h   |  4 ++
- 3 files changed, 92 insertions(+)
+ 3 files changed, 104 insertions(+)
 
 --- a/xbmc/windowing/gbm/drm/DRMPlane.h
 +++ b/xbmc/windowing/gbm/drm/DRMPlane.h
@@ -74,7 +76,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  } // namespace
  
  CDRMUtils::~CDRMUtils()
-@@ -368,6 +392,66 @@ bool CDRMUtils::FindVideoAndGuiPlane(uin
+@@ -368,6 +392,78 @@ bool CDRMUtils::FindVideoAndGuiPlane(uin
    return false;
  }
  
@@ -95,18 +97,30 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +      planes.emplace_back(plane.get());
 +  }
 +
-+  // each format in its linear layout first, so that a client taking only so
-+  // many entries still gets every format
++  // a plane without IN_FORMATS scans out each of its formats in the linear layout only
++  const auto modifiers = [](CDRMPlane* plane, uint32_t format)
++  {
++    if (!plane->SupportsProperty("IN_FORMATS"))
++      return std::vector<uint64_t>{DRM_FORMAT_MOD_LINEAR};
++    return plane->GetModifiersForFormat(format);
++  };
++
++  // the linear layouts first, so that a client taking only so many entries
++  // still gets every format a plane shows linearly
 +  for (auto* plane : planes)
 +  {
 +    for (uint32_t format : plane->GetFormats())
-+      add(format, DRM_FORMAT_MOD_LINEAR);
++    {
++      const std::vector<uint64_t> formatModifiers = modifiers(plane, format);
++      if (std::ranges::find(formatModifiers, DRM_FORMAT_MOD_LINEAR) != formatModifiers.end())
++        add(format, DRM_FORMAT_MOD_LINEAR);
++    }
 +  }
 +  for (auto* plane : planes)
 +  {
 +    for (uint32_t format : plane->GetFormats())
 +    {
-+      for (uint64_t modifier : plane->GetModifiersForFormat(format))
++      for (uint64_t modifier : modifiers(plane, format))
 +        add(format, modifier);
 +    }
 +  }
