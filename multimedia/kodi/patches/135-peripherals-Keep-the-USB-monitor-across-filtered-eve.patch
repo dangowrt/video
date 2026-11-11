@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 11 Nov 2026 01:13:17 +0000
+Subject: [PATCH] [peripherals] Keep the USB monitor across filtered events
+
+CPeripheralBusUSB::WaitForUpdate() takes a NULL from
+udev_monitor_receive_device() for a failed monitor and stops the bus
+thread through Clear(). A monitor also returns NULL, with errno EAGAIN,
+when none of the queued messages that woke poll() passes its filter.
+systemd's libudev filters mostly in the kernel, but libudev-zero filters
+only in userspace, so there the first event of another subsystem, such
+as the input device of a USB keyboard being plugged in, ends USB
+peripheral detection until Kodi restarts. Read messages until the
+monitor returns NULL, as CALSADeviceMonitor does, and rescan if any of
+them passed the filter.
+
+Fixes: 098bec411b6d ("PeripheralBusUSBLibUdev: Filter on USB only")
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../peripherals/PeripheralBusUSBLibUdev.cpp     | 17 +++++++----------
+ 1 file changed, 7 insertions(+), 10 deletions(-)
+
+--- a/xbmc/platform/linux/peripherals/PeripheralBusUSBLibUdev.cpp
++++ b/xbmc/platform/linux/peripherals/PeripheralBusUSBLibUdev.cpp
+@@ -240,17 +240,14 @@ bool CPeripheralBusUSB::WaitForUpdate()
+   if (m_bStop)
+     return false;
+ 
+-  /* we have to read the message from the queue, even though we're not actually using it */
+-  struct udev_device *dev = udev_monitor_receive_device(m_udevMon);
+-  if (dev)
+-    udev_device_unref(dev);
+-  else
++  /* the monitor returns NULL once no queued message passes its filter */
++  bool updated = false;
++  struct udev_device* dev;
++  while ((dev = udev_monitor_receive_device(m_udevMon)) != nullptr)
+   {
+-    CLog::Log(LOGERROR, "{} - failed to get device from udev_monitor_receive_device()",
+-              __FUNCTION__);
+-    Clear();
+-    return false;
++    udev_device_unref(dev);
++    updated = true;
+   }
+ 
+-  return true;
++  return updated;
+ }

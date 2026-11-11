@@ -72,9 +72,10 @@ them on the release tag:
   fallback), `128` (stop video when the display switches off), `129` to
   `131` (GBM atomic fallback request), `132` and `133` (GL rendering of a
   video the video plane refuses), `134` (GBM: clear the frame committed
-  with a mode change), and the web apps with their Wayland host and web
-  player last, `135` to `146` (xbmc/xbmc#30315), which needs `101` and
-  `102`, and `132` and `133` for the same fallback of web video.
+  with a mode change), `135` (USB peripheral monitor kept across
+  filtered udev events), and the web apps with their Wayland host and
+  web player last, `136` to `147` (xbmc/xbmc#30315), which needs `101`
+  and `102`, and `132` and `133` for the same fallback of web video.
 - `2xx`: changes kept downstream: LibreELEC's DRM_PRIME filter patches
   (`201`, `202`, see above), the per-add-on uplinks (`203` to `216`),
   LibreELEC's patch that keeps the target build from cross-building its
