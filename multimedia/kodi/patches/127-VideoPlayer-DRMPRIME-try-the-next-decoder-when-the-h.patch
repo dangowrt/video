@@ -12,14 +12,40 @@ then fails to initialise, ffmpeg asks again without the hardware
 format and decodes in software, although a stateful decoder such as
 h264_v4l2m2m could deliver DRM PRIME frames. Notice that second
 request and reopen with the next decoder that offers a hardware
-configuration, skipping those whose hwaccel failed.
+configuration, skipping those whose hwaccel failed or that fail to
+open.
+
+Once no hardware decoder is left, Open() takes the software decoder
+with no hwaccel, and GetFormat() offers it software formats only.
+Where none of these is supported either, as for HEVC Main 10 where
+no HEVC hardware decoder is available, or where a reopen leaves no
+decoder, GetPicture() returns VC_FATAL. VideoPlayer then opens the
+stream again with the new CODEC_SKIP_HW_CODECS, for which
+CDVDFactoryCodec leaves out the platform codecs and serves
+CDVDVideoCodecFFmpeg. That codec decodes with frame threads;
+CODEC_FORCE_SOFTWARE is not used here, as it keeps it on a single
+thread.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
- .../DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp | 49 +++++++++++++++++--
- .../DVDCodecs/Video/DVDVideoCodecDRMPRIME.h   |  8 +++
- 2 files changed, 54 insertions(+), 3 deletions(-)
+ .../VideoPlayer/DVDCodecs/DVDFactoryCodec.cpp |   2 +-
+ .../DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp | 105 ++++++++++++++----
+ .../DVDCodecs/Video/DVDVideoCodecDRMPRIME.h   |  10 ++
+ xbmc/cores/VideoPlayer/DVDStreamInfo.h        |   2 +
+ xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp   |  24 +++-
+ 5 files changed, 120 insertions(+), 23 deletions(-)
 
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/DVDFactoryCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/DVDFactoryCodec.cpp
+@@ -69,7 +69,7 @@ std::unique_ptr<CDVDVideoCodec> CDVDFact
+   }
+ 
+   // platform specific video decoders
+-  if (!(hint.codecOptions & CODEC_FORCE_SOFTWARE))
++  if (!(hint.codecOptions & (CODEC_FORCE_SOFTWARE | CODEC_SKIP_HW_CODECS)))
+   {
+     for (auto &codec : m_hwVideoCodecs)
+     {
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecDRMPRIME.cpp
 @@ -100,6 +100,15 @@ CDVDVideoCodecDRMPRIME::~CDVDVideoCodecD
@@ -38,25 +64,56 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  std::unique_ptr<CDVDVideoCodec> CDVDVideoCodecDRMPRIME::Create(CProcessInfo& processInfo)
  {
    if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-@@ -181,7 +190,7 @@ static const AVCodecHWConfig* FindHWConf
+@@ -181,25 +190,34 @@ static const AVCodecHWConfig* FindHWConf
    return nullptr;
  }
  
 -static const AVCodec* FindDecoder(CDVDStreamInfo& hints)
-+static const AVCodec* FindDecoder(CDVDStreamInfo& hints, const std::set<std::string>& skip)
++static const AVCodec* FindHWDecoder(const CDVDStreamInfo& hints, const std::set<std::string>& skip)
  {
    const AVCodec* codec = nullptr;
    void* i = 0;
-@@ -193,6 +202,8 @@ static const AVCodec* FindDecoder(CDVDSt
-         continue;
-       if (codec->id != hints.codec)
-         continue;
-+      if (skip.contains(codec->name))
-+        continue;
  
-       const AVCodecHWConfig* config = FindHWConfig(codec);
-       if (config)
-@@ -209,11 +220,22 @@ static const AVCodec* FindDecoder(CDVDSt
+-  if (!(hints.codecOptions & CODEC_FORCE_SOFTWARE))
+-    while ((codec = av_codec_iterate(&i)))
+-    {
+-      if (!av_codec_is_decoder(codec))
+-        continue;
+-      if (codec->id != hints.codec)
+-        continue;
+-
+-      const AVCodecHWConfig* config = FindHWConfig(codec);
+-      if (config)
+-        return codec;
+-    }
++  if (hints.codecOptions & CODEC_FORCE_SOFTWARE)
++    return nullptr;
++
++  while ((codec = av_codec_iterate(&i)))
++  {
++    if (!av_codec_is_decoder(codec))
++      continue;
++    if (codec->id != hints.codec)
++      continue;
++    if (skip.contains(codec->name))
++      continue;
++
++    const AVCodecHWConfig* config = FindHWConfig(codec);
++    if (config)
++      return codec;
++  }
++
++  return nullptr;
++}
+ 
+-  codec = avcodec_find_decoder(hints.codec);
++static const AVCodec* FindSWDecoder(const CDVDStreamInfo& hints)
++{
++  const AVCodec* codec = avcodec_find_decoder(hints.codec);
+   if (codec && (codec->capabilities & AV_CODEC_CAP_DR1) == AV_CODEC_CAP_DR1)
+     return codec;
+ 
+@@ -209,11 +227,22 @@ static const AVCodec* FindDecoder(CDVDSt
  enum AVPixelFormat CDVDVideoCodecDRMPRIME::GetFormat(struct AVCodecContext* avctx,
                                                       const enum AVPixelFormat* fmt)
  {
@@ -64,7 +121,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +  bool hwOffered = false;
 +
 +  for (int n = 0; fmt[n] != AV_PIX_FMT_NONE; ++n)
-+    hwOffered |= IsSupportedHwFormat(fmt[n]);
++    hwOffered |= ctx->m_hwDecoder && IsSupportedHwFormat(fmt[n]);
 +
 +  // ffmpeg asks again without the hardware format once the hwaccel fails to initialise
 +  if (hwOffered)
@@ -74,35 +131,67 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
    for (int n = 0; fmt[n] != AV_PIX_FMT_NONE; n++)
    {
-     if (IsSupportedHwFormat(fmt[n]) || IsSupportedSwFormat(fmt[n]))
+-    if (IsSupportedHwFormat(fmt[n]) || IsSupportedSwFormat(fmt[n]))
++    if ((ctx->m_hwDecoder && IsSupportedHwFormat(fmt[n])) || IsSupportedSwFormat(fmt[n]))
      {
 -      CDVDVideoCodecDRMPRIME* ctx = static_cast<CDVDVideoCodecDRMPRIME*>(avctx->opaque);
        ctx->UpdateProcessInfo(avctx, fmt[n]);
        return fmt[n];
      }
-@@ -289,7 +311,7 @@ int CDVDVideoCodecDRMPRIME::GetBuffer(st
+@@ -227,6 +256,7 @@ enum AVPixelFormat CDVDVideoCodecDRMPRIM
+   CLog::Log(LOGERROR, "CDVDVideoCodecDRMPRIME::{} - no supported pixel formats: {}", __FUNCTION__,
+             StringUtils::Join(formats, ", "));
+ 
++  ctx->m_noSupportedFormat = true;
+   return AV_PIX_FMT_NONE;
+ }
+ 
+@@ -289,7 +319,10 @@ int CDVDVideoCodecDRMPRIME::GetBuffer(st
  
  bool CDVDVideoCodecDRMPRIME::Open(CDVDStreamInfo& hints, CDVDCodecOptions& options)
  {
 -  const AVCodec* pCodec = FindDecoder(hints);
-+  const AVCodec* pCodec = FindDecoder(hints, m_skipDecoders);
++  const AVCodec* pCodec = FindHWDecoder(hints, m_skipDecoders);
++  m_hwDecoder = pCodec != nullptr;
++  if (!pCodec)
++    pCodec = FindSWDecoder(hints);
    if (!pCodec)
    {
      CLog::Log(LOGDEBUG, "CDVDVideoCodecDRMPRIME::{} - unable to find decoder for codec {}",
-@@ -305,6 +327,9 @@ bool CDVDVideoCodecDRMPRIME::Open(CDVDSt
+@@ -305,8 +338,12 @@ bool CDVDVideoCodecDRMPRIME::Open(CDVDSt
      return false;
  
    m_hints = hints;
 +  m_options = options;
 +  m_hwFormatOffered = false;
 +  m_hwFormatFailed = false;
++  m_noSupportedFormat = false;
  
-   const AVCodecHWConfig* pConfig = FindHWConfig(pCodec);
+-  const AVCodecHWConfig* pConfig = FindHWConfig(pCodec);
++  const AVCodecHWConfig* pConfig = m_hwDecoder ? FindHWConfig(pCodec) : nullptr;
    if (pConfig && (pConfig->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX))
-@@ -630,6 +655,24 @@ void CDVDVideoCodecDRMPRIME::SetPictureP
+   {
+     const char* type = av_hwdevice_get_type_name(pConfig->device_type);
+@@ -383,10 +420,10 @@ bool CDVDVideoCodecDRMPRIME::Open(CDVDSt
+   {
+     CLog::Log(LOGINFO, "CDVDVideoCodecDRMPRIME::{} - unable to open codec", __FUNCTION__);
+     avcodec_free_context(&m_pCodecContext);
+-    if (hints.codecOptions & CODEC_FORCE_SOFTWARE)
++    if (!m_hwDecoder)
+       return false;
+ 
+-    hints.codecOptions |= CODEC_FORCE_SOFTWARE;
++    m_skipDecoders.insert(pCodec->name);
+     return Open(hints, options);
+   }
+ 
+@@ -630,6 +667,34 @@ void CDVDVideoCodecDRMPRIME::SetPictureP
  
  CDVDVideoCodec::VCReturn CDVDVideoCodecDRMPRIME::GetPicture(VideoPicture* pVideoPicture)
  {
++  if (!m_pCodecContext)
++    return VC_FATAL;
++
 +  if (m_hwFormatFailed)
 +  {
 +    m_hwFormatFailed = false;
@@ -110,8 +199,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +    std::set<std::string> skip = m_skipDecoders;
 +    skip.insert(m_pCodecContext->codec->name);
 +
-+    const AVCodec* next = FindDecoder(m_hints, skip);
-+    if (next && FindHWConfig(next))
++    const AVCodec* next = FindHWDecoder(m_hints, skip);
++    if (next)
 +    {
 +      CLog::Log(LOGINFO,
 +                "CDVDVideoCodecDRMPRIME::{} - hwaccel of decoder {} failed, reopening with {}",
@@ -119,6 +208,13 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +      m_skipDecoders = std::move(skip);
 +      return VC_REOPEN;
 +    }
++  }
++
++  if (m_noSupportedFormat)
++  {
++    CLog::Log(LOGINFO, "CDVDVideoCodecDRMPRIME::{} - decoder {} has no supported pixel format",
++              __FUNCTION__, m_pCodecContext->codec->name);
++    return VC_FATAL;
 +  }
 +
    if (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN)
@@ -148,14 +244,67 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    const char* GetName() override { return m_name.c_str(); }
    unsigned GetAllowedReferences() override { return 5; }
    void SetCodecControl(int flags) override;
-@@ -44,6 +48,10 @@ protected:
+@@ -44,6 +48,12 @@ protected:
    std::string m_name;
    int m_codecControlFlags = 0;
    CDVDStreamInfo m_hints;
 +  CDVDCodecOptions m_options;
 +  std::set<std::string> m_skipDecoders;
++  bool m_hwDecoder = false;
 +  bool m_hwFormatOffered = false;
 +  bool m_hwFormatFailed = false;
++  bool m_noSupportedFormat = false;
    double m_DAR = 1.0;
    AVCodecContext* m_pCodecContext = nullptr;
    AVFrame* m_pFrame = nullptr;
+--- a/xbmc/cores/VideoPlayer/DVDStreamInfo.h
++++ b/xbmc/cores/VideoPlayer/DVDStreamInfo.h
+@@ -19,6 +19,8 @@ extern "C"
+ #define CODEC_FORCE_SOFTWARE 0x01
+ #define CODEC_ALLOW_FALLBACK 0x02
+ 
++#define CODEC_SKIP_HW_CODECS 0x08
++
+ class CDemuxStream;
+ struct DemuxCryptoSession;
+ 
+--- a/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
+@@ -679,7 +679,9 @@ bool CVideoPlayerVideo::ProcessDecoderOu
+     return false;
+   }
+ 
+-  if (decoderState == CDVDVideoCodec::VC_REOPEN)
++  if (decoderState == CDVDVideoCodec::VC_REOPEN ||
++      (decoderState == CDVDVideoCodec::VC_FATAL &&
++       !(m_hints.codecOptions & (CODEC_FORCE_SOFTWARE | CODEC_SKIP_HW_CODECS))))
+   {
+     while (!m_packets.empty())
+     {
+@@ -688,7 +690,25 @@ bool CVideoPlayerVideo::ProcessDecoderOu
+       SendMessage(msg, 10);
+     }
+ 
+-    m_pVideoCodec->Reopen();
++    if (decoderState == CDVDVideoCodec::VC_REOPEN)
++    {
++      m_pVideoCodec->Reopen();
++    }
++    else
++    {
++      CLog::Log(LOGWARNING,
++                "CVideoPlayerVideo - video decoder {} failed, opening the stream without "
++                "platform video codecs",
++                m_pVideoCodec->GetName());
++      CDVDStreamInfo hint(m_hints);
++      hint.codecOptions |= CODEC_SKIP_HW_CODECS;
++      OpenStream(hint, nullptr);
++      if (m_picture.videoBuffer)
++      {
++        m_picture.videoBuffer->Release();
++        m_picture.videoBuffer = nullptr;
++      }
++    }
+     m_packets.clear();
+     m_renderManager.DiscardBuffer();
+     return false;

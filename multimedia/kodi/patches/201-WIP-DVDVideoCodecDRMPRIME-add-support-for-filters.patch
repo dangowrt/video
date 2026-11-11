@@ -19,7 +19,7 @@ Subject: [PATCH] WIP: DVDVideoCodecDRMPRIME: add support for filters
  #include <libavutil/error.h>
  #include <libavutil/imgutils.h>
  #include <libavutil/opt.h>
-@@ -653,6 +655,54 @@ void CDVDVideoCodecDRMPRIME::SetPictureP
+@@ -665,6 +667,54 @@ void CDVDVideoCodecDRMPRIME::SetPictureP
    pVideoPicture->dts = DVD_NOPTS_VALUE;
  }
  
@@ -73,8 +73,8 @@ Subject: [PATCH] WIP: DVDVideoCodecDRMPRIME: add support for filters
 +
  CDVDVideoCodec::VCReturn CDVDVideoCodecDRMPRIME::GetPicture(VideoPicture* pVideoPicture)
  {
-   if (m_hwFormatFailed)
-@@ -676,26 +726,26 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecD
+   if (!m_pCodecContext)
+@@ -698,26 +748,26 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecD
    if (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN)
      Drain();
  
@@ -141,7 +141,7 @@ Subject: [PATCH] WIP: DVDVideoCodecDRMPRIME: add support for filters
    static enum AVPixelFormat GetFormat(struct AVCodecContext* avctx, const enum AVPixelFormat* fmt);
    static int GetBuffer(struct AVCodecContext* avctx, AVFrame* frame, int flags);
  
-@@ -55,6 +62,9 @@ protected:
+@@ -57,6 +64,9 @@ protected:
    double m_DAR = 1.0;
    AVCodecContext* m_pCodecContext = nullptr;
    AVFrame* m_pFrame = nullptr;
