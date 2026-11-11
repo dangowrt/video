@@ -31,7 +31,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -26017,7 +26017,19 @@ msgctxt "#40258"
+@@ -26004,7 +26004,19 @@ msgctxt "#40258"
  msgid "The settings of the web app cannot be loaded."
  msgstr ""
  
@@ -203,7 +203,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  void AddFilterListsOf(const ADDON::AddonPtr& addon, std::set<std::string>& lists)
  {
    const ADDON::CAddonType* type = WebAppType(std::dynamic_pointer_cast<ADDON::CAddon>(addon));
-@@ -625,6 +711,13 @@ bool CWebClientManager::RequestView(cons
+@@ -623,6 +709,13 @@ bool CWebClientManager::RequestView(cons
      return false;
    }
  
@@ -217,7 +217,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    const std::string uplink = UplinkOf(profile);
  
    std::unique_lock lock(m_lock);
-@@ -905,35 +998,30 @@ bool CWebClientManager::ConfigureViewFro
+@@ -903,35 +996,30 @@ bool CWebClientManager::ConfigureViewFro
    if (!userAgent.empty())
      m_host->WebViewSetUserAgent(profile, userAgent);
  
@@ -269,7 +269,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    return true;
  }
  
-@@ -974,11 +1062,12 @@ void CWebClientManager::SendProfileFiles
+@@ -972,11 +1060,12 @@ void CWebClientManager::SendProfileFiles
    std::sort(files.begin(), files.end());
  
    for (const std::string& file : files)
@@ -283,7 +283,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
                                          bool script)
  {
    const int fd = open(CSpecialProtocol::TranslatePath(file).c_str(), O_RDONLY | O_CLOEXEC);
-@@ -991,7 +1080,6 @@ void CWebClientManager::SendProfileFile(
+@@ -989,7 +1078,6 @@ void CWebClientManager::SendProfileFile(
      return;
    }
  

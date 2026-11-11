@@ -48,7 +48,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25969,7 +25969,25 @@ msgctxt "#40250"
+@@ -25956,7 +25956,25 @@ msgctxt "#40250"
  msgid "Keep the files web apps download in Kodi's profile, so that apps start faster on a slow connection after a restart. Off caches them in memory only, which spares the storage the writes."
  msgstr ""
  
@@ -270,7 +270,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  // the client finds a video socket only while pages' video goes to a display plane
  void CWebClientManager::UpdateVideo()
  {
-@@ -711,6 +809,8 @@ void CWebClientManager::OnClientExited(p
+@@ -709,6 +807,8 @@ void CWebClientManager::OnClientExited(p
    m_views.clear();
    m_surfaces.clear();
    m_closing.clear();
@@ -279,7 +279,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    if (m_restarting)
    {
      m_restarting = false;
-@@ -774,7 +874,7 @@ bool CWebClientManager::ConfigureViewFro
+@@ -772,7 +872,7 @@ bool CWebClientManager::ConfigureViewFro
      return false;
  
    const auto webapp = std::dynamic_pointer_cast<ADDON::CAddon>(addon);
@@ -288,7 +288,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    if (!type)
      return false;
  
-@@ -800,7 +900,13 @@ bool CWebClientManager::ConfigureViewFro
+@@ -798,7 +898,13 @@ bool CWebClientManager::ConfigureViewFro
      {
        const std::string list = values.GetValue("contentfilter@list").asString();
        if (!list.empty())

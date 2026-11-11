@@ -30,7 +30,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -26029,7 +26029,31 @@ msgctxt "#40260"
+@@ -26016,7 +26016,31 @@ msgctxt "#40260"
  msgid "The web app's file {0:s} is missing or cannot be used."
  msgstr ""
  
@@ -82,7 +82,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  </settings>
 --- a/xbmc/cores/WebPlayer/WebClientManager.cpp
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -732,6 +732,7 @@ bool CWebClientManager::RequestView(cons
+@@ -730,6 +730,7 @@ bool CWebClientManager::RequestView(cons
    {
      CWaylandSurface& surface = *view->second;
      lock.unlock();
@@ -90,7 +90,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
      observer.OnWebViewAvailable(profile, surface);
      return true;
    }
-@@ -979,6 +980,16 @@ std::string CWebClientManager::UplinkOf(
+@@ -977,6 +978,16 @@ std::string CWebClientManager::UplinkOf(
    return addon->GetSetting("uplinkaddress");
  }
  
@@ -107,7 +107,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  bool CWebClientManager::ConfigureViewFromAddon(const std::string& profile)
  {
    ADDON::AddonPtr addon;
-@@ -998,6 +1009,8 @@ bool CWebClientManager::ConfigureViewFro
+@@ -996,6 +1007,8 @@ bool CWebClientManager::ConfigureViewFro
    if (!userAgent.empty())
      m_host->WebViewSetUserAgent(profile, userAgent);
  

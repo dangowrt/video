@@ -77,7 +77,7 @@ for it by name.
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
  addons/kodi.webapp/addon.xml                  |    7 +
- .../resources/strings.po                      |  123 +-
+ .../resources/strings.po                      |  110 +-
  .../resource.language.en_gb/strings.po        |    5 +
  addons/skin.estuary/xml/DialogWebKeyboard.xml |  525 ++++++++
  addons/skin.estuary/xml/DialogWebOSD.xml      |   63 +
@@ -89,7 +89,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  .../optional/common/waylandserver.txt         |    1 +
  system/addon-manifest.xml                     |    1 +
  system/keymaps/keyboard.xml                   |   12 +
- system/settings/settings.xml                  |   47 +
+ system/settings/settings.xml                  |   37 +
  xbmc/GUIInfoManager.cpp                       |   11 +-
  xbmc/addons/AddonBuilder.cpp                  |    1 +
  xbmc/addons/addoninfo/AddonInfo.cpp           |    3 +-
@@ -111,7 +111,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/cores/WebPlayer/WebApp.h                 |   35 +
  xbmc/cores/WebPlayer/WebAudioServer.cpp       |  796 ++++++++++++
  xbmc/cores/WebPlayer/WebAudioServer.h         |  136 ++
- xbmc/cores/WebPlayer/WebClientManager.cpp     | 1112 +++++++++++++++++
+ xbmc/cores/WebPlayer/WebClientManager.cpp     | 1110 +++++++++++++++++
  xbmc/cores/WebPlayer/WebClientManager.h       |  266 ++++
  xbmc/cores/WebPlayer/WebLayerBridge.cpp       |  243 ++++
  xbmc/cores/WebPlayer/WebLayerBridge.h         |   94 ++
@@ -136,12 +136,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  xbmc/input/WindowTranslator.cpp               |    4 +
  xbmc/interfaces/builtins/AddonBuiltins.cpp    |   40 +
  xbmc/settings/SettingConditions.cpp           |    3 +
- xbmc/settings/Settings.h                      |    5 +
+ xbmc/settings/Settings.h                      |    4 +
  xbmc/utils/DMAHeapBufferObject.cpp            |    5 +-
  xbmc/utils/DMAHeapBufferObject.h              |    4 +
  xbmc/utils/ExecString.cpp                     |    2 +
  xbmc/windows/GUIMediaWindow.cpp               |    9 +
- 65 files changed, 6464 insertions(+), 31 deletions(-)
+ 65 files changed, 6438 insertions(+), 31 deletions(-)
  create mode 100644 addons/kodi.webapp/addon.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebKeyboard.xml
  create mode 100644 addons/skin.estuary/xml/DialogWebOSD.xml
@@ -196,7 +196,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
  #: xbmc/guilib/WindowIDs.h
  msgctxt "#12999"
-@@ -25850,7 +25855,121 @@ msgctxt "#40230"
+@@ -25850,7 +25855,108 @@ msgctxt "#40230"
  msgid "Turn on to show individual versions in the movies view, turn off to group them"
  msgstr ""
  
@@ -269,19 +269,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#: xbmc/addons/addoninfo/AddonInfo.cpp
 +msgctxt "#40243"
 +msgid "Web apps"
-+msgstr ""
-+
-+
-+#. Name of the setting that allows software video decoding in web pages
-+#: system/settings/settings.xml
-+msgctxt "#40244"
-+msgid "Software video decoding in web pages"
-+msgstr ""
-+
-+#. Help for setting Software video decoding in web pages
-+#: system/settings/settings.xml
-+msgctxt "#40245"
-+msgid "Let web pages use video codecs this device can only decode in software. Off keeps pages to the codecs the hardware decodes, so a page offering several picks one of those."
 +msgstr ""
 +
 +
@@ -1061,7 +1048,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
        <m>OSD</m>
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -2954,6 +2954,53 @@
+@@ -2954,6 +2954,43 @@
        </group>
      </category>
    </section>
@@ -1077,16 +1064,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +        <setting id="web.preload" type="boolean" parent="web.enabled" label="40241" help="40242">
 +          <level>1</level>
 +          <default>true</default>
-+          <dependencies>
-+            <dependency type="enable">
-+              <condition setting="web.enabled" operator="is">true</condition>
-+            </dependency>
-+          </dependencies>
-+          <control type="toggle" />
-+        </setting>
-+        <setting id="web.softwarecodecs" type="boolean" parent="web.enabled" label="40244" help="40245">
-+          <level>1</level>
-+          <default>false</default>
 +          <dependencies>
 +            <dependency type="enable">
 +              <condition setting="web.enabled" operator="is">true</condition>
@@ -2950,7 +2927,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +} // namespace KODI
 --- /dev/null
 +++ b/xbmc/cores/WebPlayer/WebClientManager.cpp
-@@ -0,0 +1,1112 @@
+@@ -0,0 +1,1110 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -3427,9 +3404,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +      {"WPE_PLATFORM", "wayland"},
 +      {"XDG_DATA_HOME", CSpecialProtocol::TranslatePath("special://profile/webdata")},
 +      {"XDG_CACHE_HOME", CSpecialProtocol::TranslatePath(diskCache ? CACHE_KEPT : CACHE_TEMP)},
-+      {"KODI_WEBVIEW_DISK_CACHE", diskCache ? "1" : "0"},
-+      {"KODI_WEBVIEW_SOFTWARE_CODECS",
-+       settings->GetBool(CSettings::SETTING_WEB_SOFTWARECODECS) ? "1" : "0"}};
++      {"KODI_WEBVIEW_DISK_CACHE", diskCache ? "1" : "0"}};
 +  // the client's audio sinks play through Kodi's audio engine
 +  if (m_audio)
 +    env.emplace(KODI_WEB_AUDIO_ENV, m_audio->GetPath());
@@ -7257,13 +7232,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #endif
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -338,6 +338,11 @@ public:
+@@ -338,6 +338,10 @@ public:
    static constexpr auto SETTING_WEATHER_CURRENTLOCATION = "weather.currentlocation";
    static constexpr auto SETTING_WEATHER_ADDON = "weather.addon";
    static constexpr auto SETTING_WEATHER_ADDONSETTINGS = "weather.addonsettings";
 +  static constexpr auto SETTING_WEB_ENABLED = "web.enabled";
 +  static constexpr auto SETTING_WEB_PRELOAD = "web.preload";
-+  static constexpr auto SETTING_WEB_SOFTWARECODECS = "web.softwarecodecs";
 +  static constexpr auto SETTING_WEB_DISKCACHE = "web.diskcache";
 +  static constexpr auto SETTING_WEB_CLIENTCOMMAND = "web.clientcommand";
    static constexpr auto SETTING_SERVICES_DEVICENAME = "services.devicename";

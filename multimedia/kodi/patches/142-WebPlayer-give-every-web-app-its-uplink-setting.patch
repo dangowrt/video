@@ -46,7 +46,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
      <import addon="xbmc.core" version="0.1.0"/>
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25987,7 +25987,37 @@ msgctxt "#40253"
+@@ -25974,7 +25974,37 @@ msgctxt "#40253"
  msgid "The content filter list {0:s} is not available."
  msgstr ""
  
@@ -394,7 +394,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  const ADDON::CAddonType* WebAppType(const std::shared_ptr<ADDON::CAddon>& webapp)
  {
    return webapp ? webapp->Type(ADDON::AddonType::WEBAPP) : nullptr;
-@@ -605,6 +617,14 @@ bool CWebClientManager::RequestView(cons
+@@ -603,6 +615,14 @@ bool CWebClientManager::RequestView(cons
      return false;
    }
  

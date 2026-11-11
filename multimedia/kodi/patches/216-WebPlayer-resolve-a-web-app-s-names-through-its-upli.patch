@@ -19,7 +19,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -26008,7 +26008,7 @@ msgstr ""
+@@ -25995,7 +25995,7 @@ msgstr ""
  #. Help text of the setting that picks the uplink of a web app
  #: system/settings/webapp.xml
  msgctxt "#40257"
@@ -28,7 +28,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  msgstr ""
  
  #. Notification text when the settings of a web app cannot be loaded
-@@ -26089,7 +26089,13 @@ msgctxt "#40270"
+@@ -26076,7 +26076,13 @@ msgctxt "#40270"
  msgid "Let the app play protected video through the DRM module, such as Widevine. Off offers the app no DRM, and a service such as YouTube then serves its free video in the clear, which the hardware decodes. On also plays protected video, but the DRM module decodes it in software, which on small devices may be too slow for high resolutions."
  msgstr ""
  
@@ -128,7 +128,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  bool WebAppSettingsLoad(const std::string& profile)
  {
    ADDON::AddonPtr addon;
-@@ -708,6 +752,7 @@ void CWebClientManager::Spawn()
+@@ -706,6 +750,7 @@ void CWebClientManager::Spawn()
    if (!cdm.empty())
      env.emplace("KODI_WEB_CDM_DIR", cdm);
    m_clientCdm = CdmIn(cdm);
@@ -136,7 +136,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
    m_host->SpawnClient({command}, std::move(env));
  }
  
-@@ -745,6 +790,11 @@ bool CWebClientManager::RequestView(cons
+@@ -743,6 +788,11 @@ bool CWebClientManager::RequestView(cons
    }
  
    const std::string uplink = UplinkOf(profile);
